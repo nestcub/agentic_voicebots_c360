@@ -154,3 +154,107 @@ intelligence-fabric/
 - Every function has a docstring
 - Patch-based plan updates: NEVER regenerate full plan
 - LLM model is a config value, never hardcoded in logic
+
+---
+
+## Chat360 Canvas — Full Node Type Reference
+*(Derived from deep inspection of all 5 bot JSONs, especially adani — 478 nodes, 773 edges)*
+
+### Node types available on the Chat360 canvas
+
+| Node Type | Component Type | Description |
+|---|---|---|
+| `INIT` | — | Start of flow. One out port. Routes to first real node. |
+| `VOICE_GENAI` | voice_genai | LLM-powered conversational node. Thinks + speaks. Core of every flow. |
+| `VOICE_CUSTOM_INPUT` | voice_custominput | Speaks TTS then captures caller speech. Used for listen-respond loops. |
+| `VOICE_MESSAGE` | voice_message | One-way TTS. No input captured. Confirmations, goodbyes, transfers. |
+| `VOICE_INTENT` | voice_intent | Detects a specific intent from caller speech → routes to named output port. |
+| `VOICE_SET_VARIABLE` | voice_set_variable | Hardcodes a runtime variable. Tracks conversation state. |
+| `VOICE_CONDITIONAL` | voice_conditional | Multi-branch if/else on variable values (EQUALS_TO / CONTAINS). |
+| `VOICE_WEBHOOK` | voice_webhook | HTTP API call (GET/POST). Captures response via response_body_schema. |
+| `VOICE_MULTI_CHOICE` | voice_multichoice | Spoken menu of options. Stores selection in option_variable. |
+| `VOICE_LANGUAGE_PREFERENCE` | voice_language_select | Caller picks language. Sets @bot_language for rest of flow. |
+
+### Key field reference per node type
+
+**VOICE_GENAI key fields:**
+- `prompt` — full LLM system instruction (use @bot_language, never hardcode language)
+- `initial_message` — opening spoken line on first entry
+- `genai_response_variable` — stores LLM output (e.g. @genairesponse)
+- `response_variable` — stores caller speech input
+- `routing_table` — {default: next_node_uuid}
+- `use_tools` — enable function/tool calling
+- `rag` — enable retrieval-augmented generation
+- `skip_speak` / `skip_listen` — silent processing mode
+
+**VOICE_INTENT key fields:**
+- `intents` — array of intent IDs to match
+- `routing_table` — {default: fallthrough_node, <intent_id>: specialist_node}
+- `portOpt` — named output ports per intent (label = intent name)
+
+**VOICE_CONDITIONAL key fields:**
+- `conditions` — array of {variable, value, condition: EQUALS_TO|CONTAINS}
+- `routing_table` — {default: node, <value>: node, ...} — one key per condition branch
+- `portOpt` — named output port per branch value
+
+**VOICE_WEBHOOK key fields:**
+- `url` — API endpoint (use @variables in query params)
+- `method` — GET or POST
+- `query_params` — JSON string with @variable substitutions
+- `body` — POST body
+- `capture_response` — true to store response
+- `response_body_schema` — maps response fields to @variables
+- `routing_table` — {default: next_node}
+
+**VOICE_SET_VARIABLE key fields:**
+- `variable` — @variable to set
+- `value` — literal value to assign
+
+**VOICE_MULTI_CHOICE key fields:**
+- `multichoice_options` — array of option strings
+- `option_variable` — @variable to store selection
+- `tts_prompt` — spoken prompt before showing options
+
+**VOICE_LANGUAGE_PREFERENCE key fields:**
+- `starter_language` — default language
+- `allowed_languages` — array of allowed choices
+- `fallback_language` — if detection fails
+- `tts_prompt` — e.g. "Please let me know your preferred language"
+
+### Adani Airport bot — multi-specialist architecture pattern
+*(Production-grade reference for complex flows)*
+
+```
+INIT
+→ VOICE_WEBHOOK          fetch CRM data by @caller_number before conversation starts
+→ VOICE_LANGUAGE_PREF    caller picks Hindi / English → sets @bot_language
+→ VOICE_GENAI            "Information Capture" agent — identifies airport + issue category
+→ VOICE_SET_VARIABLE     set @category_intent, @subcategory_intent
+→ VOICE_INTENT           detect sub-intent → named port → specialist GenAI agent
+   └─ VOICE_GENAI [x145] each with own system prompt, RAG + tools enabled
+      e.g. Baggage Wrapping / Transit / Duty Free / Lost & Found /
+           Pranaam / Car Parking / Flight Info / CISF Feedback /
+           Immigration / Out-of-Scope fallback
+→ VOICE_CONDITIONAL      branch on @case_status (OC / MC / No Contact / No Case)
+→ VOICE_MULTI_CHOICE     airport selection menu (11 airports) → @airport_selected
+→ VOICE_CONDITIONAL      route by @airport_selected to city-specific handlers
+```
+
+**Key patterns from adani to reuse for Autovista:**
+- VOICE_WEBHOOK at flow start → fetch lead data from CRM by phone number
+- VOICE_INTENT → route to specialist GenAI per topic (test drive / pricing / objection / callback)
+- VOICE_SET_VARIABLE → track @lead_status, @vehicle_interest, @preferred_model
+- VOICE_CONDITIONAL → branch on lead quality score or customer intent
+- 145 specialist VOICE_GENAI agents all use RAG + tools, each with domain-specific prompt
+
+### best_bots.json extraction spec
+What is included in intelligence/data/best_bots.json:
+- canvas_grammar: all 10 node types with full field schemas and rules
+- adani_specialist_patterns: 10 representative VOICE_GENAI prompt openings + configs
+- adani_intent_routing: 5 VOICE_INTENT examples showing intent → specialist routing
+- adani_conditional_examples: all 6 VOICE_CONDITIONAL examples (full conditions + routing)
+- adani_webhook_pattern: full VOICE_WEBHOOK config for CRM fetch
+- adani_variable_state: VOICE_SET_VARIABLE examples for state tracking
+- bot_examples: trimmed flow summaries for all 5 bots (tvs_credit, borosil, arka, jp_infra, adani)
+- performance_benchmarks: from analytics JSONs
+- proven_prompt_patterns: from real VOICE_GENAI system prompts
