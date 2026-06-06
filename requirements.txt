@@ -1,0 +1,11 @@
+# LLM
+anthropic>=0.40.0
+
+# Transcription
+deepgram-sdk>=3.5.0
+
+# Streamlit UI
+streamlit>=1.35.0
+
+# Environment
+python-dotenv>=1.0.0
