@@ -246,7 +246,7 @@ Return JSON with exactly these keys:
   "reasoning": "One paragraph explaining what changed, why, and what was deliberately left untouched."
 }}"""
 
-        result = self._llm.complete_json(system, user, max_tokens=4096)
+        result = self._llm.complete_json(system, user, max_tokens=16000)
         patch     = result.get("patch", {})
         reasoning = result.get("reasoning", "")
 
