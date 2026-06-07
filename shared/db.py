@@ -149,6 +149,59 @@ def save_insight(data: dict, path: str = DB_PATH) -> str:
     return row_id
 
 
+def get_insights_by_transcript(transcript_id: str, path: str = DB_PATH) -> list:
+    """Return all insight rows for a transcript, oldest-first (preserves history)."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM insights WHERE transcript_id=? ORDER BY created_at ASC",
+        (transcript_id,),
+    )
+    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+    conn.close()
+    json_fields = ["objection_patterns", "qualification_signals", "escalation_signals", "kb_gaps", "raw_insights_json"]
+    for r in rows:
+        for f in json_fields:
+            if r.get(f):
+                r[f] = json.loads(r[f])
+    return rows
+
+
+def get_insight_by_transcript(transcript_id: str, path: str = DB_PATH) -> dict | None:
+    """Return the latest insight row for a given transcript_id, or None."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM insights WHERE transcript_id=? ORDER BY created_at DESC LIMIT 1",
+        (transcript_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = _row_to_dict(cur, row)
+    for f in ["objection_patterns", "qualification_signals", "escalation_signals", "kb_gaps", "raw_insights_json"]:
+        if d.get(f):
+            d[f] = json.loads(d[f])
+    return d
+
+
+def update_transcript_text(transcript_id: str, transcript_text: str, path: str = DB_PATH) -> None:
+    """Update the transcript_text field for an existing transcript row."""
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE transcripts SET transcript_text=? WHERE id=?", (transcript_text, transcript_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_insights_for_transcript(transcript_id: str, path: str = DB_PATH) -> None:
+    """Delete all insight rows linked to a transcript (used before re-analysis)."""
+    conn = sqlite3.connect(path)
+    conn.execute("DELETE FROM insights WHERE transcript_id=?", (transcript_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_insights(client_id: str, path: str = DB_PATH) -> list:
     """Return all insights for a client_id with JSON fields deserialized."""
     conn = sqlite3.connect(path)

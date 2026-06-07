@@ -258,3 +258,6 @@ What is included in intelligence/data/best_bots.json:
 - bot_examples: trimmed flow summaries for all 5 bots (tvs_credit, borosil, arka, jp_infra, adani)
 - performance_benchmarks: from analytics JSONs
 - proven_prompt_patterns: from real VOICE_GENAI system prompts
+
+##Prompt example to intelligence engine for fields Describe your use case and what you need:
+Maruti Suzuki dealer Excell Autovista, outbound voice campaign in Hinglish, qualify leads for service. Bot Calls them to remind about their vehicle service and try to book it. Voice bot should also be able to handle questions from customer about service types and kinds, price, insurance (get from insurance agent), sales (when customer wants to purchase a new car), pre-owned cars (when customer says I want to sell my car). 

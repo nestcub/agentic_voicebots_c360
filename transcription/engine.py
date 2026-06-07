@@ -6,10 +6,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from deepgram import DeepgramClient, PrerecordedOptions
+from deepgram import DeepgramClient
 from dotenv import load_dotenv
 
-from shared.db import init_db, save_transcript, save_insight
+from shared.db import init_db, save_transcript, save_insight, update_transcript_text
 from shared.llm_client import LLMClient
 
 load_dotenv()
@@ -48,7 +48,7 @@ class TranscriptionEngine:
         api_key = os.getenv("DEEPGRAM_API_KEY")
         if not api_key:
             raise ValueError("DEEPGRAM_API_KEY is not set in environment.")
-        self._dg = DeepgramClient(api_key)
+        self._dg = DeepgramClient(api_key=api_key)
         self._llm = LLMClient()
         self._db = db_path
         init_db(db_path)
@@ -62,21 +62,17 @@ class TranscriptionEngine:
         filename = Path(audio_path).name
 
         # ── Deepgram transcription ────────────────────────────────────────────
-        options = PrerecordedOptions(
+        with open(audio_path, "rb") as f:
+            audio_data = f.read()
+
+        response = self._dg.listen.v1.media.transcribe_file(
+            request=audio_data,
             model="nova-3",
             language="hi",
             diarize=True,
             punctuate=True,
             utterances=True,
             smart_format=True,
-        )
-
-        with open(audio_path, "rb") as f:
-            audio_data = f.read()
-
-        response = self._dg.listen.prerecorded.v("1").transcribe_file(
-            {"buffer": audio_data, "mimetype": _mime_type(filename)},
-            options,
         )
 
         result = response.results
@@ -113,6 +109,15 @@ class TranscriptionEngine:
             "insight_id": insight_data["insight_id"],
             "insights": insight_data,
         }
+
+    def rerun_insights(self, transcript_id: str, client_id: str, edited_text: str) -> dict:
+        """Save edited transcript text and append a fresh insight row.
+
+        Previous insight rows are preserved so the caller can diff before vs after.
+        Returns the new insight dict.
+        """
+        update_transcript_text(transcript_id, edited_text, path=self._db)
+        return self._extract_insights(transcript_id, client_id, edited_text)
 
     def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str) -> dict:
         """Run second LLM call to extract structured insights from transcript."""
