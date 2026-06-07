@@ -70,10 +70,16 @@ def init_db(path: str = DB_PATH) -> None:
             client_id  TEXT PRIMARY KEY,
             questions  TEXT NOT NULL DEFAULT '[]',
             answers    TEXT NOT NULL DEFAULT '{}',
+            plan_id    TEXT,
             updated_at TEXT NOT NULL
         );
     """)
     conn.commit()
+    try:
+        conn.execute("ALTER TABLE workflow_sessions ADD COLUMN plan_id TEXT")
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 
@@ -320,12 +326,13 @@ def get_patches(plan_id: str, path: str = DB_PATH) -> list:
 
 # ── Workflow sessions ─────────────────────────────────────────────────────────
 
-def save_session(client_id: str, questions: list, answers: dict, path: str = DB_PATH) -> None:
+def save_session(client_id: str, questions: list, answers: dict, plan_id: str = None, path: str = DB_PATH) -> None:
     """Upsert the Q&A session for a client (one row per client_id)."""
     conn = sqlite3.connect(path)
     conn.execute(
-        "INSERT OR REPLACE INTO workflow_sessions VALUES (?,?,?,?)",
-        (client_id, json.dumps(questions), json.dumps(answers), _now()),
+        "INSERT OR REPLACE INTO workflow_sessions "
+        "(client_id, questions, answers, plan_id, updated_at) VALUES (?,?,?,?,?)",
+        (client_id, json.dumps(questions), json.dumps(answers), plan_id, _now()),
     )
     conn.commit()
     conn.close()
@@ -336,14 +343,15 @@ def load_session(client_id: str, path: str = DB_PATH) -> dict:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     cur.execute(
-        "SELECT questions, answers FROM workflow_sessions WHERE client_id=?",
+        "SELECT questions, answers, plan_id FROM workflow_sessions WHERE client_id=?",
         (client_id,),
     )
     row = cur.fetchone()
     conn.close()
     if row is None:
-        return {"questions": [], "answers": {}}
+        return {"questions": [], "answers": {}, "plan_id": None}
     return {
         "questions": json.loads(row[0]) if row[0] else [],
         "answers":   json.loads(row[1]) if row[1] else {},
+        "plan_id":   row[2],
     }
