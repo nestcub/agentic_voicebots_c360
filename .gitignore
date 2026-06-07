@@ -15,3 +15,9 @@ dashboard/node_modules/
 dashboard/.next/
 dashboard/out/
 dashboard/.env.local
+
+# Customer data — call recordings (PII audio), bot exports, analytics dumps. Not for git.
+data/
+
+# Supabase CLI local state (linked-project, .temp). Migrations live in migrations/.
+supabase/

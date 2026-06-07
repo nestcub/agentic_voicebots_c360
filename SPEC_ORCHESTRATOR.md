@@ -209,7 +209,7 @@ chat360-intelligence-fabric/
 ├── dashboard/                                          # NEW Next.js (from leaddial, automobile)
 │   └── lib/            dataSource.ts (interface + SupabaseDataSource), types.ts, domainConfig.ts
 ├── seed/               seed_leads.py                  # push mock automobile leads → Supabase
-└── supabase/           schema.sql                     # orchestration tables
+└── migrations/         0001_orchestrator.sql          # orchestration schema (renamed from supabase/ to avoid shadowing the `supabase` pip package on `import supabase`)
 ```
 gitignore `dashboard/node_modules`, build artifacts. Python deps appended to `requirements.txt` (apscheduler, supabase, fastapi, uvicorn).
 
