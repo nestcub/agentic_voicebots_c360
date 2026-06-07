@@ -68,7 +68,7 @@ def _init_state():
         if key not in st.session_state:
             st.session_state[key] = val
 
-    # Restore Q&A from DB when client_id changes or on first page load
+    # Restore Q&A + active plan from DB when client_id changes or on first page load
     client_id = st.session_state["client_id"]
     if _db_ready and st.session_state["_session_loaded_for"] != client_id:
         try:
@@ -77,6 +77,11 @@ def _init_state():
                 st.session_state["questions"] = saved["questions"]
             if saved["answers"]:
                 st.session_state["answers"] = saved["answers"]
+            if saved.get("plan_id") and not st.session_state["plan_id"]:
+                row = get_plan(saved["plan_id"], path=DB_PATH)
+                if row:
+                    st.session_state["plan_id"]      = saved["plan_id"]
+                    st.session_state["current_plan"] = row["plan"]
         except Exception:
             pass
         st.session_state["_session_loaded_for"] = client_id
@@ -385,6 +390,17 @@ with tab1:
                         if row:
                             st.session_state["plan_id"]      = chosen_id
                             st.session_state["current_plan"] = row["plan"]
+                            if _db_ready:
+                                try:
+                                    save_session(
+                                        sidebar_client,
+                                        st.session_state["questions"],
+                                        st.session_state["answers"],
+                                        plan_id=chosen_id,
+                                        path=DB_PATH,
+                                    )
+                                except Exception:
+                                    pass
                             st.success(f"Loaded plan {chosen_id[:8]}…")
                     except Exception as e:
                         st.error(f"Load failed: {e}")
@@ -614,6 +630,19 @@ with tab1:
                 )
                 # Persist each answer in session state by question id
                 st.session_state["answers"][qid] = answer
+
+            if _db_ready and st.button("💾 Save Answers", key="save_answers_btn"):
+                try:
+                    save_session(
+                        client_id,
+                        st.session_state["questions"],
+                        st.session_state["answers"],
+                        plan_id=st.session_state.get("plan_id"),
+                        path=DB_PATH,
+                    )
+                    st.toast("Answers saved.", icon="✅")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
     else:
         st.info("Upload and transcribe at least one recording first, then generate clarifying questions.")
 
@@ -660,6 +689,17 @@ with tab1:
                     plan     = designer.generate_plan(client_id, use_case_text, answers_list)
                     st.session_state["plan_id"]      = plan.get("plan_id")
                     st.session_state["current_plan"] = plan
+                    if _db_ready:
+                        try:
+                            save_session(
+                                client_id,
+                                st.session_state["questions"],
+                                st.session_state["answers"],
+                                plan_id=plan.get("plan_id"),
+                                path=DB_PATH,
+                            )
+                        except Exception:
+                            pass
                     st.success("Plan generated and saved.")
                 except Exception as e:
                     st.error(f"Plan generation failed: {e}")
