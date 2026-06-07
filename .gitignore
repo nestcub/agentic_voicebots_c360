@@ -8,3 +8,10 @@ dist/
 build/
 .venv/
 venv/
+
+# Dashboard (Next.js)
+node_modules/
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/.env.local
