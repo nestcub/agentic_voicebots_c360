@@ -26,7 +26,10 @@ DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")
 
 # Initialise DB; surface warning if env is missing but don't crash
 try:
-    from shared.db import init_db, get_plans, get_plan, get_patches, get_transcripts
+    from shared.db import (
+        init_db, get_plans, get_plan, get_patches,
+        get_transcripts, get_insight_by_transcript, get_insights_by_transcript,
+    )
     init_db(DB_PATH)
     _db_ready = True
 except Exception as _db_err:
@@ -65,6 +68,102 @@ def _init_state():
 
 
 _init_state()
+
+
+# ── Insight renderer ─────────────────────────────────────────────────────────
+def _render_insight(ins: dict) -> None:
+    """Render a single insight dict (score badge, sentiment, summary, lists)."""
+    icol1, icol2 = st.columns(2)
+    score     = ins.get("agent_score")
+    sentiment = ins.get("sentiment", "neutral")
+
+    if score is not None:
+        score_color = "#43A047" if score >= 7 else "#FB8C00" if score >= 5 else "#E53935"
+        icol1.markdown(
+            f"<span style='background:{score_color};color:white;"
+            f"padding:2px 8px;border-radius:4px;font-weight:bold'>"
+            f"Agent Score: {score}/10</span>",
+            unsafe_allow_html=True,
+        )
+
+    sent_color = {"positive": "#43A047", "neutral": "#1E88E5", "negative": "#E53935"}.get(
+        sentiment, "#9E9E9E"
+    )
+    icol2.markdown(
+        f"<span style='background:{sent_color};color:white;"
+        f"padding:2px 8px;border-radius:4px'>Sentiment: {sentiment}</span>",
+        unsafe_allow_html=True,
+    )
+
+    for label, key in [
+        ("Objection Patterns",    "objection_patterns"),
+        ("Qualification Signals", "qualification_signals"),
+        ("Escalation Signals",    "escalation_signals"),
+        ("KB Gaps",               "kb_gaps"),
+    ]:
+        items = ins.get(key) or []
+        if items:
+            st.markdown(f"**{label}:**")
+            for item in items:
+                st.markdown(f"- {item}")
+
+    summary = ins.get("summary", "")
+    if summary:
+        st.info(summary)
+
+
+# ── Insight comparison renderer ───────────────────────────────────────────────
+def _render_insight_comparison(old: dict, new: dict) -> None:
+    """Side-by-side diff between two insight dicts (previous vs current)."""
+    old_dt = old.get("created_at", "")[:16]
+    new_dt = new.get("created_at", "")[:16]
+
+    col_old, col_new = st.columns(2)
+
+    # Score
+    old_score = old.get("agent_score")
+    new_score = new.get("agent_score")
+    score_arrow = ""
+    if old_score is not None and new_score is not None:
+        if new_score > old_score:
+            score_arrow = f" ↑ +{new_score - old_score}"
+        elif new_score < old_score:
+            score_arrow = f" ↓ {new_score - old_score}"
+
+    col_old.markdown(f"**Previous** · {old_dt}")
+    col_new.markdown(f"**Current** · {new_dt}")
+
+    col_old.markdown(f"Agent Score: **{old_score}/10**")
+    col_new.markdown(f"Agent Score: **{new_score}/10**{score_arrow}")
+
+    col_old.markdown(f"Sentiment: `{old.get('sentiment','—')}`")
+    col_new.markdown(f"Sentiment: `{new.get('sentiment','—')}`")
+
+    col_old.markdown("**Summary:**")
+    col_old.caption(old.get("summary", "—"))
+    col_new.markdown("**Summary:**")
+    col_new.caption(new.get("summary", "—"))
+
+    # List field diffs
+    for label, key in [
+        ("Objection Patterns",    "objection_patterns"),
+        ("Qualification Signals", "qualification_signals"),
+        ("Escalation Signals",    "escalation_signals"),
+        ("KB Gaps",               "kb_gaps"),
+    ]:
+        old_set = set(old.get(key) or [])
+        new_set = set(new.get(key) or [])
+        added   = new_set - old_set
+        removed = old_set - new_set
+        if added or removed:
+            st.markdown(f"**{label}**")
+            diff_col1, diff_col2 = st.columns(2)
+            with diff_col1:
+                for item in sorted(removed):
+                    st.markdown(f"<span style='color:#E53935'>— {item}</span>", unsafe_allow_html=True)
+            with diff_col2:
+                for item in sorted(added):
+                    st.markdown(f"<span style='color:#43A047'>+ {item}</span>", unsafe_allow_html=True)
 
 
 # ── Plan renderer — defined here so it can be called from any tab context ─────
@@ -367,116 +466,114 @@ with tab1:
             st.session_state["transcripts"] = new_results
             st.success(f"Transcribed {len(new_results)} file(s) successfully.")
 
-    # Render transcript results stored in session state
-    if st.session_state["transcripts"]:
-        st.subheader("Step 2 — Transcripts & Insights")
-        for res in st.session_state["transcripts"]:
-            fname = res.get("filename", res.get("transcript_id", "file"))
-            with st.expander(f"📄 {fname}", expanded=False):
-                # Speaker-labeled segment lines
-                segments = res.get("segments", [])
-                if segments:
-                    st.markdown("**Transcript segments:**")
-                    lines = []
-                    for seg in segments:
-                        role  = seg.get("role", seg.get("speaker", "UNKNOWN"))
-                        start = seg.get("start", 0.0)
-                        text  = seg.get("text", "")
-                        color = "#1E88E5" if role == "AGENT" else "#43A047"
-                        lines.append(
-                            f"<span style='color:{color};font-weight:600'>"
-                            f"[{start:.1f}s] {role}:</span> {text}"
-                        )
-                    st.markdown("<br>".join(lines), unsafe_allow_html=True)
-                else:
-                    st.text(res.get("transcript", "No transcript available."))
+    # ── STEP 2 — Review, Edit & Re-analyse ───────────────────────────────────
+    if _db_ready:
+        try:
+            db_transcripts = get_transcripts(client_id, path=DB_PATH)
+        except Exception:
+            db_transcripts = []
 
-                st.divider()
+        if db_transcripts:
+            st.subheader("Step 2 — Review & Approve Transcripts")
+            st.caption(
+                f"{len(db_transcripts)} recording(s) in DB for **{client_id}**. "
+                "Edit the text if needed, then hit **Save & Re-analyse** to refresh insights."
+            )
 
-                # Insights panel with score badge and sentiment chip
-                ins = res.get("insights", {})
-                if ins:
-                    st.markdown("**Call Insights:**")
-                    icol1, icol2 = st.columns(2)
-                    score     = ins.get("agent_score")
-                    sentiment = ins.get("sentiment", "neutral")
+            for tr in db_transcripts:
+                tid   = tr["id"]
+                fname = tr.get("filename", tid)
+                dur   = tr.get("duration", 0.0)
+                created = tr.get("created_at", "")[:16]
 
-                    # Agent score badge — green/orange/red
-                    if score is not None:
-                        score_color = (
-                            "#43A047" if score >= 7 else
-                            "#FB8C00" if score >= 5 else
-                            "#E53935"
-                        )
-                        icol1.markdown(
-                            f"<span style='background:{score_color};color:white;"
-                            f"padding:2px 8px;border-radius:4px;font-weight:bold'>"
-                            f"Agent Score: {score}/10</span>",
-                            unsafe_allow_html=True,
-                        )
-
-                    # Sentiment chip
-                    sent_color = {
-                        "positive": "#43A047",
-                        "neutral":  "#1E88E5",
-                        "negative": "#E53935",
-                    }.get(sentiment, "#9E9E9E")
-                    icol2.markdown(
-                        f"<span style='background:{sent_color};color:white;"
-                        f"padding:2px 8px;border-radius:4px'>Sentiment: {sentiment}</span>",
-                        unsafe_allow_html=True,
+                with st.expander(f"📄 {fname}  ·  {dur:.0f}s  ·  {created}", expanded=False):
+                    # Editable transcript text
+                    edited = st.text_area(
+                        "Transcript (edit if needed)",
+                        value=tr["transcript_text"],
+                        height=320,
+                        key=f"edit_{tid}",
                     )
 
-                    # Objection patterns list
-                    objection_patterns = ins.get("objection_patterns", [])
-                    if objection_patterns:
-                        st.markdown("**Objection Patterns:**")
-                        for obj in objection_patterns:
-                            st.markdown(f"- {obj}")
+                    btn_col, _ = st.columns([2, 6])
+                    if btn_col.button("💾 Save & Re-analyse", key=f"reanalyse_{tid}"):
+                        engines_ok, engines_err = _load_engines()
+                        if not engines_ok:
+                            st.error(f"Engine import failed: {engines_err}")
+                        else:
+                            from transcription.engine import TranscriptionEngine
+                            with st.spinner("Saving and re-analysing…"):
+                                try:
+                                    eng = TranscriptionEngine(DB_PATH)
+                                    eng.rerun_insights(tid, client_id, edited)
+                                    st.success("Transcript saved. Insights updated.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Re-analysis failed: {e}")
 
-                    # Summary info box
-                    summary = ins.get("summary", "")
-                    if summary:
-                        st.info(summary)
+                    st.divider()
+
+                    # Load all insights for this transcript from DB
+                    if _db_ready:
+                        try:
+                            all_ins = get_insights_by_transcript(tid, path=DB_PATH)
+                        except Exception:
+                            all_ins = []
+
+                        if not all_ins:
+                            st.info("No insights yet — hit Save & Re-analyse to generate.")
+                        else:
+                            latest = all_ins[-1]
+                            st.markdown("**Current Insights:**")
+                            _render_insight(latest)
+
+                            # Comparison expander — only shown when >1 insight versions exist
+                            if len(all_ins) > 1:
+                                prev = all_ins[-2]
+                                with st.expander(
+                                    f"📊 Compare with previous analysis  "
+                                    f"(v{len(all_ins) - 1} → v{len(all_ins)})",
+                                    expanded=False,
+                                ):
+                                    _render_insight_comparison(prev, latest)
 
     # ── STEP 3 — Clarifying questions ────────────────────────────────────────
     st.subheader("Step 3 — Clarifying Questions")
 
-    # Show section if transcripts exist in session OR client has existing DB plans
-    has_transcripts = bool(st.session_state["transcripts"])
+    # Enable as soon as this client has any transcripts in DB
     if _db_ready:
         try:
-            _client_plans = get_plans(client_id, path=DB_PATH)
-            has_existing_data = bool(_client_plans)
+            _has_transcripts = bool(get_transcripts(client_id, path=DB_PATH))
         except Exception:
-            has_existing_data = False
+            _has_transcripts = False
     else:
-        has_existing_data = False
+        _has_transcripts = False
 
-    if has_transcripts or has_existing_data:
-        gen_q_btn = st.button(
-            "💬 Generate Questions",
-            disabled=not use_case_text.strip(),
-        )
+    if _has_transcripts:
+        gen_q_btn = st.button("💬 Generate Questions")
 
-        if gen_q_btn and use_case_text.strip():
-            engines_ok, engines_err = _load_engines()
-            if not engines_ok:
-                st.error(f"Engine import failed: {engines_err}")
+        if gen_q_btn:
+            if not use_case_text.strip():
+                st.toast("Add a use case description above before generating questions.", icon="⚠️")
+                st.warning("Please describe your use case in the text field above, then click Generate Questions again.")
             else:
-                from intelligence.designer import WorkflowDesigner
+                engines_ok, engines_err = _load_engines()
+                if not engines_ok:
+                    st.error(f"Engine import failed: {engines_err}")
+                else:
+                    from intelligence.designer import WorkflowDesigner
 
-                with st.spinner("Generating clarifying questions…"):
-                    try:
-                        designer  = WorkflowDesigner(DB_PATH)
-                        questions = designer.generate_clarifying_questions(
-                            client_id, use_case_text
-                        )
-                        st.session_state["questions"] = (
-                            questions if isinstance(questions, list) else []
-                        )
-                    except Exception as e:
-                        st.error(f"Question generation failed: {e}")
+                    with st.spinner("Generating clarifying questions…"):
+                        try:
+                            designer  = WorkflowDesigner(DB_PATH)
+                            questions = designer.generate_clarifying_questions(
+                                client_id, use_case_text
+                            )
+                            st.session_state["questions"] = (
+                                questions if isinstance(questions, list) else []
+                            )
+                        except Exception as e:
+                            st.error(f"Question generation failed: {e}")
 
         # Render questions as freetext areas for admin answers
         if st.session_state["questions"]:
@@ -496,9 +593,7 @@ with tab1:
                 # Persist each answer in session state by question id
                 st.session_state["answers"][qid] = answer
     else:
-        st.info(
-            "Upload and transcribe call recordings first, then generate clarifying questions."
-        )
+        st.info("Upload and transcribe at least one recording first, then generate clarifying questions.")
 
     # ── STEP 4 — Plan generation ──────────────────────────────────────────────
     st.subheader("Step 4 — Generate Workflow Plan")
