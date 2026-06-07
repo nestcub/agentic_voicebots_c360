@@ -152,7 +152,7 @@ class TranscriptionEngine:
 def _mime_type(filename: str) -> str:
     """Return MIME type based on audio file extension."""
     ext = Path(filename).suffix.lower()
-    return {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4"}.get(
+    return {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac"}.get(
         ext.lstrip("."), "audio/wav"
     )
 

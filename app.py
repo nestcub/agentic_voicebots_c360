@@ -294,7 +294,7 @@ with tab1:
 
     uploaded_files = st.file_uploader(
         "Upload call recordings",
-        type=["wav", "mp3", "m4a"],
+        type=["wav", "mp3", "m4a", "aac"],
         accept_multiple_files=True,
         help="Multi-file upload. Each recording will be transcribed and analysed independently.",
     )
