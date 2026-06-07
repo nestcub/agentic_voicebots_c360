@@ -29,6 +29,7 @@ try:
     from shared.db import (
         init_db, get_plans, get_plan, get_patches,
         get_transcripts, get_insight_by_transcript, get_insights_by_transcript,
+        save_session, load_session,
     )
     init_db(DB_PATH)
     _db_ready = True
@@ -53,18 +54,32 @@ def _load_engines():
 
 # ── Session state initialisation ──────────────────────────────────────────────
 def _init_state():
-    """Ensure all session state keys are present with safe defaults."""
+    """Ensure all session state keys are present; restore Q&A from DB on first load."""
     defaults = {
-        "transcripts":   [],    # list of transcription result dicts
-        "plan_id":       None,  # str UUID of the active plan
-        "current_plan":  None,  # dict — the full plan JSON
-        "questions":     [],    # list of {id, question, why} from clarifying step
-        "answers":       {},    # dict keyed by question id
+        "transcripts":   [],
+        "plan_id":       None,
+        "current_plan":  None,
+        "questions":     [],
+        "answers":       {},
         "client_id":     "autovista",
+        "_session_loaded_for": None,  # tracks which client_id was last restored
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+    # Restore Q&A from DB when client_id changes or on first page load
+    client_id = st.session_state["client_id"]
+    if _db_ready and st.session_state["_session_loaded_for"] != client_id:
+        try:
+            saved = load_session(client_id, path=DB_PATH)
+            if saved["questions"]:
+                st.session_state["questions"] = saved["questions"]
+            if saved["answers"]:
+                st.session_state["answers"] = saved["answers"]
+        except Exception:
+            pass
+        st.session_state["_session_loaded_for"] = client_id
 
 
 _init_state()
@@ -572,6 +587,13 @@ with tab1:
                             st.session_state["questions"] = (
                                 questions if isinstance(questions, list) else []
                             )
+                            # Persist questions immediately; reset answers since questions changed
+                            if _db_ready:
+                                try:
+                                    save_session(client_id, st.session_state["questions"], {}, path=DB_PATH)
+                                    st.session_state["answers"] = {}
+                                except Exception:
+                                    pass
                         except Exception as e:
                             st.error(f"Question generation failed: {e}")
 
@@ -619,6 +641,18 @@ with tab1:
                 }
                 for q in st.session_state["questions"]
             ]
+
+            # Persist answers before the LLM call so a refresh doesn't lose them
+            if _db_ready:
+                try:
+                    save_session(
+                        client_id,
+                        st.session_state["questions"],
+                        st.session_state["answers"],
+                        path=DB_PATH,
+                    )
+                except Exception:
+                    pass
 
             with st.spinner("Generating plan… this may take 15–30 seconds."):
                 try:

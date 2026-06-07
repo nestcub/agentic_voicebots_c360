@@ -65,6 +65,13 @@ def init_db(path: str = DB_PATH) -> None:
             llm_reasoning TEXT NOT NULL,
             created_at    TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS workflow_sessions (
+            client_id  TEXT PRIMARY KEY,
+            questions  TEXT NOT NULL DEFAULT '[]',
+            answers    TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
     """)
     conn.commit()
     conn.close()
@@ -309,3 +316,34 @@ def get_patches(plan_id: str, path: str = DB_PATH) -> list:
     for r in rows:
         r["patch"] = json.loads(r["patch"])
     return rows
+
+
+# ── Workflow sessions ─────────────────────────────────────────────────────────
+
+def save_session(client_id: str, questions: list, answers: dict, path: str = DB_PATH) -> None:
+    """Upsert the Q&A session for a client (one row per client_id)."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT OR REPLACE INTO workflow_sessions VALUES (?,?,?,?)",
+        (client_id, json.dumps(questions), json.dumps(answers), _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_session(client_id: str, path: str = DB_PATH) -> dict:
+    """Return saved questions + answers for a client, or empty defaults."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT questions, answers FROM workflow_sessions WHERE client_id=?",
+        (client_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return {"questions": [], "answers": {}}
+    return {
+        "questions": json.loads(row[0]) if row[0] else [],
+        "answers":   json.loads(row[1]) if row[1] else {},
+    }
