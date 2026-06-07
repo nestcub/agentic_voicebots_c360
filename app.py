@@ -789,7 +789,19 @@ with tab1:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab2:
-    st.title("Agentic AI")
-    st.info(
-        "Coming tomorrow: AI Orchestrator — campaign management, outbound calls, WhatsApp integration."
+    st.title("AI Orchestrator")
+    st.caption(
+        "Set the monthly goal and target here. Changing the goal bumps the voice-bot script version — "
+        "regenerate the system prompt in the Workflow Intelligence tab, then update the bot."
+    )
+    try:
+        from intelligence.goal_editor import render_goal_target_editor
+        render_goal_target_editor()
+    except Exception as e:
+        st.error(f"Goal editor unavailable: {e}")
+
+    st.divider()
+    st.caption(
+        "Dispatch, follow-up reliability, and live analytics run in the orchestrator service "
+        "(`orchestrator/`) and the dashboard (`dashboard/`)."
     )
