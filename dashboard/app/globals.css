@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@theme {
+  /* Autovista palette — deep automotive teal + signal orange */
+  --color-primary: #0a2540;
+  --color-primary-container: #123a5e;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #9ec5e6;
+  --color-accent: #fe8438;
+  --color-surface: #f7f9fc;
+  --color-surface-container: #eef2f9;
+  --color-on-surface: #0b1c30;
+  --color-on-background: #0b1c30;
+  --color-background: #f7f9fc;
+
+  --color-ok: #16a34a;
+  --color-warn: #f59e0b;
+  --color-bad: #e11d48;
+
+  --font-family-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --background: #f7f9fc;
+  --foreground: #0b1c30;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+@keyframes flash-row {
+  0%, 100% { background-color: transparent; }
+  50% { background-color: #fef3c7; }
+}
+.flash-row { animation: flash-row 1s ease-in-out; }
