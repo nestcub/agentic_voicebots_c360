@@ -203,7 +203,7 @@ Return a single JSON object with exactly these keys:
 Ground every stage in real Chat360 node types from the canvas reference.
 build_notes.canvas_instructions must be specific enough for an admin to build without guessing."""
 
-        plan = self._llm.complete_json(system, user, max_tokens=8096)
+        plan = self._llm.complete_json(system, user, max_tokens=16000)
         plan_id = save_plan({"client_id": client_id, "plan": plan}, path=self._db)
         plan["plan_id"] = plan_id
         return plan

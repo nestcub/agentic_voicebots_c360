@@ -50,12 +50,26 @@ class LLMClient:
             return response.content[0].text
         raise NotImplementedError(f"complete() not implemented for '{self.provider}'.")
 
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        """Strip markdown fences and extract the outermost JSON object or array."""
+        import re
+        fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        if fenced:
+            return fenced.group(1).strip()
+        for open_c, close_c in [('{', '}'), ('[', ']')]:
+            start = text.find(open_c)
+            end   = text.rfind(close_c)
+            if start != -1 and end > start:
+                return text[start:end + 1]
+        return text.strip()
+
     def complete_json(self, system: str, user: str, max_tokens: int = 4096) -> dict:
         """Send prompt expecting JSON; parse and return as dict, retrying once on failure."""
         json_system = system + "\n\nRespond with valid JSON only. No markdown fences, no explanation."
         raw = self.complete(json_system, user, max_tokens)
         try:
-            return json.loads(raw)
+            return json.loads(self._extract_json(raw))
         except json.JSONDecodeError:
             retry_user = (
                 user
@@ -63,4 +77,4 @@ class LLMClient:
                 "Return ONLY a valid JSON object — no markdown, no extra text."
             )
             raw = self.complete(json_system, retry_user, max_tokens)
-            return json.loads(raw)
+            return json.loads(self._extract_json(raw))
