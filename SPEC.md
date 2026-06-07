@@ -259,5 +259,79 @@ What is included in intelligence/data/best_bots.json:
 - performance_benchmarks: from analytics JSONs
 - proven_prompt_patterns: from real VOICE_GENAI system prompts
 
-##Prompt example to intelligence engine for fields Describe your use case and what you need:
+## Prompt example to intelligence engine for fields Describe your use case and what you need:
 Maruti Suzuki dealer Excell Autovista, outbound voice campaign in Hinglish, qualify leads for service. Bot Calls them to remind about their vehicle service and try to book it. Voice bot should also be able to handle questions from customer about service types and kinds, price, insurance (get from insurance agent), sales (when customer wants to purchase a new car), pre-owned cars (when customer says I want to sell my car). 
+
+## Questions quality review: All 8 questions are clean —
+ no hallucinations. Every question is grounded either in the use case or directly in call recording insights (Supreme Motors competitor question came from Recording 3's escalation signals; pricing gaps came from KB gaps). Language/tone question unlocked excellent detail. Nothing invented.
+
+---
+
+# How to Run (current state — 2026-06-08)
+
+Mono-repo, three planes. The Python backend runs **creds-free on SQLite** (`ORCH_STORE=memory`) or on **Supabase** (`ORCH_STORE=supabase`). The dashboard runs on **mock data** (no creds) or **live Supabase**.
+
+## 0. Prerequisites
+```bash
+python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+# Node 20+ required for the dashboard
+cp .env.example .env   # then fill the keys below
+```
+`.env` (repo root) keys:
+- Intelligence: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `DEEPGRAM_API_KEY`
+- Orchestrator store (live mode): `ORCH_STORE=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY`
+- Voice dispatch (live calls): `CHAT360_AUTH_COOKIE`, `DID_POOL=+9179...`
+- Note: `SUPABASE_URL` (bare) is for Python; `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` are for the dashboard.
+
+## 1. Intelligence plane — Streamlit (transcribe · plan · Goal/Target)
+```bash
+streamlit run app.py          # → http://localhost:8501
+```
+- **Tab 1 — Workflow Intelligence:** upload recordings → transcribe (Deepgram Nova-3) → insights → clarifying questions → generate plan → patch loop. Plans + Q&A persist in SQLite and survive refresh.
+- **Tab 2 — AI Orchestrator:** Goal & Target editor. Saving writes the active goal/target to the orchestrator store and bumps the voice-bot `script_version`.
+
+## 2. Orchestrator — the execution engine (Python)
+**Create tables once** (Supabase SQL Editor → paste [migrations/0001_orchestrator.sql](migrations/0001_orchestrator.sql)), then **seed**:
+```bash
+ORCH_STORE=supabase ./venv/bin/python -m seed.seed_leads --count 40
+# (omit ORCH_STORE, or =memory, to run fully offline on SQLite)
+```
+**Run the API + the follow-up scheduler** (two terminals):
+```bash
+./venv/bin/uvicorn orchestrator.api:app --reload --port 8000   # dispatch + Chat360 webhook
+./venv/bin/python -m orchestrator.scheduler.worker             # auto-fires due follow-ups
+```
+**Trigger an outbound campaign** (confirm-gated — never dials without an explicit confirm):
+```bash
+ACC=<account_id from the Supabase 'accounts' table>
+curl -s localhost:8000/orchestrator/autodial/preview  -H 'content-type: application/json' -d "{\"account_id\":\"$ACC\"}"
+curl -s localhost:8000/orchestrator/autodial/confirm  -H 'content-type: application/json' -d "{\"session_id\":\"<sid from preview>\"}"
+curl -s localhost:8000/orchestrator/autodial/dispatch -H 'content-type: application/json' -d "{\"account_id\":\"$ACC\",\"session_id\":\"<sid>\"}"
+```
+**Post-call ingest** — Chat360's bot calls this automatically (keyed by `dlr_id`); see SPEC_ORCHESTRATOR.md §5.1:
+```
+POST localhost:8000/orchestrator/webhook/chat360/outcome
+```
+
+## 3. Dashboard — monitor (Next.js)
+```bash
+cd dashboard && npm install
+# Mock data (zero creds): just run dev
+npm run dev                    # → http://localhost:3000
+# Live Supabase: create dashboard/.env.local with
+#   NEXT_PUBLIC_SUPABASE_URL=...   NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+#   (do NOT set NEXT_PUBLIC_DATA_SOURCE=mock), then restart `npm run dev`
+```
+Pages: **Dashboard** (KPIs + Target progress), **Leads**, **Follow-ups** (Commitment Ledger SLA — overdue highlighted), **Analytics** (region/branch breakdowns + calls/booked over time), **Goal & Target** (read-only; edits redirect to Streamlit). Scope switcher: ALL / Mumbai / Pune / branch.
+
+## 4. Tests (regression for the two pains)
+```bash
+./venv/bin/python3 tests/test_followup.py          # Pain A — follow-ups never dropped
+./venv/bin/python3 tests/test_goal_adaptation.py   # Pain B — goal switch keeps old commitments
+```
+
+## Ports
+Streamlit **8501** · Orchestrator API **8000** · Dashboard **3000**
+
+## Who shows what
+- **Streamlit** = author (scripts, goals). **Orchestrator API + scheduler** = do the work (watch their console logs). **Dashboard** = view the resulting state (assignments, commitments, outcomes, analytics).
