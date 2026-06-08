@@ -31,7 +31,9 @@ try:
         get_transcripts, get_insight_by_transcript, get_insights_by_transcript,
         save_session, load_session,
         get_transcript_by_filename, get_turns,
+        get_knowledge, set_knowledge_status, delete_knowledge, add_knowledge,
     )
+    from shared.auth import is_admin
     init_db(DB_PATH)
     _db_ready = True
 except Exception as _db_err:
@@ -584,6 +586,38 @@ with tab1:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Rebuild failed: {e}")
+
+    # ── admin platform knowledge panel ────────────────────────────────────────
+    if is_admin(client_id):
+        with st.expander("🛠 Platform knowledge (Chat360 team)", expanded=False):
+            for k in get_knowledge("active", path=DB_PATH):
+                c1, c2 = st.columns([8, 1])
+                c1.markdown(
+                    f"**[{k['topic']}]** {k['fact']}  \n"
+                    f"<small>{k['source']} · {k['created_at'][:16]}</small>",
+                    unsafe_allow_html=True,
+                )
+                if c2.button("🗑", key=f"del_{k['id']}"):
+                    delete_knowledge(k["id"], path=DB_PATH)
+                    st.rerun()
+            pending = get_knowledge("pending", path=DB_PATH)
+            if pending:
+                st.markdown("**Pending review**")
+                for k in pending:
+                    c1, c2, c3 = st.columns([6, 1, 1])
+                    c1.markdown(f"**[{k['topic']}]** {k['fact']}")
+                    if c2.button("✓", key=f"ok_{k['id']}"):
+                        set_knowledge_status(k["id"], "active", path=DB_PATH)
+                        st.rerun()
+                    if c3.button("✕", key=f"no_{k['id']}"):
+                        set_knowledge_status(k["id"], "archived", path=DB_PATH)
+                        st.rerun()
+            with st.form("add_knowledge"):
+                t = st.text_input("Topic")
+                f = st.text_area("Fact")
+                if st.form_submit_button("Add to platform knowledge") and t and f:
+                    add_knowledge(t, f, source=client_id, status="active", path=DB_PATH)
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
