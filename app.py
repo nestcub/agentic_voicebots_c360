@@ -30,6 +30,7 @@ try:
         init_db, get_plans, get_plan, get_patches,
         get_transcripts, get_insight_by_transcript, get_insights_by_transcript,
         save_session, load_session,
+        get_transcript_by_filename, get_turns,
     )
     init_db(DB_PATH)
     _db_ready = True
@@ -63,6 +64,10 @@ def _init_state():
         "answers":       {},
         "client_id":     "autovista",
         "_session_loaded_for": None,  # tracks which client_id was last restored
+        "use_case":      "",
+        "last_reply":    "",
+        "last_diff":     None,
+        "last_version":  None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -82,6 +87,14 @@ def _init_state():
                 if row:
                     st.session_state["plan_id"]      = saved["plan_id"]
                     st.session_state["current_plan"] = row["plan"]
+            try:
+                st.session_state["use_case"] = saved.get("use_case", "") or st.session_state.get("use_case", "")
+                _turns = get_turns(client_id, limit=2, path=DB_PATH)
+                _last = next((t["content"] for t in reversed(_turns) if t["role"] == "assistant"), "")
+                if _last:
+                    st.session_state["last_reply"] = _last
+            except Exception:
+                pass
         except Exception:
             pass
         st.session_state["_session_loaded_for"] = client_id
@@ -347,441 +360,230 @@ tab1, tab2 = st.tabs(["🧠 Workflow Intelligence", "🤖 Agentic AI"])
 #  TAB 1 — WORKFLOW INTELLIGENCE
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Sidebar — existing plans + DB stats (renders to sidebar from any context) ─
+with st.sidebar:
+    st.header("📂 Plans")
+
+    # Client ID input — sidebar drives session state
+    sidebar_client = st.text_input(
+        "Client ID",
+        value=st.session_state["client_id"],
+        key="sidebar_client_id",
+    )
+    st.session_state["client_id"] = sidebar_client
+
+    # Show existing plans for this client in a dropdown
+    if _db_ready:
+        try:
+            existing_plans = get_plans(sidebar_client, path=DB_PATH)
+        except Exception as e:
+            existing_plans = []
+            st.error(f"Could not load plans: {e}")
+
+        if existing_plans:
+            plan_labels = {
+                f"v{p['version']} — {p['updated_at'][:16]}": p["id"]
+                for p in existing_plans
+            }
+            selected_label = st.selectbox(
+                "Load a previous plan",
+                ["— select —"] + list(plan_labels.keys()),
+            )
+            if selected_label != "— select —" and st.button("Load Plan"):
+                # Load the selected plan into session state to continue patching
+                chosen_id = plan_labels[selected_label]
+                try:
+                    row = get_plan(chosen_id, path=DB_PATH)
+                    if row:
+                        st.session_state["plan_id"]      = chosen_id
+                        st.session_state["current_plan"] = row["plan"]
+                        if _db_ready:
+                            try:
+                                save_session(
+                                    sidebar_client,
+                                    st.session_state["questions"],
+                                    st.session_state["answers"],
+                                    plan_id=chosen_id,
+                                    path=DB_PATH,
+                                )
+                            except Exception:
+                                pass
+                        st.success(f"Loaded plan {chosen_id[:8]}…")
+                except Exception as e:
+                    st.error(f"Load failed: {e}")
+        else:
+            st.info("No plans yet for this client.")
+
+    st.divider()
+    st.header("📊 DB Stats")
+    if _db_ready:
+        try:
+            all_transcripts = get_transcripts(sidebar_client, path=DB_PATH)
+            all_plans       = get_plans(sidebar_client, path=DB_PATH)
+            col_a, col_b = st.columns(2)
+            col_a.metric("Transcripts", len(all_transcripts))
+            col_b.metric("Plans", len(all_plans))
+        except Exception as e:
+            st.error(f"Stats error: {e}")
+
+
 with tab1:
     st.title("Chat360 Workflow Intelligence")
     st.caption(
-        "Upload call recordings → auto-transcribe → generate a production-grade voice bot plan."
+        "One conversation: describe your use case, refine the plan, ask questions, "
+        "or fold in new recordings — the assistant remembers your use case."
     )
 
-    # ── Sidebar — existing plans + DB stats ──────────────────────────────────
-    with st.sidebar:
-        st.header("📂 Plans")
-
-        # Client ID input — sidebar drives session state
-        sidebar_client = st.text_input(
-            "Client ID",
-            value=st.session_state["client_id"],
-            key="sidebar_client_id",
-        )
-        st.session_state["client_id"] = sidebar_client
-
-        # Show existing plans for this client in a dropdown
-        if _db_ready:
-            try:
-                existing_plans = get_plans(sidebar_client, path=DB_PATH)
-            except Exception as e:
-                existing_plans = []
-                st.error(f"Could not load plans: {e}")
-
-            if existing_plans:
-                plan_labels = {
-                    f"v{p['version']} — {p['updated_at'][:16]}": p["id"]
-                    for p in existing_plans
-                }
-                selected_label = st.selectbox(
-                    "Load a previous plan",
-                    ["— select —"] + list(plan_labels.keys()),
-                )
-                if selected_label != "— select —" and st.button("Load Plan"):
-                    # Load the selected plan into session state to continue patching
-                    chosen_id = plan_labels[selected_label]
-                    try:
-                        row = get_plan(chosen_id, path=DB_PATH)
-                        if row:
-                            st.session_state["plan_id"]      = chosen_id
-                            st.session_state["current_plan"] = row["plan"]
-                            if _db_ready:
-                                try:
-                                    save_session(
-                                        sidebar_client,
-                                        st.session_state["questions"],
-                                        st.session_state["answers"],
-                                        plan_id=chosen_id,
-                                        path=DB_PATH,
-                                    )
-                                except Exception:
-                                    pass
-                            st.success(f"Loaded plan {chosen_id[:8]}…")
-                    except Exception as e:
-                        st.error(f"Load failed: {e}")
-            else:
-                st.info("No plans yet for this client.")
-
-        st.divider()
-        st.header("📊 DB Stats")
-        if _db_ready:
-            try:
-                all_transcripts = get_transcripts(sidebar_client, path=DB_PATH)
-                all_plans       = get_plans(sidebar_client, path=DB_PATH)
-                col_a, col_b = st.columns(2)
-                col_a.metric("Transcripts", len(all_transcripts))
-                col_b.metric("Plans", len(all_plans))
-            except Exception as e:
-                st.error(f"Stats error: {e}")
-
-    # ── STEP 1 — Input panel ──────────────────────────────────────────────────
-    st.subheader("Step 1 — Upload & Describe")
-
-    uploaded_files = st.file_uploader(
-        "Upload call recordings",
-        type=["wav", "mp3", "m4a", "aac"],
-        accept_multiple_files=True,
-        help="Multi-file upload. Each recording will be transcribed and analysed independently.",
-    )
-
-    use_case_text = st.text_area(
-        "Describe your use case and what you need",
-        height=120,
-        placeholder=(
-            "e.g. Maruti Suzuki outbound campaign to qualify test drive leads "
-            "from Facebook ads, Hinglish, tier-2 cities"
-        ),
-    )
-
-    # Client ID in main area — stays in sync with sidebar
-    client_id = st.text_input(
-        "Client ID",
-        value=st.session_state["client_id"],
-        key="main_client_id",
-    )
+    client_id = st.text_input("Client ID", value=st.session_state["client_id"], key="main_client_id")
     st.session_state["client_id"] = client_id
 
-    transcribe_btn = st.button(
-        "🎙️ Transcribe & Analyse",
-        type="primary",
-        disabled=not bool(uploaded_files),
+    # ── Attach recordings (transcribed on your next message; already-processed files are skipped) ──
+    uploaded_files = st.file_uploader(
+        "Attach call recordings (optional)",
+        type=["wav", "mp3", "m4a", "aac"],
+        accept_multiple_files=True,
+        help="New recordings are transcribed + analysed when you send your next message. "
+             "Files already processed for this client are skipped.",
     )
 
-    # ── STEP 2 — Transcription + insights ────────────────────────────────────
-    if transcribe_btn and uploaded_files:
-        engines_ok, engines_err = _load_engines()
-        if not engines_ok:
-            st.error(
-                f"Engine import failed — check your .env and dependencies.\n\n{engines_err}"
-            )
-        else:
-            from transcription.engine import TranscriptionEngine
-
-            engine      = TranscriptionEngine(DB_PATH)
-            new_results = []
-            total       = len(uploaded_files)
-            progress_bar = st.progress(0, text="Starting transcription…")
-
-            for idx, uploaded_file in enumerate(uploaded_files):
-                progress_bar.progress(
-                    idx / total,
-                    text=f"Transcribing {uploaded_file.name} ({idx + 1}/{total})…",
-                )
-                # Write uploaded bytes to a temp file so the engine can read it
-                suffix  = Path(uploaded_file.name).suffix
-                tmp_path = None
-                try:
-                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                        tmp.write(uploaded_file.read())
-                        tmp_path = tmp.name
-
-                    result = engine.transcribe(tmp_path, client_id)
-                    result["filename"] = uploaded_file.name
-                    new_results.append(result)
-                except Exception as e:
-                    st.error(f"Transcription failed for {uploaded_file.name}: {e}")
-                finally:
-                    # Always clean up the temp file after transcription
-                    if tmp_path:
-                        try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
-
-            progress_bar.progress(1.0, text="Transcription complete ✓")
-            st.session_state["transcripts"] = new_results
-            st.success(f"Transcribed {len(new_results)} file(s) successfully.")
-
-    # ── STEP 2 — Review, Edit & Re-analyse ───────────────────────────────────
-    if _db_ready:
-        try:
-            db_transcripts = get_transcripts(client_id, path=DB_PATH)
-        except Exception:
-            db_transcripts = []
-
-        if db_transcripts:
-            st.subheader("Step 2 — Review & Approve Transcripts")
-            st.caption(
-                f"{len(db_transcripts)} recording(s) in DB for **{client_id}**. "
-                "Edit the text if needed, then hit **Save & Re-analyse** to refresh insights."
-            )
-
-            for tr in db_transcripts:
-                tid   = tr["id"]
-                fname = tr.get("filename", tid)
-                dur   = tr.get("duration", 0.0)
-                created = tr.get("created_at", "")[:16]
-
-                with st.expander(f"📄 {fname}  ·  {dur:.0f}s  ·  {created}", expanded=False):
-                    # Editable transcript text
-                    edited = st.text_area(
-                        "Transcript (edit if needed)",
-                        value=tr["transcript_text"],
-                        height=320,
-                        key=f"edit_{tid}",
-                    )
-
-                    btn_col, _ = st.columns([2, 6])
-                    if btn_col.button("💾 Save & Re-analyse", key=f"reanalyse_{tid}"):
-                        engines_ok, engines_err = _load_engines()
-                        if not engines_ok:
-                            st.error(f"Engine import failed: {engines_err}")
-                        else:
-                            from transcription.engine import TranscriptionEngine
-                            with st.spinner("Saving and re-analysing…"):
-                                try:
-                                    eng = TranscriptionEngine(DB_PATH)
-                                    eng.rerun_insights(tid, client_id, edited)
-                                    st.success("Transcript saved. Insights updated.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Re-analysis failed: {e}")
-
-                    st.divider()
-
-                    # Load all insights for this transcript from DB
-                    if _db_ready:
-                        try:
-                            all_ins = get_insights_by_transcript(tid, path=DB_PATH)
-                        except Exception:
-                            all_ins = []
-
-                        if not all_ins:
-                            st.info("No insights yet — hit Save & Re-analyse to generate.")
-                        else:
-                            latest = all_ins[-1]
-                            st.markdown("**Current Insights:**")
-                            _render_insight(latest)
-
-                            # Comparison expander — only shown when >1 insight versions exist
-                            if len(all_ins) > 1:
-                                prev = all_ins[-2]
-                                with st.expander(
-                                    f"📊 Compare with previous analysis  "
-                                    f"(v{len(all_ins) - 1} → v{len(all_ins)})",
-                                    expanded=False,
-                                ):
-                                    _render_insight_comparison(prev, latest)
-
-    # ── STEP 3 — Clarifying questions ────────────────────────────────────────
-    st.subheader("Step 3 — Clarifying Questions")
-
-    # Enable as soon as this client has any transcripts in DB
-    if _db_ready:
-        try:
-            _has_transcripts = bool(get_transcripts(client_id, path=DB_PATH))
-        except Exception:
-            _has_transcripts = False
-    else:
-        _has_transcripts = False
-
-    if _has_transcripts:
-        gen_q_btn = st.button("💬 Generate Questions")
-
-        if gen_q_btn:
-            if not use_case_text.strip():
-                st.toast("Add a use case description above before generating questions.", icon="⚠️")
-                st.warning("Please describe your use case in the text field above, then click Generate Questions again.")
-            else:
-                engines_ok, engines_err = _load_engines()
-                if not engines_ok:
-                    st.error(f"Engine import failed: {engines_err}")
-                else:
-                    from intelligence.designer import WorkflowDesigner
-
-                    with st.spinner("Generating clarifying questions…"):
-                        try:
-                            designer  = WorkflowDesigner(DB_PATH)
-                            questions = designer.generate_clarifying_questions(
-                                client_id, use_case_text
-                            )
-                            st.session_state["questions"] = (
-                                questions if isinstance(questions, list) else []
-                            )
-                            # Persist questions immediately; reset answers since questions changed
-                            if _db_ready:
-                                try:
-                                    save_session(client_id, st.session_state["questions"], {}, path=DB_PATH)
-                                    st.session_state["answers"] = {}
-                                except Exception:
-                                    pass
-                        except Exception as e:
-                            st.error(f"Question generation failed: {e}")
-
-        # Render questions as freetext areas for admin answers
-        if st.session_state["questions"]:
-            st.markdown(
-                "**Answer each question to help the AI generate a precise plan:**"
-            )
-            for q in st.session_state["questions"]:
-                qid   = q.get("id", "q")
-                qtext = q.get("question", "")
-                why   = q.get("why", "")
-                answer = st.text_area(
-                    qtext,
-                    key=f"q_{qid}",
-                    help=why,
-                    height=80,
-                )
-                # Persist each answer in session state by question id
-                st.session_state["answers"][qid] = answer
-
-            if _db_ready and st.button("💾 Save Answers", key="save_answers_btn"):
-                try:
-                    save_session(
-                        client_id,
-                        st.session_state["questions"],
-                        st.session_state["answers"],
-                        plan_id=st.session_state.get("plan_id"),
-                        path=DB_PATH,
-                    )
-                    st.toast("Answers saved.", icon="✅")
-                except Exception as e:
-                    st.error(f"Save failed: {e}")
-    else:
-        st.info("Upload and transcribe at least one recording first, then generate clarifying questions.")
-
-    # ── STEP 4 — Plan generation ──────────────────────────────────────────────
-    st.subheader("Step 4 — Generate Workflow Plan")
-
-    plan_btn = st.button(
-        "📋 Generate Workflow Plan",
-        type="primary",
-        disabled=not use_case_text.strip(),
-    )
-
-    if plan_btn and use_case_text.strip():
-        engines_ok, engines_err = _load_engines()
-        if not engines_ok:
-            st.error(f"Engine import failed: {engines_err}")
-        else:
-            from intelligence.designer import WorkflowDesigner
-
-            # Build answers list from session state for LLM context
-            answers_list = [
-                {
-                    "question": q.get("question", ""),
-                    "answer":   st.session_state["answers"].get(q.get("id", ""), ""),
-                }
-                for q in st.session_state["questions"]
-            ]
-
-            # Persist answers before the LLM call so a refresh doesn't lose them
+    # ── Remembered use case ──────────────────────────────────────────────────
+    with st.expander("🎯 Use case (remembered)", expanded=not st.session_state.get("use_case")):
+        uc = st.text_area(
+            "Your use case", value=st.session_state.get("use_case", ""),
+            key="use_case_edit", height=100,
+            help="Set once; the assistant remembers it. Edit anytime.",
+        )
+        if uc != st.session_state.get("use_case", ""):
+            st.session_state["use_case"] = uc
             if _db_ready:
                 try:
-                    save_session(
-                        client_id,
-                        st.session_state["questions"],
-                        st.session_state["answers"],
-                        path=DB_PATH,
-                    )
+                    _s = load_session(client_id, path=DB_PATH)
+                    save_session(client_id, _s.get("questions", []), _s.get("answers", {}),
+                                 plan_id=st.session_state.get("plan_id"), use_case=uc, path=DB_PATH)
                 except Exception:
                     pass
 
-            with st.spinner("Generating plan… this may take 15–30 seconds."):
+    # ── The one command box ──────────────────────────────────────────────────
+    _placeholder = ("Describe your use case…" if not st.session_state.get("current_plan")
+                    else "Ask for a change, ask a question, or say 'check the new recordings for insights'…")
+    message = st.text_area("Message", key="cmd_box", placeholder=_placeholder, height=90)
+    send = st.button("Send", type="primary", disabled=not message.strip())
+
+    if send and message.strip():
+        engines_ok, engines_err = _load_engines()
+        if not engines_ok:
+            st.error(f"Engine import failed — check your .env and dependencies.\n\n{engines_err}")
+        else:
+            from transcription.engine import TranscriptionEngine
+            from intelligence.designer import WorkflowDesigner
+
+            # 1. Transcribe any NEW uploads (dedup by filename)
+            if uploaded_files:
+                engine = TranscriptionEngine(DB_PATH)
+                for uf in uploaded_files:
+                    if get_transcript_by_filename(client_id, uf.name, path=DB_PATH):
+                        st.info(f"↺ Skipped (already processed): {uf.name}")
+                        continue
+                    tmp_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=Path(uf.name).suffix, delete=False) as tmp:
+                            tmp.write(uf.read())
+                            tmp_path = tmp.name
+                        with st.spinner(f"Transcribing {uf.name}…"):
+                            engine.transcribe(tmp_path, client_id)
+                        st.success(f"Processed {uf.name}")
+                    except Exception as e:
+                        st.error(f"Transcription failed for {uf.name}: {e}")
+                    finally:
+                        if tmp_path:
+                            try:
+                                os.unlink(tmp_path)
+                            except Exception:
+                                pass
+
+            # 2. One conversational turn
+            with st.spinner("Thinking…"):
                 try:
                     designer = WorkflowDesigner(DB_PATH)
-                    plan     = designer.generate_plan(client_id, use_case_text, answers_list)
-                    st.session_state["plan_id"]      = plan.get("plan_id")
-                    st.session_state["current_plan"] = plan
-                    if _db_ready:
-                        try:
-                            save_session(
-                                client_id,
-                                st.session_state["questions"],
-                                st.session_state["answers"],
-                                plan_id=plan.get("plan_id"),
-                                path=DB_PATH,
-                            )
-                        except Exception:
-                            pass
-                    st.success("Plan generated and saved.")
+                    res = designer.converse(client_id, message)
+                    st.session_state["use_case"]     = res["use_case"]
+                    st.session_state["plan_id"]      = res["plan_id"]
+                    st.session_state["current_plan"] = res["plan"]
+                    st.session_state["last_reply"]   = res["reply"]
+                    st.session_state["last_diff"]    = res["diff"]
+                    st.session_state["last_version"] = res["version"]
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Plan generation failed: {e}")
+                    st.error(f"Conversation failed: {e}")
 
-    # Render the current plan if available in session state
-    if st.session_state["current_plan"]:
+    # ── Assistant reply + what-changed ───────────────────────────────────────
+    if st.session_state.get("last_reply"):
+        st.markdown("#### 💬 Assistant")
+        st.info(st.session_state["last_reply"])
+        if st.session_state.get("last_version"):
+            st.caption(f"Plan updated → v{st.session_state['last_version']}")
+        _diff = st.session_state.get("last_diff")
+        if _diff:
+            with st.expander("What changed", expanded=False):
+                for _k, _ch in _diff.items():
+                    _c1, _c2 = st.columns(2)
+                    _c1.markdown(f"**Before — `{_k}`**")
+                    _c1.json(_ch.get("before") or {})
+                    _c2.markdown(f"**After — `{_k}`**")
+                    _c2.json(_ch.get("after") or {})
+
+    # ── Transcripts & insights (read-only visibility) ────────────────────────
+    if _db_ready:
+        try:
+            _db_transcripts = get_transcripts(client_id, path=DB_PATH)
+        except Exception:
+            _db_transcripts = []
+        if _db_transcripts:
+            with st.expander(f"📄 Transcripts & insights ({len(_db_transcripts)})", expanded=False):
+                for _tr in _db_transcripts:
+                    _ins = get_insight_by_transcript(_tr["id"], path=DB_PATH)
+                    _score = _ins.get("agent_score") if _ins else "—"
+                    st.markdown(f"**{_tr['filename']}** · {_tr.get('duration', 0):.0f}s · agent {_score}/10")
+                    if _ins and _ins.get("summary"):
+                        st.caption(_ins["summary"])
+
+    # ── Plan ─────────────────────────────────────────────────────────────────
+    if st.session_state.get("current_plan"):
         _render_plan(st.session_state["current_plan"])
 
-    # ── STEP 5 — Patch loop ───────────────────────────────────────────────────
-    if st.session_state["plan_id"]:
-        st.subheader("Step 5 — Refine the Plan")
+    # ── Version history + rebuild escape hatch ───────────────────────────────
+    if st.session_state.get("plan_id"):
+        if _db_ready:
+            try:
+                _patches = get_patches(st.session_state["plan_id"], path=DB_PATH)
+            except Exception:
+                _patches = []
+            if _patches:
+                with st.expander("📜 Version History", expanded=False):
+                    for _p in _patches:
+                        _v1, _v2, _v3 = st.columns([1, 4, 2])
+                        _v1.markdown(f"**v{_p['version']}**")
+                        _v2.markdown(_p.get("admin_request", ""))
+                        _v3.markdown(_p.get("created_at", "")[:16])
 
-        patch_request = st.text_area(
-            "Request a change…",
-            placeholder=(
-                "e.g. Add a VOICE_WEBHOOK node at the start to fetch lead CRM data "
-                "by @caller_number before the qualification conversation begins."
-            ),
-            height=100,
-            key="patch_request_input",
-        )
-
-        patch_btn = st.button(
-            "🔧 Apply Patch",
-            disabled=not patch_request.strip(),
-        )
-
-        if patch_btn and patch_request.strip():
+        if st.button("🔄 Rebuild plan from scratch"):
             engines_ok, engines_err = _load_engines()
             if not engines_ok:
                 st.error(f"Engine import failed: {engines_err}")
             else:
                 from intelligence.designer import WorkflowDesigner
-
-                with st.spinner("Applying patch…"):
+                with st.spinner("Rebuilding…"):
                     try:
-                        designer     = WorkflowDesigner(DB_PATH)
-                        patch_result = designer.apply_patch(
-                            st.session_state["plan_id"], patch_request
-                        )
-                        # Update session state to reflect patched plan
-                        st.session_state["current_plan"] = patch_result["new_plan"]
-                        st.success(
-                            f"Patch applied — now at version {patch_result['version']}."
-                        )
-
-                        # Show LLM reasoning for the patch
-                        st.info(patch_result.get("reasoning", ""))
-
-                        # Show before/after diff per changed key
-                        diff = patch_result.get("diff", {})
-                        if diff:
-                            st.markdown("**Changes:**")
-                            for key, change in diff.items():
-                                dcol1, dcol2 = st.columns(2)
-                                with dcol1:
-                                    st.markdown(f"**Before — `{key}`**")
-                                    st.json(change.get("before") or {})
-                                with dcol2:
-                                    st.markdown(f"**After — `{key}`**")
-                                    st.json(change.get("after") or {})
-
-                        # Re-render the full updated plan
-                        _render_plan(st.session_state["current_plan"])
-
+                        designer = WorkflowDesigner(DB_PATH)
+                        plan = designer.generate_plan(client_id, st.session_state.get("use_case", ""), [])
+                        st.session_state["plan_id"]      = plan.get("plan_id")
+                        st.session_state["current_plan"] = plan
+                        st.session_state["last_reply"]   = "Rebuilt the plan from scratch from the current use case and insights."
+                        st.session_state["last_diff"]    = None
+                        st.session_state["last_version"] = 1
+                        st.rerun()
                     except Exception as e:
-                        st.error(f"Patch failed: {e}")
-
-        # Version history — all patches for this plan
-        if _db_ready and st.session_state["plan_id"]:
-            try:
-                patches = get_patches(st.session_state["plan_id"], path=DB_PATH)
-            except Exception:
-                patches = []
-
-            if patches:
-                with st.expander("📜 Version History", expanded=False):
-                    for p in patches:
-                        vcol1, vcol2, vcol3 = st.columns([1, 4, 2])
-                        vcol1.markdown(f"**v{p['version']}**")
-                        vcol2.markdown(p.get("admin_request", ""))
-                        vcol3.markdown(p.get("created_at", "")[:16])
+                        st.error(f"Rebuild failed: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
