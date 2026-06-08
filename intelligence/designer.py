@@ -10,7 +10,9 @@ from shared.db import (
     get_insights, get_plan, get_plans, get_patches,
     save_plan, save_patch, update_plan, init_db,
     load_session, save_session, save_turn, get_turns,
+    add_knowledge, get_knowledge,
 )
+from shared.auth import is_admin
 from shared.llm_client import LLMClient
 
 load_dotenv()
@@ -35,6 +37,16 @@ def _canvas_system() -> str:
         "and prompt conventions shown above. Never invent node types or fields that "
         "are not in the reference."
     )
+
+
+def _platform_knowledge_block(db_path: str) -> str:
+    """Render active platform knowledge as a system-prompt section (empty string if none)."""
+    rows = get_knowledge("active", path=db_path)
+    if not rows:
+        return ""
+    lines = "\n".join(f"- [{r['topic']}] {r['fact']}" for r in rows)
+    return ("## Learned Chat360 Platform Knowledge\n"
+            "Apply these platform facts to every design unless the user overrides them.\n" + lines)
 
 
 # ── insight aggregation ───────────────────────────────────────────────────────
@@ -85,7 +97,10 @@ class WorkflowDesigner:
         Returns list of dicts: [{id, question, why}]
         """
         insights = _aggregate_insights(client_id, self._db)
-        system   = _canvas_system()
+        system = [
+            {"text": _canvas_system(), "cache": True},
+            {"text": _platform_knowledge_block(self._db), "cache": True},
+        ]
 
         user = f"""A client wants to build a Chat360 voice bot. Here is their use case:
 
@@ -132,7 +147,10 @@ Return JSON array:
         Returns: plan dict saved to DB; includes plan_id key.
         """
         insights = _aggregate_insights(client_id, self._db)
-        system   = _canvas_system()
+        system = [
+            {"text": _canvas_system(), "cache": True},
+            {"text": _platform_knowledge_block(self._db), "cache": True},
+        ]
 
         qa_text = "\n".join(
             f"Q: {a['question']}\nA: {a['answer']}" for a in answers
@@ -233,7 +251,10 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
         recent   = get_turns(client_id, limit=6, path=self._db)
         recent_text = "\n".join(f"{t['role']}: {t['content']}" for t in recent) or "(none)"
 
-        system = _canvas_system()
+        system = [
+            {"text": _canvas_system(), "cache": True},
+            {"text": _platform_knowledge_block(self._db), "cache": True},
+        ]
         user = f"""You are the conversational architect for a Chat360 voice-bot workflow. Hold a running
 design session with one human via a single text box. Remember the use case; never ask them to retype it.
 
@@ -266,21 +287,41 @@ Decide the intent and respond. Rules:
   build the bot for the languages the user specifies (e.g. keep build_notes.language = Hindi/English).
 - Clarifying questions you need answered go in "reply"; the user answers them in the next message, and you
   fold the answer in then — do not repeat questions already answered in RECENT TURNS.
+- If the user is teaching a DURABLE Chat360 PLATFORM fact (applies to ALL bots, not just this client —
+  e.g. an engine requirement, a how-to-configure rule, a disconnection/latency technique), set
+  intent="teach" and put it in "proposed_knowledge". If you merely NOTICE such a generalizable platform
+  fact during another request, also add it to "proposed_knowledge" (do not change intent for that).
+  Client-specific project details belong in use_case, NOT in proposed_knowledge.
+  Non-admin teach attempts: the platform knowledge store is curated by the Chat360 team; tell the
+  user their suggestion has been flagged for review.
 - Plan keys, when creating/patching, are exactly: workflow_blueprint, system_prompt,
   qualification_questions, objection_handling, escalation_rules, kb_scaffold, build_notes. Ground
   everything in the canvas reference in the system prompt; never invent node types.
 
 Return JSON with exactly these keys:
 {{
-  "intent": "use_case | plan | patch | advice | rescan",
+  "intent": "use_case | plan | patch | advice | rescan | teach",
   "use_case": "the current (possibly updated) use case text",
   "reply": "what to show the user",
   "plan_action": "none | create | patch",
   "full_plan": {{}} or null,
-  "patch": {{}} or null
+  "patch": {{}} or null,
+  "proposed_knowledge": []
 }}"""
 
         result = self._llm.complete_json(system, user, max_tokens=16000)
+
+        # teach / auto-propose: store durable platform facts before continuing
+        _proposed = result.get("proposed_knowledge") or []
+        _intent_raw = result.get("intent", "advice")
+        for _item in _proposed:
+            _topic = (_item.get("topic") or "").strip()
+            _fact  = (_item.get("fact") or "").strip()
+            if not _topic or not _fact:
+                continue
+            _admin  = is_admin(client_id)
+            _status = "active" if (_intent_raw == "teach" and _admin) else "pending"
+            add_knowledge(_topic, _fact, source=client_id, status=_status, path=self._db)
 
         intent       = result.get("intent", "advice")
         new_use_case = result.get("use_case") or use_case or message
@@ -334,7 +375,10 @@ Return JSON with exactly these keys:
 
         current_plan = plan_row["plan"]
         current_version = plan_row["version"]
-        system = _canvas_system()
+        system = [
+            {"text": _canvas_system(), "cache": True},
+            {"text": _platform_knowledge_block(self._db), "cache": True},
+        ]
 
         user = f"""You are patching an existing Chat360 voice bot workflow plan.
 
