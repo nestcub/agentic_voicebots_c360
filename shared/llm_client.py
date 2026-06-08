@@ -38,21 +38,27 @@ class LLMClient:
                 f"Unsupported LLM provider: '{self.provider}'. Supported: 'anthropic'."
             )
 
-    def complete(self, system: str, user: str, max_tokens: int = 4096, cache_system: bool = True) -> str:
+    def complete(self, system, user: str, max_tokens: int = 4096, cache_system: bool = True) -> str:
         """Send system + user prompt; return assistant text as string.
 
-        The large, static system prompt (the Chat360 canvas reference from best_bots.json) is
-        marked with prompt caching so it's billed at full price once, then ~0.1x on every reuse
-        within the cache window — big savings across the questions → plan → patch loop, where the
-        same ~10K-token system prefix repeats. The volatile per-call content lives in `user`, after
-        the cached prefix, so the prefix stays byte-identical and actually caches.
+        system may be:
+          - str: wrapped in a single cached block (as before)
+          - list of {"text": str, "cache": bool}: each block rendered with optional cache_control
+        The large canvas reference (block 1) and platform knowledge (block 2) are both marked
+        cache=True so each warms its own cache breakpoint. Max 4 breakpoints — we use 2.
         """
         if self.provider == "anthropic":
-            if cache_system and system:
+            if isinstance(system, list):
+                system_param = [
+                    {"type": "text", "text": b["text"],
+                     **({"cache_control": {"type": "ephemeral"}} if b.get("cache") else {})}
+                    for b in system if b.get("text")
+                ]
+            elif cache_system and system:
                 system_param = [{
                     "type": "text",
                     "text": system,
-                    "cache_control": {"type": "ephemeral"},  # 5-min TTL; refreshed on each hit
+                    "cache_control": {"type": "ephemeral"},
                 }]
             else:
                 system_param = system
@@ -62,7 +68,7 @@ class LLMClient:
                 system=system_param,
                 messages=[{"role": "user", "content": user}],
             )
-            self.last_usage = getattr(response, "usage", None)  # inspect cache_read_input_tokens
+            self.last_usage = getattr(response, "usage", None)
             return response.content[0].text
         raise NotImplementedError(f"complete() not implemented for '{self.provider}'.")
 
@@ -80,9 +86,18 @@ class LLMClient:
                 return text[start:end + 1]
         return text.strip()
 
-    def complete_json(self, system: str, user: str, max_tokens: int = 4096) -> dict:
-        """Send prompt expecting JSON; parse and return as dict, retrying once on failure."""
-        json_system = system + "\n\nRespond with valid JSON only. No markdown fences, no explanation."
+    def complete_json(self, system, user: str, max_tokens: int = 4096) -> dict:
+        """Send prompt expecting JSON; parse and return as dict, retrying once on failure.
+
+        system may be str or list of {"text": str, "cache": bool} blocks.
+        For list: JSON instruction is appended to the last block's text so the cache
+        boundary on the knowledge block stays intact (suffix is constant → still cacheable).
+        """
+        _JSON_SUFFIX = "\n\nRespond with valid JSON only. No markdown fences, no explanation."
+        if isinstance(system, list):
+            json_system = system[:-1] + [{**system[-1], "text": system[-1]["text"] + _JSON_SUFFIX}]
+        else:
+            json_system = system + _JSON_SUFFIX
         raw = self.complete(json_system, user, max_tokens)
         try:
             return json.loads(self._extract_json(raw))
