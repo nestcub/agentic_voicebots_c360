@@ -38,15 +38,31 @@ class LLMClient:
                 f"Unsupported LLM provider: '{self.provider}'. Supported: 'anthropic'."
             )
 
-    def complete(self, system: str, user: str, max_tokens: int = 4096) -> str:
-        """Send system + user prompt; return assistant text as string."""
+    def complete(self, system: str, user: str, max_tokens: int = 4096, cache_system: bool = True) -> str:
+        """Send system + user prompt; return assistant text as string.
+
+        The large, static system prompt (the Chat360 canvas reference from best_bots.json) is
+        marked with prompt caching so it's billed at full price once, then ~0.1x on every reuse
+        within the cache window — big savings across the questions → plan → patch loop, where the
+        same ~10K-token system prefix repeats. The volatile per-call content lives in `user`, after
+        the cached prefix, so the prefix stays byte-identical and actually caches.
+        """
         if self.provider == "anthropic":
+            if cache_system and system:
+                system_param = [{
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},  # 5-min TTL; refreshed on each hit
+                }]
+            else:
+                system_param = system
             response = self._client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                system=system,
+                system=system_param,
                 messages=[{"role": "user", "content": user}],
             )
+            self.last_usage = getattr(response, "usage", None)  # inspect cache_read_input_tokens
             return response.content[0].text
         raise NotImplementedError(f"complete() not implemented for '{self.provider}'.")
 
