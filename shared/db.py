@@ -73,10 +73,29 @@ def init_db(path: str = DB_PATH) -> None:
             plan_id    TEXT,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS conversation_turns (
+            id         TEXT PRIMARY KEY,
+            client_id  TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            mode       TEXT,
+            created_at TEXT NOT NULL
+        );
     """)
     conn.commit()
     try:
         conn.execute("ALTER TABLE workflow_sessions ADD COLUMN plan_id TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE workflow_sessions ADD COLUMN use_case TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS conversation_turns_client_idx ON conversation_turns(client_id, created_at)")
         conn.commit()
     except Exception:
         pass
@@ -326,13 +345,13 @@ def get_patches(plan_id: str, path: str = DB_PATH) -> list:
 
 # ── Workflow sessions ─────────────────────────────────────────────────────────
 
-def save_session(client_id: str, questions: list, answers: dict, plan_id: str = None, path: str = DB_PATH) -> None:
+def save_session(client_id: str, questions: list, answers: dict, plan_id: str = None, use_case: str = None, path: str = DB_PATH) -> None:
     """Upsert the Q&A session for a client (one row per client_id)."""
     conn = sqlite3.connect(path)
     conn.execute(
         "INSERT OR REPLACE INTO workflow_sessions "
-        "(client_id, questions, answers, plan_id, updated_at) VALUES (?,?,?,?,?)",
-        (client_id, json.dumps(questions), json.dumps(answers), plan_id, _now()),
+        "(client_id, questions, answers, plan_id, use_case, updated_at) VALUES (?,?,?,?,?,?)",
+        (client_id, json.dumps(questions), json.dumps(answers), plan_id, use_case, _now()),
     )
     conn.commit()
     conn.close()
@@ -343,15 +362,61 @@ def load_session(client_id: str, path: str = DB_PATH) -> dict:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     cur.execute(
-        "SELECT questions, answers, plan_id FROM workflow_sessions WHERE client_id=?",
+        "SELECT questions, answers, plan_id, use_case FROM workflow_sessions WHERE client_id=?",
         (client_id,),
     )
     row = cur.fetchone()
     conn.close()
     if row is None:
-        return {"questions": [], "answers": {}, "plan_id": None}
+        return {"questions": [], "answers": {}, "plan_id": None, "use_case": ""}
     return {
         "questions": json.loads(row[0]) if row[0] else [],
         "answers":   json.loads(row[1]) if row[1] else {},
         "plan_id":   row[2],
+        "use_case":  row[3] or "",
     }
+
+
+def get_transcript_by_filename(client_id: str, filename: str, path: str = DB_PATH) -> dict | None:
+    """Return the most recent transcript for (client_id, filename), or None. Deserializes segments."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM transcripts WHERE client_id=? AND filename=? ORDER BY created_at DESC LIMIT 1",
+        (client_id, filename),
+    )
+    row = cur.fetchone()
+    if row is None:
+        conn.close()
+        return None
+    d = _row_to_dict(cur, row)
+    conn.close()
+    if d.get("segments"):
+        d["segments"] = json.loads(d["segments"])
+    return d
+
+
+def save_turn(client_id: str, role: str, content: str, mode: str = None, path: str = DB_PATH) -> str:
+    """Append a conversation turn; returns the row id."""
+    row_id = str(uuid.uuid4())
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO conversation_turns (id, client_id, role, content, mode, created_at) VALUES (?,?,?,?,?,?)",
+        (row_id, client_id, role, content, mode, _now()),
+    )
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_turns(client_id: str, limit: int = None, path: str = DB_PATH) -> list:
+    """Return conversation turns for a client oldest-first; if limit, return the most recent `limit`."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM conversation_turns WHERE client_id=? ORDER BY created_at ASC",
+        (client_id,),
+    )
+    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+    conn.close()
+    return rows[-limit:] if limit else rows
