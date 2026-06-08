@@ -82,6 +82,15 @@ def init_db(path: str = DB_PATH) -> None:
             mode       TEXT,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS platform_knowledge (
+            id         TEXT PRIMARY KEY,
+            topic      TEXT NOT NULL,
+            fact       TEXT NOT NULL,
+            source     TEXT,
+            status     TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL
+        );
     """)
     conn.commit()
     try:
@@ -420,3 +429,49 @@ def get_turns(client_id: str, limit: int = None, path: str = DB_PATH) -> list:
     rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
     conn.close()
     return rows[-limit:] if limit else rows
+
+
+# ── Platform knowledge ────────────────────────────────────────────────────────
+
+def add_knowledge(topic: str, fact: str, source: str = None, status: str = "active", path: str = DB_PATH) -> str:
+    """Insert a platform knowledge row; returns the generated id."""
+    row_id = str(uuid.uuid4())
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO platform_knowledge (id, topic, fact, source, status, created_at) VALUES (?,?,?,?,?,?)",
+        (row_id, topic, fact, source, status, _now()),
+    )
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_knowledge(status: str = "active", path: str = DB_PATH) -> list:
+    """Return platform knowledge rows filtered by status, ordered by created_at ASC.
+    If status is None, return ALL rows (admin panel needs active + pending + archived).
+    """
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    if status is None:
+        cur.execute("SELECT * FROM platform_knowledge ORDER BY created_at ASC")
+    else:
+        cur.execute("SELECT * FROM platform_knowledge WHERE status=? ORDER BY created_at ASC", (status,))
+    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def set_knowledge_status(knowledge_id: str, status: str, path: str = DB_PATH) -> None:
+    """Update the status of a platform knowledge row."""
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE platform_knowledge SET status=? WHERE id=?", (status, knowledge_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_knowledge(knowledge_id: str, path: str = DB_PATH) -> None:
+    """Delete a platform knowledge row by id."""
+    conn = sqlite3.connect(path)
+    conn.execute("DELETE FROM platform_knowledge WHERE id=?", (knowledge_id,))
+    conn.commit()
+    conn.close()
