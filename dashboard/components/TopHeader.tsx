@@ -3,12 +3,18 @@
 import { domainConfig } from "@/lib/domainConfig";
 import { ScopeSwitcher } from "./ScopeSwitcher";
 import { RiSettings3Line } from "react-icons/ri";
+import { useSidebar } from "@/context/SidebarContext";
 
 export function TopHeader() {
+  const { isOpen } = useSidebar();
   const initial = domainConfig.brand?.[0]?.toUpperCase() ?? "A";
 
   return (
-    <header className="fixed top-0 left-56 right-0 h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 z-10">
+    <header
+      className={`fixed top-0 right-0 h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 z-10 transition-all duration-300 ${
+        isOpen ? "left-56" : "left-16"
+      }`}
+    >
       {/* Greeting */}
       <p className="text-base font-semibold text-gray-800">
         Hello, {domainConfig.brand}
