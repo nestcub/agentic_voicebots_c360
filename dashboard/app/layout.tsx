@@ -16,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AccountProvider>
           <Sidebar />
           <TopHeader />
-          <main className="ml-60 mt-16 p-6 min-h-[calc(100vh-4rem)]">{children}</main>
+          <main className="ml-56 mt-16 p-6 min-h-[calc(100vh-4rem)]">{children}</main>
         </AccountProvider>
       </body>
     </html>
