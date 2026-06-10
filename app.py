@@ -24,6 +24,8 @@ st.set_page_config(
 load_dotenv()
 DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")
 
+from shared.auth import is_admin
+
 # Initialise DB; surface warning if env is missing but don't crash
 try:
     from shared.db import (
@@ -33,7 +35,6 @@ try:
         get_transcript_by_filename, get_turns,
         get_knowledge, set_knowledge_status, delete_knowledge, add_knowledge,
     )
-    from shared.auth import is_admin
     init_db(DB_PATH)
     _db_ready = True
 except Exception as _db_err:
@@ -541,13 +542,40 @@ with tab1:
         except Exception:
             _db_transcripts = []
         if _db_transcripts:
-            with st.expander(f"📄 Transcripts & insights ({len(_db_transcripts)})", expanded=False):
-                for _tr in _db_transcripts:
-                    _ins = get_insight_by_transcript(_tr["id"], path=DB_PATH)
-                    _score = _ins.get("agent_score") if _ins else "—"
-                    st.markdown(f"**{_tr['filename']}** · {_tr.get('duration', 0):.0f}s · agent {_score}/10")
-                    if _ins and _ins.get("summary"):
-                        st.caption(_ins["summary"])
+            st.markdown(f"**📄 Transcripts & insights ({len(_db_transcripts)})**")
+            for _tr in _db_transcripts:
+                _ins = get_insight_by_transcript(_tr["id"], path=DB_PATH)
+                _score = _ins.get("agent_score") if _ins else "—"
+                _label = f"{_tr['filename']}  ·  {_tr.get('duration', 0):.0f}s  ·  agent {_score}/10"
+                with st.expander(_label, expanded=False):
+                    # Transcript body — render diarized segments if present, else raw text
+                    _segs = _tr.get("segments") or []
+                    if _segs and isinstance(_segs[0], dict) and "text" in _segs[0]:
+                        _lines = []
+                        for _s in _segs:
+                            _spk = f"Speaker {_s.get('speaker', '?')}"
+                            _txt = _s.get("text", "").strip()
+                            if _txt:
+                                _lines.append(f"**{_spk}:** {_txt}")
+                        st.markdown("\n\n".join(_lines))
+                    else:
+                        st.text(_tr.get("transcript_text", ""))
+                    # Insight summary
+                    if _ins:
+                        st.divider()
+                        _cols = st.columns(3)
+                        _cols[0].metric("Agent score", f"{_ins.get('agent_score', '—')}/10")
+                        _cols[1].metric("Sentiment", _ins.get("sentiment") or "—")
+                        _cols[2].metric("KB gaps", len(_ins.get("kb_gaps") or []))
+                        for _field, _label_f in [
+                            ("objection_patterns", "Objections"),
+                            ("qualification_signals", "Qualification signals"),
+                            ("escalation_signals", "Escalation signals"),
+                            ("kb_gaps", "KB gaps"),
+                        ]:
+                            _items = _ins.get(_field) or []
+                            if _items:
+                                st.caption(f"**{_label_f}:** " + " · ".join(_items))
 
     # ── Plan ─────────────────────────────────────────────────────────────────
     if st.session_state.get("current_plan"):
