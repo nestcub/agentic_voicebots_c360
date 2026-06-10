@@ -1,17 +1,21 @@
 @import "tailwindcss";
 
 @theme {
-  /* Autovista palette — deep automotive teal + signal orange */
-  --color-primary: #0a2540;
-  --color-primary-container: #123a5e;
+  /* Chat360 palette */
+  --color-primary: #2563eb;
+  --color-primary-container: #1d4ed8;
   --color-on-primary: #ffffff;
-  --color-on-primary-container: #9ec5e6;
-  --color-accent: #fe8438;
-  --color-surface: #f7f9fc;
-  --color-surface-container: #eef2f9;
-  --color-on-surface: #0b1c30;
-  --color-on-background: #0b1c30;
-  --color-background: #f7f9fc;
+  --color-on-primary-container: #bfdbfe;
+  --color-sidebar-bg: #1e2a3a;
+  --color-sidebar-active: #2d3e52;
+  --color-accent: #2563eb;
+  --color-surface: #f9fafb;
+  --color-surface-container: #f3f4f6;
+  --color-on-surface: #111827;
+  --color-on-background: #111827;
+  --color-background: #f9fafb;
+  --color-border: #e5e7eb;
+  --color-text-muted: #6b7280;
 
   --color-ok: #16a34a;
   --color-warn: #f59e0b;
@@ -21,8 +25,8 @@
 }
 
 :root {
-  --background: #f7f9fc;
-  --foreground: #0b1c30;
+  --background: #f9fafb;
+  --foreground: #111827;
 }
 
 body {
