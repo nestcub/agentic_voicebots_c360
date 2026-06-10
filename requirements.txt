@@ -1,6 +1,14 @@
 # LLM
 anthropic>=0.40.0
 
+# Database (Postgres + pgvector)
+psycopg[binary,pool]>=3.1
+pgvector>=0.2.5
+
+# Embeddings (provider-agnostic: Gemini default, OpenAI when team key available)
+google-genai>=1.0.0
+openai>=1.40.0
+
 # Transcription
 
 # Streamlit UI
