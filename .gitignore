@@ -15,6 +15,7 @@ dashboard/node_modules/
 dashboard/.next/
 dashboard/out/
 dashboard/.env.local
+*.tsbuildinfo
 
 # Customer data — call recordings (PII audio), bot exports, analytics dumps. Not for git.
 data/
