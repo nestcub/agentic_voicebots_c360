@@ -1,12 +1,12 @@
-"""Transcription engine — Deepgram Nova-3 with speaker diarization and InsightExtractor."""
+"""Transcription engine — Sarvam STT (saaras:v2) with speaker diarization and InsightExtractor."""
 
 import os
-import json
+import wave
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-from deepgram import DeepgramClient
+import httpx
 from dotenv import load_dotenv
 
 from shared.db import init_db, save_transcript, save_insight, update_transcript_text
@@ -15,6 +15,7 @@ from shared.llm_client import LLMClient
 load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")
+SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 
 INSIGHT_SYSTEM = """You are an expert call analyst specialising in Indian voice bot quality assessment.
 Analyse the provided agent-customer call transcript and return a structured JSON object.
@@ -41,14 +42,14 @@ Scoring guide for agent_score:
 
 
 class TranscriptionEngine:
-    """Transcribes audio with Deepgram Nova-3, diarizes speakers, and extracts call insights."""
+    """Transcribes audio with Sarvam STT (saaras:v2), diarizes speakers, and extracts call insights."""
 
     def __init__(self, db_path: str = DB_PATH):
-        """Initialise Deepgram client, LLM client, and ensure DB tables exist."""
-        api_key = os.getenv("DEEPGRAM_API_KEY")
+        """Initialise Sarvam API key, LLM client, and ensure DB tables exist."""
+        api_key = os.getenv("SARVAM_API_KEY")
         if not api_key:
-            raise ValueError("DEEPGRAM_API_KEY is not set in environment.")
-        self._dg = DeepgramClient(api_key=api_key)
+            raise ValueError("SARVAM_API_KEY is not set in environment.")
+        self._api_key = api_key
         self._llm = LLMClient()
         self._db = db_path
         init_db(db_path)
@@ -61,25 +62,29 @@ class TranscriptionEngine:
         audio_path = str(Path(audio_path).resolve())
         filename = Path(audio_path).name
 
-        # ── Deepgram transcription ────────────────────────────────────────────
+        # ── Sarvam STT transcription ──────────────────────────────────────────
+        duration = _get_duration(audio_path)
+
         with open(audio_path, "rb") as f:
-            audio_data = f.read()
+            audio_bytes = f.read()
 
-        response = self._dg.listen.v1.media.transcribe_file(
-            request=audio_data,
-            model="nova-3",
-            language="hi",
-            diarize=True,
-            punctuate=True,
-            utterances=True,
-            smart_format=True,
+        response = httpx.post(
+            SARVAM_STT_URL,
+            headers={"api-subscription-key": self._api_key},
+            files={"file": (filename, audio_bytes, _mime_type(filename))},
+            data={
+                "model": "saaras:v2",
+                "language_code": "hi-IN",
+                "with_timestamps": "true",
+                "with_diarization": "true",
+            },
+            timeout=120.0,
         )
-
-        result = response.results
-        duration = response.metadata.duration if response.metadata else 0.0
+        response.raise_for_status()
+        result = response.json()
 
         # ── Build speaker-labeled segments ───────────────────────────────────
-        segments = _build_segments(result)
+        segments = _build_segments(result, duration)
 
         # ── Full transcript text ──────────────────────────────────────────────
         transcript_text = "\n".join(
@@ -156,38 +161,21 @@ class TranscriptionEngine:
 
 def _mime_type(filename: str) -> str:
     """Return MIME type based on audio file extension."""
-    ext = Path(filename).suffix.lower()
+    ext = Path(filename).suffix.lower().lstrip(".")
     return {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac"}.get(
-        ext.lstrip("."), "audio/wav"
+        ext, "audio/wav"
     )
 
 
-def _build_segments(result) -> list:
-    """Convert Deepgram utterances into speaker-labeled segment dicts."""
-    segments = []
-    speaker_order = []
-
-    utterances = getattr(result, "utterances", None) or []
-    for utt in utterances:
-        speaker_id = f"SPEAKER_{utt.speaker:02d}"
-        if speaker_id not in speaker_order:
-            speaker_order.append(speaker_id)
-        segments.append(
-            {
-                "speaker": speaker_id,
-                "role": _assign_role(speaker_id, speaker_order),
-                "start": round(utt.start, 2),
-                "end": round(utt.end, 2),
-                "text": utt.transcript.strip(),
-                "confidence": round(utt.confidence, 3) if utt.confidence else None,
-            }
-        )
-
-    # Fallback to words if no utterances
-    if not segments:
-        segments = _segments_from_words(result, speaker_order)
-
-    return segments
+def _get_duration(audio_path: str) -> float:
+    """Return audio duration in seconds. Supports WAV natively; returns 0.0 for other formats."""
+    try:
+        if audio_path.lower().endswith(".wav"):
+            with wave.open(audio_path, "rb") as wf:
+                return round(wf.getnframes() / wf.getframerate(), 2)
+    except Exception:
+        pass
+    return 0.0
 
 
 def _assign_role(speaker_id: str, speaker_order: list) -> str:
@@ -197,38 +185,44 @@ def _assign_role(speaker_id: str, speaker_order: list) -> str:
     return speaker_id  # 3+ speakers — keep raw labels
 
 
-def _segments_from_words(result, speaker_order: list) -> list:
-    """Build segments from word-level diarization when utterances are unavailable."""
-    words = []
+def _build_segments(result: dict, duration: float) -> list:
+    """Convert Sarvam diarized_transcript entries into speaker-labeled segment dicts.
+
+    Falls back to a single AGENT block if diarization is absent from the response.
+    """
+    entries = []
     try:
-        words = result.channels[0].alternatives[0].words or []
-    except (AttributeError, IndexError):
-        return []
+        entries = result.get("diarized_transcript", {}).get("entries", []) or []
+    except Exception:
+        pass
 
-    segments, current_speaker, current_words = [], None, []
-    for w in words:
-        spk = f"SPEAKER_{w.speaker:02d}" if hasattr(w, "speaker") else "SPEAKER_00"
-        if spk not in speaker_order:
-            speaker_order.append(spk)
-        if spk != current_speaker:
-            if current_words:
-                segments.append(_make_segment(current_speaker, current_words, speaker_order))
-            current_speaker, current_words = spk, [w]
-        else:
-            current_words.append(w)
-    if current_words:
-        segments.append(_make_segment(current_speaker, current_words, speaker_order))
-    return segments
+    if entries:
+        speaker_order: list = []
+        segments = []
+        for entry in entries:
+            speaker_id = f"SPEAKER_{int(entry.get('speaker_id', 0)):02d}"
+            if speaker_id not in speaker_order:
+                speaker_order.append(speaker_id)
+            segments.append(
+                {
+                    "speaker": speaker_id,
+                    "role": _assign_role(speaker_id, speaker_order),
+                    "start": round(float(entry.get("start", 0.0)), 2),
+                    "end": round(float(entry.get("end", 0.0)), 2),
+                    "text": str(entry.get("transcript", "")).strip(),
+                    "confidence": None,
+                }
+            )
+        return segments
 
-
-def _make_segment(speaker_id: str, words: list, speaker_order: list) -> dict:
-    """Build a single segment dict from a list of word objects."""
-    text = " ".join(getattr(w, "punctuated_word", w.word) for w in words)
-    return {
-        "speaker": speaker_id,
-        "role": _assign_role(speaker_id, speaker_order),
-        "start": round(words[0].start, 2),
-        "end": round(words[-1].end, 2),
-        "text": text.strip(),
-        "confidence": None,
-    }
+    # No diarization — single block with full transcript
+    return [
+        {
+            "speaker": "SPEAKER_00",
+            "role": "AGENT",
+            "start": 0.0,
+            "end": duration,
+            "text": str(result.get("transcript", "")).strip(),
+            "confidence": None,
+        }
+    ]
