@@ -2,7 +2,6 @@
 anthropic>=0.40.0
 
 # Transcription
-deepgram-sdk>=7.0.0
 
 # Streamlit UI
 streamlit>=1.35.0
