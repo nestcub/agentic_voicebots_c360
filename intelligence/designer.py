@@ -10,10 +10,11 @@ from shared.db import (
     get_insights, get_plan, get_plans, get_patches,
     save_plan, save_patch, update_plan, init_db,
     load_session, save_session, save_turn, get_turns,
-    add_knowledge, get_knowledge,
+    add_knowledge, get_knowledge, search_bot_examples,
 )
 from shared.auth import is_admin
 from shared.llm_client import LLMClient
+from shared.embeddings import embed
 
 load_dotenv()
 
@@ -24,14 +25,19 @@ BOTS_PATH = Path(__file__).parent / "data" / "best_bots.json"
 # ── system prompt builder ─────────────────────────────────────────────────────
 
 def _canvas_system() -> str:
-    """Load best_bots.json and return the Chat360 canvas system prompt."""
+    """Load best_bots.json structural reference (grammar + benchmarks) for the cached system block.
+    Pattern examples (specialist, intent, conditional) are retrieved via RAG at query time.
+    """
     with open(BOTS_PATH, encoding="utf-8") as f:
         bots = json.load(f)
+    structural = {
+        k: bots[k] for k in ("canvas_grammar", "performance_benchmarks") if k in bots
+    }
     return (
         "You are an expert Chat360 voice bot architect. "
         "You design production-grade voice bot workflows that run on the Chat360 canvas.\n\n"
         "## Chat360 Canvas Reference\n\n"
-        + json.dumps(bots, ensure_ascii=False)
+        + json.dumps(structural, ensure_ascii=False)
         + "\n\n"
         "Always ground your output in the node types, field schemas, routing patterns, "
         "and prompt conventions shown above. Never invent node types or fields that "
@@ -47,6 +53,28 @@ def _platform_knowledge_block(db_path: str) -> str:
     lines = "\n".join(f"- [{r['topic']}] {r['fact']}" for r in rows)
     return ("## Learned Chat360 Platform Knowledge\n"
             "Apply these platform facts to every design unless the user overrides them.\n" + lines)
+
+
+def _retrieve_examples(query_text: str, k: int = 5) -> str:
+    """Embed query_text and retrieve top-K relevant bot examples from the RAG corpus.
+    Returns a formatted string ready to inject into the user prompt.
+    Returns empty string if corpus is empty or embedding fails.
+    """
+    try:
+        vec = embed(query_text)
+        examples = search_bot_examples(vec, k=k)
+        if not examples:
+            return ""
+        lines = ["## Relevant proven bot examples (retrieved for this use case)\n"]
+        for ex in examples:
+            score = ex.get("score", 0)
+            lines.append(f"### {ex['name']} ({ex['unit_type']}, similarity {score:.2f})")
+            lines.append(f"Use case: {ex['use_case']}")
+            lines.append(json.dumps(ex["content"], ensure_ascii=False, indent=2))
+            lines.append("")
+        return "\n".join(lines)
+    except Exception:
+        return ""  # RAG is additive — never break generation if corpus is empty or DB unset
 
 
 # ── insight aggregation ───────────────────────────────────────────────────────
@@ -156,6 +184,9 @@ Return JSON array:
             f"Q: {a['question']}\nA: {a['answer']}" for a in answers
         )
 
+        _rag_query = f"{use_case_text}\n{qa_text}"
+        _rag_examples = _retrieve_examples(_rag_query)
+
         user = f"""Design a production-grade Chat360 voice bot workflow plan.
 
 <use_case>
@@ -169,6 +200,10 @@ Return JSON array:
 <clarifying_answers>
 {qa_text}
 </clarifying_answers>
+
+<retrieved_examples>
+{_rag_examples}
+</retrieved_examples>
 
 Return a single JSON object with exactly these keys:
 
@@ -255,6 +290,10 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
             {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
+
+        _rag_query = f"{use_case or message}\n{message}"
+        _rag_examples = _retrieve_examples(_rag_query)
+
         user = f"""You are the conversational architect for a Chat360 voice-bot workflow. Hold a running
 design session with one human via a single text box. Remember the use case; never ask them to retype it.
 
@@ -263,6 +302,8 @@ REMEMBERED USE CASE:
 
 CALL INSIGHTS (aggregated from all their real agent recordings):
 {json.dumps(insights, ensure_ascii=False, indent=2)}
+
+{_rag_examples}
 
 CURRENT PLAN:
 {json.dumps(current_plan, ensure_ascii=False, indent=2) if current_plan else "(no plan yet)"}
