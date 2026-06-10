@@ -1,0 +1,16 @@
+Name,Phone,Vehicle Model,Service Due Date,Region,Branch,Lead Type,Lead Sub Type
+Arjun Sharma,9820012345,Maruti Swift,2026-07-15,Mumbai,Andheri West,service,
+Priya Mehta,9920034567,Hyundai Creta,2026-08-01,Mumbai,Bandra,sales,new_vehicle
+Rohit Verma,9867012345,Toyota Innova,2026-07-20,Pune,Kothrud,service,
+Sneha Patil,9823456789,Honda City,2026-09-10,Mumbai,Thane,sales,used_vehicle
+Amit Joshi,9765432100,Maruti Baleno,,Delhi,Connaught Place,insurance,
+Kavya Nair,9745678901,Tata Nexon,2026-07-28,Bangalore,Koramangala,service,
+Vikram Singh,9632587410,Hyundai Verna,,Mumbai,Powai,sales,new_vehicle
+Deepika Rao,9814523670,Honda Amaze,2026-08-15,Pune,Wakad,service,
+Kiran Kumar,9978901234,Maruti Dzire,2026-07-10,Bangalore,Whitefield,service,
+Pooja Gupta,9871234560,Tata Altroz,,Delhi,Dwarka,sales,new_vehicle
+Rajesh Iyer,9945678230,Toyota Fortuner,2026-08-20,Mumbai,Worli,insurance,
+Anita Desai,9823456100,Maruti Ertiga,2026-09-05,Pune,Baner,service,
+Suresh Pillai,9867543210,Hyundai Tucson,,Bangalore,Indiranagar,sales,used_vehicle
+Meena Krishnan,9945012678,Honda WRV,2026-07-30,Chennai,Anna Nagar,service,
+Nikhil Agarwal,9712345890,Maruti Vitara Brezza,,Delhi,Saket,sales,new_vehicle
