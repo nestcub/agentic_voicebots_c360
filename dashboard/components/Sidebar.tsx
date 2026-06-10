@@ -9,19 +9,21 @@ import {
   RiUserLine,
   RiRefreshLine,
   RiBarChart2Line,
+  RiRocketLine,
+  RiPlugLine,
   RiCrosshair2Line,
-  RiBrainLine,
   RiMenuFoldLine,
   RiMenuUnfoldLine,
 } from "react-icons/ri";
 
 const NAV = [
-  { href: "/",              label: "Dashboard",    Icon: RiHome5Line },
-  { href: "/leads",         label: "Leads",        Icon: RiUserLine },
-  { href: "/follow-ups",    label: "Follow-ups",   Icon: RiRefreshLine },
-  { href: "/analytics",     label: "Analytics",    Icon: RiBarChart2Line },
-  { href: "/goal-target",   label: "Goal & Target", Icon: RiCrosshair2Line },
-  { href: "/intelligence",  label: "Intelligence", Icon: RiBrainLine },
+  { href: "/",            label: "Dashboard",    Icon: RiHome5Line },
+  { href: "/leads",       label: "Leads",         Icon: RiUserLine },
+  { href: "/follow-ups",  label: "Follow-ups",    Icon: RiRefreshLine },
+  { href: "/analytics",            label: "Analytics",    Icon: RiBarChart2Line },
+  { href: "/orchestrator",         label: "Orchestrator", Icon: RiRocketLine },
+  { href: "/settings/integrations", label: "Integrations", Icon: RiPlugLine },
+  { href: "/goal-target",          label: "Goal & Target", Icon: RiCrosshair2Line },
 ];
 
 export function Sidebar() {
@@ -58,7 +60,7 @@ export function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-hidden">
         {NAV.map(({ href, label, Icon }) => {
-          const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+          const active = pathname === href;
           return (
             <Link
               key={href}
