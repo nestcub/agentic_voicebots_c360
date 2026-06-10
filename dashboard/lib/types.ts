@@ -126,3 +126,60 @@ export interface Report {
   outcomes_over_time: TimePoint[];
   goal_attainment: number; // booked / target.close, 0..1+
 }
+
+// ── Campaign & Orchestrator types ──────────────────────────────────────────
+
+export interface Campaign {
+  id: string;
+  account_id: string;
+  name: string;
+  source: "xlsx" | "lms" | "zoho" | "hubspot";
+  total_leads: number;
+  qualified_leads: number;
+  status:
+    | "uploading"
+    | "qualifying"
+    | "pending_approval"
+    | "scheduled"
+    | "dispatching"
+    | "done"
+    | "cancelled";
+  created_at: string;
+}
+
+export interface DispatchRecommendation {
+  id: string;
+  account_id: string;
+  campaign_id: string;
+  campaign_name: string;
+  qualified_count: number;
+  estimated_call_minutes: number;
+  dids_available: number;
+  status:
+    | "pending_approval"
+    | "scheduled"
+    | "approved"
+    | "dispatching"
+    | "done"
+    | "cancelled";
+  scheduled_at: string | null;
+  approved_at: string | null;
+  recommendation_summary: string;
+  created_at: string;
+}
+
+export interface ConnectorConfig {
+  id: string;
+  crm_type: "lms" | "zoho" | "hubspot" | "xlsx";
+  status: "active" | "error" | "not_configured";
+  display_name: string;
+  last_synced_at: string | null;
+}
+
+export interface UploadResult {
+  campaign_id: string;
+  campaign_name: string;
+  total_leads: number;
+  preview_leads: Lead[];
+  errors: string[];
+}
