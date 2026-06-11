@@ -1,4 +1,4 @@
-"""Provider-agnostic embedding module. Default: Gemini text-embedding-004 (768 dims).
+"""Provider-agnostic embedding module. Default: Gemini gemini-embedding-001 (768 dims via output_dimensionality).
 To switch to OpenAI: set EMBEDDING_PROVIDER=openai, EMBEDDING_MODEL=text-embedding-3-small, EMBEDDING_DIM=1536.
 """
 
@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").lower()
-_MODEL    = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+_MODEL    = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
 _DIM      = int(os.getenv("EMBEDDING_DIM", "768"))
 
 _client = None
@@ -32,7 +32,11 @@ def embed(text: str) -> list[float]:
     """Embed a single text string. Returns a list of floats of length EMBEDDING_DIM."""
     client = _get_client()
     if _PROVIDER == "gemini":
-        result = client.models.embed_content(model=_MODEL, contents=text)
+        from google.genai import types
+        result = client.models.embed_content(
+            model=_MODEL, contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=_DIM),
+        )
         vec = result.embeddings[0].values
     elif _PROVIDER == "openai":
         result = client.embeddings.create(model=_MODEL, input=text)
@@ -47,8 +51,9 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
         return []
     client = _get_client()
     if _PROVIDER == "gemini":
-        # Gemini embed_content accepts a list in contents
-        result = client.models.embed_content(model=_MODEL, contents=texts)
+        from google.genai import types
+        cfg = types.EmbedContentConfig(output_dimensionality=_DIM)
+        result = client.models.embed_content(model=_MODEL, contents=texts, config=cfg)
         vecs = [e.values for e in result.embeddings]
     elif _PROVIDER == "openai":
         result = client.embeddings.create(model=_MODEL, input=texts)

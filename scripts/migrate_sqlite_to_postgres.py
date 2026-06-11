@@ -58,8 +58,13 @@ JSON_FIELDS = {
     "conversation_turns": [],
 }
 
+# Primary-key column per table (for ON CONFLICT). workflow_sessions keys on client_id.
+CONFLICT_KEYS = {
+    "workflow_sessions": "client_id",
+}
 
-def migrate_table(pool, table: str, sqlite_rows: list[dict], json_fields: list[str]) -> int:
+
+def migrate_table(pool, table: str, sqlite_rows: list[dict], json_fields: list[str], conflict_key: str = "id") -> int:
     """INSERT rows from SQLite into Postgres. Returns count inserted."""
     if not sqlite_rows:
         print(f"  {table}: 0 rows (empty or missing in SQLite)")
@@ -68,26 +73,28 @@ def migrate_table(pool, table: str, sqlite_rows: list[dict], json_fields: list[s
     from psycopg.types.json import Jsonb
 
     inserted = 0
-    with pool.connection() as conn:
-        for row in sqlite_rows:
-            # Parse TEXT-JSON fields into Python objects, then wrap as Jsonb
-            for field in json_fields:
-                if field in row:
-                    row[field] = Jsonb(_parse_json_field(row[field]))
+    for row in sqlite_rows:
+        # Parse TEXT-JSON fields into Python objects, then wrap as Jsonb
+        for field in json_fields:
+            if field in row:
+                row[field] = Jsonb(_parse_json_field(row[field]))
 
-            cols = list(row.keys())
-            placeholders = ", ".join(["%s"] * len(cols))
-            col_names = ", ".join(cols)
-            values = [row[c] for c in cols]
+        cols = list(row.keys())
+        placeholders = ", ".join(["%s"] * len(cols))
+        col_names = ", ".join(cols)
+        values = [row[c] for c in cols]
 
-            try:
+        # One connection (transaction) per row so a single failure can't abort the rest
+        try:
+            with pool.connection() as conn:
                 conn.execute(
-                    f"INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING",
+                    f"INSERT INTO {table} ({col_names}) VALUES ({placeholders}) "
+                    f"ON CONFLICT ({conflict_key}) DO NOTHING",
                     values,
                 )
-                inserted += 1
-            except Exception as e:
-                print(f"  Warning: skipped row in {table}: {e}")
+            inserted += 1
+        except Exception as e:
+            print(f"  Warning: skipped row in {table}: {e}")
 
     print(f"  {table}: {inserted}/{len(sqlite_rows)} rows migrated")
     return inserted
@@ -140,7 +147,8 @@ def main():
     totals = {}
     for table, json_fields in JSON_FIELDS.items():
         rows = _sqlite_rows(sqlite_path, table)
-        totals[table] = migrate_table(pool, table, rows, json_fields)
+        totals[table] = migrate_table(pool, table, rows, json_fields,
+                                      conflict_key=CONFLICT_KEYS.get(table, "id"))
 
     print()
 
@@ -161,6 +169,9 @@ def main():
     for table, count in totals.items():
         print(f"  {table:30s} {count:>6}")
     print("=" * 50)
+
+    # Close the pool cleanly to avoid noisy shutdown warnings on Python 3.14
+    pool.close()
 
 
 if __name__ == "__main__":
