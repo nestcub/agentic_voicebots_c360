@@ -15,6 +15,7 @@ load_dotenv()
 BOTS_PATH = Path(__file__).parent.parent / "intelligence" / "data" / "best_bots.json"
 
 LIST_KEYS = [
+    "bot_examples",                     # the 5 full production bots (richest RAG units)
     "adani_specialist_patterns",
     "adani_intent_routing_examples",
     "adani_conditional_examples",
@@ -27,7 +28,7 @@ SINGLETON_KEYS = [
     "adani_language_preference_example",
 ]
 
-SKIP_KEYS = {"canvas_grammar", "performance_benchmarks", "bot_examples"}
+SKIP_KEYS = {"canvas_grammar", "performance_benchmarks"}
 
 
 def _unit_text(unit_type: str, name: str, use_case: str, content: dict) -> str:
