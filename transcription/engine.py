@@ -9,8 +9,10 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from shared.db import init_db, save_transcript, save_insight, update_transcript_text
+from shared.db import init_db, save_transcript, save_insight, update_transcript_text, add_transcript_chunk, delete_transcript_chunks
 from shared.llm_client import LLMClient
+from shared.chunking import chunk_segments
+from shared.embeddings import embed_batch
 
 load_dotenv()
 
@@ -103,6 +105,9 @@ class TranscriptionEngine:
             path=self._db,
         )
 
+        # ── Index chunks for RAG ──────────────────────────────────────────────
+        self._index_chunks(transcript_id, client_id, segments)
+
         # ── Extract insights via LLM ──────────────────────────────────────────
         insight_data = self._extract_insights(transcript_id, client_id, transcript_text)
 
@@ -115,6 +120,18 @@ class TranscriptionEngine:
             "insights": insight_data,
         }
 
+    def _index_chunks(self, transcript_id, client_id, segments):
+        try:
+            chunks = chunk_segments(segments)
+            if not chunks:
+                return
+            vecs = embed_batch([c["text"] for c in chunks])
+            for c, v in zip(chunks, vecs):
+                add_transcript_chunk(transcript_id, client_id, c["chunk_index"],
+                                     c["role_sequence"], c["start"], c["end"], c["text"], v)
+        except Exception as e:
+            print(f"[chunk-index] failed for transcript {transcript_id}: {e}", flush=True)
+
     def rerun_insights(self, transcript_id: str, client_id: str, edited_text: str) -> dict:
         """Save edited transcript text and append a fresh insight row.
 
@@ -122,6 +139,8 @@ class TranscriptionEngine:
         Returns the new insight dict.
         """
         update_transcript_text(transcript_id, edited_text, path=self._db)
+        delete_transcript_chunks(transcript_id)
+        # TODO: re-chunk needs segments; only deleting stale chunks here
         return self._extract_insights(transcript_id, client_id, edited_text)
 
     def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str) -> dict:
