@@ -120,12 +120,28 @@ def init_db(path: str = DB_PATH) -> None:
             embedding  vector({dim}),
             created_at TEXT NOT NULL
         )""",
+        f"""CREATE TABLE IF NOT EXISTS transcript_chunks (
+            id            TEXT PRIMARY KEY,
+            transcript_id TEXT NOT NULL,
+            client_id     TEXT NOT NULL,
+            chunk_index   INTEGER NOT NULL,
+            role_sequence TEXT,
+            start_sec     REAL,
+            end_sec       REAL,
+            text          TEXT NOT NULL,
+            embedding     vector({dim}),
+            created_at    TEXT NOT NULL
+        )""",
         """CREATE INDEX IF NOT EXISTS conversation_turns_client_idx
             ON conversation_turns(client_id, created_at)""",
         """CREATE INDEX IF NOT EXISTS bot_examples_embedding_idx
             ON bot_examples USING hnsw (embedding vector_cosine_ops)""",
         """CREATE INDEX IF NOT EXISTS platform_knowledge_embedding_idx
             ON platform_knowledge USING hnsw (embedding vector_cosine_ops)""",
+        """CREATE INDEX IF NOT EXISTS transcript_chunks_client_idx
+            ON transcript_chunks(client_id)""",
+        """CREATE INDEX IF NOT EXISTS transcript_chunks_embedding_idx
+            ON transcript_chunks USING hnsw (embedding vector_cosine_ops)""",
     ]
     with _get_pool().connection() as conn:
         for stmt in ddl_statements:
@@ -450,3 +466,38 @@ def search_knowledge(embedding: list, k: int = 5) -> list[dict]:
             (embedding, embedding, k),
         ).fetchall()
     return list(rows)
+
+
+# ── Transcript chunks (RAG) ───────────────────────────────────────────────────
+
+def add_transcript_chunk(transcript_id: str, client_id: str, chunk_index: int,
+                         role_sequence: str, start_sec: float, end_sec: float,
+                         text: str, embedding: list) -> str:
+    row_id = str(uuid.uuid4())
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """INSERT INTO transcript_chunks
+               (id,transcript_id,client_id,chunk_index,role_sequence,start_sec,end_sec,text,embedding,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (row_id, transcript_id, client_id, chunk_index, role_sequence,
+             start_sec, end_sec, text, embedding, _now()),
+        )
+    return row_id
+
+
+def search_transcript_chunks(embedding: list, client_id: str, k: int = 5) -> list[dict]:
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            """SELECT *, 1 - (embedding <=> %s::vector) AS score
+               FROM transcript_chunks
+               WHERE client_id=%s AND embedding IS NOT NULL
+               ORDER BY embedding <=> %s::vector
+               LIMIT %s""",
+            (embedding, client_id, embedding, k),
+        ).fetchall()
+    return list(rows)
+
+
+def delete_transcript_chunks(transcript_id: str) -> None:
+    with _get_pool().connection() as conn:
+        conn.execute("DELETE FROM transcript_chunks WHERE transcript_id=%s", (transcript_id,))
