@@ -11,6 +11,7 @@ from shared.db import (
     save_plan, save_patch, update_plan, init_db,
     load_session, save_session, save_turn, get_turns,
     add_knowledge, get_knowledge, search_bot_examples,
+    search_transcript_chunks,
 )
 from shared.auth import is_admin
 from shared.llm_client import LLMClient
@@ -75,6 +76,25 @@ def _retrieve_examples(query_text: str, k: int = 5) -> str:
         return "\n".join(lines)
     except Exception:
         return ""  # RAG is additive — never break generation if corpus is empty or DB unset
+
+
+def _retrieve_call_evidence(client_id: str, query_text: str, k: int = 5) -> str:
+    """Retrieve top-K verbatim call moments for THIS client, grounded quotes for the prompt."""
+    try:
+        vec = embed(query_text)
+        hits = search_transcript_chunks(vec, client_id, k=k)
+        if not hits:
+            return ""
+        lines = ["## Relevant call evidence (verbatim moments from this client's recordings)\n"]
+        for h in hits:
+            ts = f"{h.get('start_sec', 0):.0f}s" if h.get('start_sec') is not None else ""
+            lines.append(f"### {h.get('role_sequence','')} {ts} (similarity {h.get('score',0):.2f})")
+            lines.append(h["text"])
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"[call-evidence] retrieval failed for {client_id}: {e}", flush=True)
+        return ""
 
 
 # ── insight aggregation ───────────────────────────────────────────────────────
@@ -186,6 +206,7 @@ Return JSON array:
 
         _rag_query = f"{use_case_text}\n{qa_text}"
         _rag_examples = _retrieve_examples(_rag_query)
+        _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
         user = f"""Design a production-grade Chat360 voice bot workflow plan.
 
@@ -196,6 +217,10 @@ Return JSON array:
 <call_insights>
 {json.dumps(insights, ensure_ascii=False, indent=2)}
 </call_insights>
+
+<call_evidence>
+{_call_evidence}
+</call_evidence>
 
 <clarifying_answers>
 {qa_text}
@@ -293,6 +318,7 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
 
         _rag_query = f"{use_case or message}\n{message}"
         _rag_examples = _retrieve_examples(_rag_query)
+        _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
         user = f"""You are the conversational architect for a Chat360 voice-bot workflow. Hold a running
 design session with one human via a single text box. Remember the use case; never ask them to retype it.
@@ -302,6 +328,10 @@ REMEMBERED USE CASE:
 
 CALL INSIGHTS (aggregated from all their real agent recordings):
 {json.dumps(insights, ensure_ascii=False, indent=2)}
+
+<call_evidence>
+{_call_evidence}
+</call_evidence>
 
 {_rag_examples}
 
