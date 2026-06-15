@@ -1,6 +1,7 @@
 # Chat360 Intelligence Fabric
 
-An AI system that **designs production-grade Chat360 voice bots** from real call recordings, and an
+An AI system that **designs production-grade Chat360 voice bots** — trained on the best production bots,
+real agent/customer call transcripts, and a continuous feedback loop from deployed bot transcripts — and an
 **orchestrator** that runs the resulting outbound operation — dispatching calls, guaranteeing follow-ups,
 and adapting to goal changes — with a live **dashboard** for visibility.
 
@@ -97,6 +98,47 @@ No SQLite, no Supabase.
                     │  pgvector HNSW indexes          │
                     └────────────────────────────────┘
 ```
+
+---
+
+## What the LLM Gathers to Generate a Plan
+
+Every plan or patch call assembles a two-part prompt. The **system prompt** is stable across calls and
+benefits from Anthropic's prompt caching (~90% cheaper on repeats). The **user prompt** is built fresh
+from live data on every call.
+
+```
+SYSTEM PROMPT  (cached — stable across calls, ~90% cheaper on repeats)
+ ├─ 1. Canvas grammar + performance_benchmarks      ← best_bots.json structural keys
+ └─ 2. ALL active platform knowledge (dumped)       ← platform_knowledge table
+        • 8 always-on rules: latency, async tools, initial message, voice,
+          Endtool ending, system-prompt importance, AI-Hub intents, filler words
+        • "Reference-bot known pitfalls (must fix)" ← distilled from Adani transcripts
+
+USER PROMPT  (built fresh every call)
+ ├─ 3. Use case (remembered)                        ← workflow_sessions
+ ├─ 4. Aggregated call insights (dedup summary)     ← insights table (dumped)
+ ├─ 5. Top-K bot examples (RAG vector search)       ← bot_examples
+ │       • 5 compact bots + Adani patterns
+ │       • + reference_system_prompt, reference_intent  ← ingested from Adani SP/intents
+ ├─ 6. Top-K call evidence — verbatim quotes (RAG)  ← transcript_chunks (this client only)
+ ├─ 7. Current plan + recent conversation turns     ← plans + conversation_turns
+ └─ 8. The user's message / answers
+```
+
+**What feeds the corpus (training signal for the intelligence):**
+
+| Source | What it contributes | How it enters |
+|---|---|---|
+| `intelligence/data/best_bots.json` | Canvas grammar, node types, performance benchmarks — structural skeleton every plan must follow | Seeded at init via `seed_bot_examples.py`, always in system prompt |
+| `data/system_prompts/` + `data/intents_description.jsons/` | Reference system-prompt structure and intent depth from proven production bots (Adani) | One-time: `scripts/ingest_reference_prompts.py` → `bot_examples` RAG |
+| `data/bot_transcripts/` + `data/analytics_jsons/` | Real failure modes from reference bot transcripts — airport loops, language persistence bugs, intent carryover gaps | One-time: `scripts/distill_reference_failures.py` → `platform_knowledge` |
+| Own bot call recordings (audio) | Real call moments: objections, qualification signals, KB gaps, bot failure modes | Auto at every `/transcribe` → `transcript_chunks` + `insights` |
+| Admin teaches via `/knowledge` API | Domain-specific rules, corrections, client-specific constraints | `/POST /knowledge` → `platform_knowledge` (status=active) |
+
+This layered approach means the LLM always has structural correctness (grammar + rules), reference quality
+(how a good system prompt looks), real evidence (verbatim quotes from actual calls), and client-specific
+context (what has failed on this bot, what customers actually say) — all at once.
 
 ---
 
