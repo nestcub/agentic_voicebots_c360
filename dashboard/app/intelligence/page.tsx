@@ -3,13 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, CardHeader } from "@/components/Card";
-import { RiMicLine, RiChat3Line, RiFileListLine, RiBookOpenLine } from "react-icons/ri";
+import { RiMicLine, RiHammerLine, RiBookOpenLine } from "react-icons/ri";
 
 const SECTIONS = [
-  { href: "/intelligence/transcribe", label: "Transcribe",      Icon: RiMicLine,      desc: "Upload call recordings and extract insights" },
-  { href: "/intelligence/design",     label: "Design",          Icon: RiChat3Line,    desc: "Conversational workflow builder" },
-  { href: "/intelligence/plans",      label: "Plans",           Icon: RiFileListLine, desc: "Browse and version workflow plans" },
-  { href: "/intelligence/knowledge",  label: "Knowledge",       Icon: RiBookOpenLine, desc: "Manage platform knowledge facts" },
+  { href: "/intelligence/transcribe", label: "Transcribe", Icon: RiMicLine,      desc: "Upload call recordings and extract insights" },
+  { href: "/intelligence/build",      label: "Build",      Icon: RiHammerLine,   desc: "Conversational workflow designer and plan manager" },
+  { href: "/intelligence/knowledge",  label: "Knowledge",  Icon: RiBookOpenLine, desc: "Manage platform knowledge facts" },
 ];
 
 export default function IntelligencePage() {
@@ -56,7 +55,7 @@ export default function IntelligencePage() {
       </Card>
 
       {/* Quick nav */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {SECTIONS.map(({ href, label, Icon, desc }) => (
           <Link key={href} href={href}>
             <Card className="p-5 hover:shadow-md transition-shadow cursor-pointer h-full">
@@ -94,7 +93,7 @@ export default function IntelligencePage() {
               <p className="px-5 py-6 text-sm text-gray-400">No plans yet.</p>
             )}
             {plans.map((p) => (
-              <Link key={p.id} href={`/intelligence/plans?id=${p.id}`} className="flex items-center justify-between px-5 py-3 hover:bg-gray-50">
+              <Link key={p.id} href="/intelligence/build" className="flex items-center justify-between px-5 py-3 hover:bg-gray-50">
                 <div>
                   <p className="text-sm font-medium text-gray-800">v{p.version} plan</p>
                   <p className="text-xs text-gray-400">{p.updated_at?.slice(0, 10) ?? p.created_at?.slice(0, 10)}</p>
