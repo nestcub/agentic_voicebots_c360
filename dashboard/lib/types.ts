@@ -1,5 +1,5 @@
 // Shared typed contracts — mirror the orchestrator's normalized output (orchestrator/models.py).
-// The dashboard renders these, not raw Supabase rows, so the same UI works over any CRM the
+// The dashboard renders these, not raw backend rows, so the same UI works over any CRM the
 // orchestrator normalizes.
 
 export type ScopeLevel = "all" | "region" | "branch";

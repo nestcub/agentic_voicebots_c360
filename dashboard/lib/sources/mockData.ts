@@ -1,5 +1,5 @@
-// Deterministic mock dataset mirroring the orchestrator's Supabase tables. Lets the dashboard
-// render/click with zero credentials. Swap to SupabaseDataSource by setting NEXT_PUBLIC_SUPABASE_URL.
+// Deterministic mock dataset mirroring the orchestrator's normalized output. Lets the dashboard
+// render/click with zero credentials. Swap to ApiDataSource by setting NEXT_PUBLIC_ORCH_API_URL.
 
 import type { Account, Goal, Target, Lead, Commitment, CallOutcome } from "../types";
 
