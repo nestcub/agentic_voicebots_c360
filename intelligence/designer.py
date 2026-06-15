@@ -103,6 +103,7 @@ def _aggregate_insights(client_id: str, db_path: str) -> dict:
     """Merge all insights for a client into deduplicated signal lists."""
     rows = get_insights(client_id, path=db_path)
     objections, qual_signals, esc_signals, kb_gaps = set(), set(), set(), set()
+    bot_failures, suggested_fixes = set(), set()
     scores, sentiments = [], []
 
     for r in rows:
@@ -110,6 +111,9 @@ def _aggregate_insights(client_id: str, db_path: str) -> dict:
         qual_signals.update(r.get("qualification_signals") or [])
         esc_signals.update(r.get("escalation_signals") or [])
         kb_gaps.update(r.get("kb_gaps") or [])
+        raw = r.get("raw_insights_json") or {}
+        bot_failures.update(raw.get("bot_failure_modes") or [])
+        suggested_fixes.update(raw.get("suggested_fixes") or [])
         if r.get("agent_score"):
             scores.append(r["agent_score"])
         if r.get("sentiment"):
@@ -123,6 +127,8 @@ def _aggregate_insights(client_id: str, db_path: str) -> dict:
         "qualification_signals": sorted(qual_signals),
         "escalation_signals": sorted(esc_signals),
         "kb_gaps": sorted(kb_gaps),
+        "bot_failure_modes": sorted(bot_failures),
+        "suggested_fixes": sorted(suggested_fixes),
     }
 
 
@@ -208,6 +214,18 @@ Return JSON array:
         _rag_examples = _retrieve_examples(_rag_query)
         _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
+        _bot_failures_block = ""
+        if insights.get("bot_failure_modes"):
+            _bot_failures_block = (
+                "\n<bot_failures_to_fix>\n"
+                "These failures were observed in THIS client's own bot calls. "
+                "The generated plan MUST address every one:\n"
+                + "\n".join(f"• {f}" for f in insights["bot_failure_modes"])
+                + "\n\nSuggested fixes:\n"
+                + "\n".join(f"• {f}" for f in insights.get("suggested_fixes", []))
+                + "\n</bot_failures_to_fix>"
+            )
+
         user = f"""Design a production-grade Chat360 voice bot workflow plan.
 
 <use_case>
@@ -217,7 +235,7 @@ Return JSON array:
 <call_insights>
 {json.dumps(insights, ensure_ascii=False, indent=2)}
 </call_insights>
-
+{_bot_failures_block}
 <call_evidence>
 {_call_evidence}
 </call_evidence>
@@ -320,6 +338,17 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
         _rag_examples = _retrieve_examples(_rag_query)
         _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
+        _bot_failures_block = ""
+        if insights.get("bot_failure_modes"):
+            _bot_failures_block = (
+                "\n<bot_failures_to_fix>\n"
+                "Failures observed in THIS client's own bot calls — address in every plan/patch:\n"
+                + "\n".join(f"• {f}" for f in insights["bot_failure_modes"])
+                + "\n\nSuggested fixes:\n"
+                + "\n".join(f"• {f}" for f in insights.get("suggested_fixes", []))
+                + "\n</bot_failures_to_fix>"
+            )
+
         user = f"""You are the conversational architect for a Chat360 voice-bot workflow. Hold a running
 design session with one human via a single text box. Remember the use case; never ask them to retype it.
 
@@ -328,7 +357,7 @@ REMEMBERED USE CASE:
 
 CALL INSIGHTS (aggregated from all their real agent recordings):
 {json.dumps(insights, ensure_ascii=False, indent=2)}
-
+{_bot_failures_block}
 <call_evidence>
 {_call_evidence}
 </call_evidence>

@@ -32,14 +32,21 @@ JSON schema:
   "qualification_signals": ["<signal 1>", "..."],
   "escalation_signals": ["<signal 1>", "..."],
   "kb_gaps": ["<topic the agent couldn't answer 1>", "..."],
+  "bot_failure_modes": ["<specific bot behaviour that failed or frustrated the customer>", "..."],
+  "suggested_fixes": ["<actionable fix for the bot builder to address each failure>", "..."],
   "summary": "<2-sentence call summary>"
 }
+
+bot_failure_modes: list the specific ways the bot itself (not the agent) failed — wrong language, stuck
+in a loop, missed intent, repeated a question already answered, didn't advance after confirmation, etc.
+suggested_fixes: one concrete fix per failure (e.g. 'enforce @bot_language at every node', 'add
+confirmation logic that advances after first Yes').
 
 Scoring guide for agent_score:
   9-10: Excellent — clear qualification, objection handled, outcome achieved
   7-8:  Good — mostly effective, minor gaps
-  5-6:  Average — partial qualification, some missed signals
-  3-4:  Poor — confused flow, objections not handled
+  5-6:  Average — partial qualification, some failed intents
+  3-4:  Poor — confused flow, bot loops, language failures
   1-2:  Very poor — premature hangup, hostile, or no useful interaction"""
 
 
