@@ -211,7 +211,7 @@ Return JSON array:
         )
 
         _rag_query = f"{use_case_text}\n{qa_text}"
-        _rag_examples = _retrieve_examples(_rag_query)
+        _rag_examples = _retrieve_examples(_rag_query, k=8)
         _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
         _bot_failures_block = ""
@@ -267,7 +267,7 @@ Return a single JSON object with exactly these keys:
       }}
     ]
   }},
-  "system_prompt": "Full LLM system prompt for the primary VOICE_GENAI node(s). Must include @bot_language rule.",
+  "system_prompt": "Full LLM system prompt for the primary VOICE_GENAI node(s). REQUIRED: Before writing this, study every retrieved reference_system_prompt section in <retrieved_examples> and mirror their structure — include a CRITICAL LANGUAGE RULE block, strict @bot_language enforcement at every GenAI node, tool/RAG usage conventions, and response-variable discipline. Never produce a thin or generic system prompt. Apply every item listed in 'Reference-bot known pitfalls' from platform knowledge.",
   "qualification_questions": [
     {{"question": "...", "variable": "@variable_name", "purpose": "..."}}
   ],
@@ -335,7 +335,7 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
         ]
 
         _rag_query = f"{use_case or message}\n{message}"
-        _rag_examples = _retrieve_examples(_rag_query)
+        _rag_examples = _retrieve_examples(_rag_query, k=8)
         _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
         _bot_failures_block = ""
@@ -397,6 +397,11 @@ Decide the intent and respond. Rules:
 - Plan keys, when creating/patching, are exactly: workflow_blueprint, system_prompt,
   qualification_questions, objection_handling, escalation_rules, kb_scaffold, build_notes. Ground
   everything in the canvas reference in the system prompt; never invent node types.
+- When writing system_prompt: study every reference_system_prompt section in the retrieved examples
+  above and mirror their structure exactly — include a CRITICAL LANGUAGE RULE block, enforce
+  @bot_language at every GenAI node, follow tool/RAG usage and response-variable conventions.
+  Apply every item in 'Reference-bot known pitfalls' from platform knowledge. Never write a thin
+  or generic system prompt.
 
 Return JSON with exactly these keys:
 {{
