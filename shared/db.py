@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 _DATABASE_URL = os.getenv("DATABASE_URL", "")
 _EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
 
-DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")  # kept for migration script only
+DB_PATH = os.getenv("DB_PATH", "")  # deprecated no-op; all persistence is Neon Postgres via DATABASE_URL
 
 _pool: ConnectionPool | None = None
 
