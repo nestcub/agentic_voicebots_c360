@@ -335,3 +335,24 @@ Streamlit **8501** · Orchestrator API **8000** · Dashboard **3000**
 
 ## Who shows what
 - **Streamlit** = author (scripts, goals). **Orchestrator API + scheduler** = do the work (watch their console logs). **Dashboard** = view the resulting state (assignments, commitments, outcomes, analytics).
+
+
+
+##  what the LLM gathers to generate a plan
+SYSTEM PROMPT  (cached — stable across calls, ~90% cheaper on repeats)
+ ├─ 1. Canvas grammar + performance_benchmarks      ← best_bots.json structural keys
+ └─ 2. ALL active platform knowledge (dumped)        ← platform_knowledge table
+        • your 8 rules: latency, async tools, initial message, voice,
+          Endtool ending, system-prompt importance, AI-Hub intents, filler
+        • "Reference-bot known pitfalls (must fix)"  ← distilled in Wave 2
+
+USER PROMPT  (built fresh every call)
+ ├─ 3. Use case (remembered)                         ← workflow_sessions
+ ├─ 4. Aggregated call insights (dedup summary)      ← insights table  (dumped)
+ ├─ 5. Top-K bot examples (RAG vector search)        ← bot_examples
+ │       • 5 compact bots + adani patterns (today)
+ │       • + reference_system_prompt, reference_intent, reference_filler  ← Wave 1
+ ├─ 6. Top-K call evidence — verbatim quotes (RAG)   ← transcript_chunks (this client only)
+ ├─ 7. Current plan + recent conversation turns      ← plans + conversation_turns
+ └─ 8. The user's message / answers
+

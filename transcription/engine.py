@@ -1,23 +1,21 @@
-"""Transcription engine — Sarvam STT (saaras:v2) with speaker diarization and InsightExtractor."""
+"""Transcription engine — provider-agnostic (Sarvam Batch API + Deepgram) with speaker diarization and InsightExtractor."""
 
+import json
 import os
+import tempfile
 import wave
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-import httpx
 from dotenv import load_dotenv
 
-from shared.db import init_db, save_transcript, save_insight, update_transcript_text, add_transcript_chunk, delete_transcript_chunks
+from shared.db import init_db, save_transcript, save_insight, update_transcript_text
 from shared.llm_client import LLMClient
-from shared.chunking import chunk_segments
-from shared.embeddings import embed_batch
 
 load_dotenv()
 
-DB_PATH = os.getenv("DB_PATH", "")  # deprecated no-op; persistence is Neon Postgres via DATABASE_URL
-SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
+DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")
 
 INSIGHT_SYSTEM = """You are an expert call analyst specialising in Indian voice bot quality assessment.
 Analyse the provided agent-customer call transcript and return a structured JSON object.
@@ -32,68 +30,47 @@ JSON schema:
   "qualification_signals": ["<signal 1>", "..."],
   "escalation_signals": ["<signal 1>", "..."],
   "kb_gaps": ["<topic the agent couldn't answer 1>", "..."],
-  "bot_failure_modes": ["<specific bot behaviour that failed or frustrated the customer>", "..."],
-  "suggested_fixes": ["<actionable fix for the bot builder to address each failure>", "..."],
   "summary": "<2-sentence call summary>"
 }
-
-bot_failure_modes: list the specific ways the bot itself (not the agent) failed — wrong language, stuck
-in a loop, missed intent, repeated a question already answered, didn't advance after confirmation, etc.
-suggested_fixes: one concrete fix per failure (e.g. 'enforce @bot_language at every node', 'add
-confirmation logic that advances after first Yes').
 
 Scoring guide for agent_score:
   9-10: Excellent — clear qualification, objection handled, outcome achieved
   7-8:  Good — mostly effective, minor gaps
-  5-6:  Average — partial qualification, some failed intents
-  3-4:  Poor — confused flow, bot loops, language failures
+  5-6:  Average — partial qualification, some missed signals
+  3-4:  Poor — confused flow, objections not handled
   1-2:  Very poor — premature hangup, hostile, or no useful interaction"""
 
 
 class TranscriptionEngine:
-    """Transcribes audio with Sarvam STT (saaras:v2), diarizes speakers, and extracts call insights."""
+    """Transcribes audio with Sarvam Batch API or Deepgram, diarizes speakers, and extracts call insights."""
 
     def __init__(self, db_path: str = DB_PATH):
-        """Initialise Sarvam API key, LLM client, and ensure DB tables exist."""
-        api_key = os.getenv("SARVAM_API_KEY")
-        if not api_key:
-            raise ValueError("SARVAM_API_KEY is not set in environment.")
-        self._api_key = api_key
+        """Initialise provider API keys, LLM client, and ensure DB tables exist."""
+        self._sarvam_key = os.getenv("SARVAM_API_KEY")
+        self._deepgram_key = os.getenv("DEEPGRAM_API_KEY")
         self._llm = LLMClient()
         self._db = db_path
         init_db(db_path)
 
-    def transcribe(self, audio_path: str, client_id: str) -> dict:
+    def transcribe(self, audio_path: str, client_id: str, provider: str = None, swap_roles: bool = False) -> dict:
         """Transcribe audio file, diarise speakers, extract insights, save both to DB.
 
+        provider: "sarvam" or "deepgram". Defaults to TRANSCRIPTION_PROVIDER env var, then "sarvam".
+        swap_roles: if True, swap AGENT<->CUSTOMER labels in all segments.
         Returns dict with keys: transcript_id, transcript, segments, duration, insight_id, insights.
         """
+        if provider is None:
+            provider = os.getenv("TRANSCRIPTION_PROVIDER", "sarvam")
+
         audio_path = str(Path(audio_path).resolve())
         filename = Path(audio_path).name
-
-        # ── Sarvam STT transcription ──────────────────────────────────────────
         duration = _get_duration(audio_path)
 
-        with open(audio_path, "rb") as f:
-            audio_bytes = f.read()
-
-        response = httpx.post(
-            SARVAM_STT_URL,
-            headers={"api-subscription-key": self._api_key},
-            files={"file": (filename, audio_bytes, _mime_type(filename))},
-            data={
-                "model": "saaras:v2",
-                "language_code": "hi-IN",
-                "with_timestamps": "true",
-                "with_diarization": "true",
-            },
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        result = response.json()
-
-        # ── Build speaker-labeled segments ───────────────────────────────────
-        segments = _build_segments(result, duration)
+        # ── Dispatch to provider ──────────────────────────────────────────────
+        if provider == "deepgram":
+            segments = self._transcribe_deepgram(audio_path, duration, swap_roles=swap_roles)
+        else:
+            segments = self._transcribe_sarvam(audio_path, duration, swap_roles=swap_roles)
 
         # ── Full transcript text ──────────────────────────────────────────────
         transcript_text = "\n".join(
@@ -112,9 +89,6 @@ class TranscriptionEngine:
             path=self._db,
         )
 
-        # ── Index chunks for RAG ──────────────────────────────────────────────
-        self._index_chunks(transcript_id, client_id, segments)
-
         # ── Extract insights via LLM ──────────────────────────────────────────
         insight_data = self._extract_insights(transcript_id, client_id, transcript_text)
 
@@ -127,17 +101,170 @@ class TranscriptionEngine:
             "insights": insight_data,
         }
 
-    def _index_chunks(self, transcript_id, client_id, segments):
-        try:
-            chunks = chunk_segments(segments)
-            if not chunks:
-                return
-            vecs = embed_batch([c["text"] for c in chunks])
-            for c, v in zip(chunks, vecs):
-                add_transcript_chunk(transcript_id, client_id, c["chunk_index"],
-                                     c["role_sequence"], c["start"], c["end"], c["text"], v)
-        except Exception as e:
-            print(f"[chunk-index] failed for transcript {transcript_id}: {e}", flush=True)
+    def transcribe_many(
+        self,
+        file_paths: list,
+        client_id: str,
+        provider: str = None,
+        swap_roles: bool = False,
+        on_file_done=None,
+    ) -> None:
+        """Transcribe multiple files with optimized parallelism.
+
+        Sarvam: groups files into batches of <=20, submits all Sarvam jobs
+        simultaneously, polls in parallel, processes results as they arrive.
+        Deepgram: fires all files in parallel via ThreadPoolExecutor(max_workers=10).
+
+        on_file_done(filename: str, result: dict | Exception) called per file.
+        """
+        if provider is None:
+            provider = os.getenv("TRANSCRIPTION_PROVIDER", "sarvam")
+
+        if provider == "deepgram":
+            self._transcribe_many_deepgram(file_paths, client_id, swap_roles, on_file_done)
+        else:
+            self._transcribe_many_sarvam(file_paths, client_id, swap_roles, on_file_done)
+
+    def _transcribe_sarvam(self, audio_path: str, duration: float, swap_roles: bool = False) -> list:
+        """Transcribe using Sarvam Batch API (sarvamai SDK). Returns normalised segment list."""
+        if not self._sarvam_key:
+            raise ValueError("SARVAM_API_KEY is not set in environment.")
+
+        from sarvamai import SarvamAI
+
+        sarvam = SarvamAI(api_subscription_key=self._sarvam_key)
+        job = sarvam.speech_to_text_job.create_job(
+            model="saarika:v2.5",
+            language_code="hi-IN",
+            with_diarization=True,
+            with_timestamps=True,
+        )
+        job.upload_files([audio_path])
+        job.start()
+        status = job.wait_until_complete(poll_interval=5, timeout=600)
+
+        if status.job_state.lower() == "failed":
+            raise RuntimeError(f"Sarvam batch job failed: {status.error_message}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            job.download_outputs(tmpdir)
+            result_path = Path(tmpdir) / f"{Path(audio_path).name}.json"
+            with open(result_path) as f:
+                result = json.load(f)
+
+        return _build_segments(result, duration, swap_roles=swap_roles)
+
+    def _transcribe_deepgram(self, audio_path: str, duration: float, swap_roles: bool = False) -> list:
+        """Transcribe using Deepgram nova-3 with diarization. Returns normalised segment list."""
+        if not self._deepgram_key:
+            raise ValueError("DEEPGRAM_API_KEY is not set in environment.")
+
+        from deepgram import DeepgramClient
+
+        dg = DeepgramClient(api_key=self._deepgram_key)
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+
+        response = dg.listen.v1.media.transcribe_file(
+            request=audio_bytes,
+            model="nova-3",
+            language="hi",
+            diarize=True,
+            utterances=True,
+            punctuate=True,
+            smart_format=True,
+        )
+        return _build_segments_deepgram(response, duration, swap_roles=swap_roles)
+
+    def _transcribe_many_sarvam(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done) -> None:
+        """Submit all files in groups of 20 as parallel Sarvam batch jobs."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from sarvamai import SarvamAI
+
+        if not self._sarvam_key:
+            raise ValueError("SARVAM_API_KEY is not set.")
+
+        CHUNK = 20
+        groups = [file_paths[i:i + CHUNK] for i in range(0, len(file_paths), CHUNK)]
+
+        def _run_group(paths: list) -> list:
+            """Submit one Sarvam job for a group, wait, return list of (path, result_or_exc)."""
+            sarvam = SarvamAI(api_subscription_key=self._sarvam_key)
+            job = sarvam.speech_to_text_job.create_job(
+                model="saarika:v2.5",
+                language_code="hi-IN",
+                with_diarization=True,
+                with_timestamps=True,
+            )
+            job.upload_files(paths)
+            job.start()
+            status = job.wait_until_complete(poll_interval=5, timeout=600)
+
+            results = []
+            if status.job_state.lower() == "failed":
+                exc = RuntimeError(f"Sarvam batch job failed: {status.error_message}")
+                for p in paths:
+                    results.append((p, exc))
+                return results
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                job.download_outputs(tmpdir)
+                for path in paths:
+                    fname = Path(path).name
+                    result_path = Path(tmpdir) / f"{fname}.json"
+                    try:
+                        with open(result_path) as f:
+                            raw = json.load(f)
+                        duration = _get_duration(path)
+                        segments = _build_segments(raw, duration, swap_roles=swap_roles)
+                        transcript_text = "\n".join(
+                            f"[{s['start']:.1f}s] {s['role']}: {s['text']}" for s in segments
+                        )
+                        transcript_id = save_transcript({
+                            "client_id": client_id,
+                            "filename": fname,
+                            "transcript_text": transcript_text,
+                            "segments": segments,
+                            "duration": duration,
+                        }, path=self._db)
+                        insight_data = self._extract_insights(transcript_id, client_id, transcript_text)
+                        results.append((path, {
+                            "transcript_id": transcript_id,
+                            "transcript": transcript_text,
+                            "segments": segments,
+                            "duration": duration,
+                            "insight_id": insight_data["insight_id"],
+                            "insights": insight_data,
+                        }))
+                    except Exception as e:
+                        results.append((path, e))
+            return results
+
+        with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+            futures = {pool.submit(_run_group, g): g for g in groups}
+            for fut in as_completed(futures):
+                for path, result in fut.result():
+                    if on_file_done:
+                        on_file_done(Path(path).name, result)
+
+    def _transcribe_many_deepgram(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done) -> None:
+        """Transcribe all files in parallel via ThreadPoolExecutor."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _one(path: str):
+            fname = Path(path).name
+            try:
+                result = self.transcribe(path, client_id, provider="deepgram", swap_roles=swap_roles)
+                return fname, result
+            except Exception as e:
+                return fname, e
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = [pool.submit(_one, p) for p in file_paths]
+            for fut in as_completed(futures):
+                fname, result = fut.result()
+                if on_file_done:
+                    on_file_done(fname, result)
 
     def rerun_insights(self, transcript_id: str, client_id: str, edited_text: str) -> dict:
         """Save edited transcript text and append a fresh insight row.
@@ -146,8 +273,6 @@ class TranscriptionEngine:
         Returns the new insight dict.
         """
         update_transcript_text(transcript_id, edited_text, path=self._db)
-        delete_transcript_chunks(transcript_id)
-        # TODO: re-chunk needs segments; only deleting stale chunks here
         return self._extract_insights(transcript_id, client_id, edited_text)
 
     def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str) -> dict:
@@ -211,7 +336,7 @@ def _assign_role(speaker_id: str, speaker_order: list) -> str:
     return speaker_id  # 3+ speakers — keep raw labels
 
 
-def _build_segments(result: dict, duration: float) -> list:
+def _build_segments(result: dict, duration: float, swap_roles: bool = False) -> list:
     """Convert Sarvam diarized_transcript entries into speaker-labeled segment dicts.
 
     Falls back to a single AGENT block if diarization is absent from the response.
@@ -239,10 +364,14 @@ def _build_segments(result: dict, duration: float) -> list:
                     "confidence": None,
                 }
             )
+        if swap_roles:
+            role_map = {"AGENT": "CUSTOMER", "CUSTOMER": "AGENT"}
+            for s in segments:
+                s["role"] = role_map.get(s["role"], s["role"])
         return segments
 
     # No diarization — single block with full transcript
-    return [
+    segments = [
         {
             "speaker": "SPEAKER_00",
             "role": "AGENT",
@@ -252,3 +381,51 @@ def _build_segments(result: dict, duration: float) -> list:
             "confidence": None,
         }
     ]
+    if swap_roles:
+        role_map = {"AGENT": "CUSTOMER", "CUSTOMER": "AGENT"}
+        for s in segments:
+            s["role"] = role_map.get(s["role"], s["role"])
+    return segments
+
+
+def _build_segments_deepgram(response, duration: float, swap_roles: bool = False) -> list:
+    """Convert Deepgram utterances into the same speaker-labeled segment format as Sarvam."""
+    utterances = []
+    try:
+        utterances = response.results.utterances or []
+    except Exception:
+        pass
+
+    if utterances:
+        speaker_order = []
+        segments = []
+        for u in utterances:
+            speaker_id = f"SPEAKER_{int(u.speaker or 0):02d}"
+            if speaker_id not in speaker_order:
+                speaker_order.append(speaker_id)
+            segments.append({
+                "speaker": speaker_id,
+                "role": _assign_role(speaker_id, speaker_order),
+                "start": round(float(u.start or 0.0), 2),
+                "end": round(float(u.end or 0.0), 2),
+                "text": str(u.transcript or "").strip(),
+                "confidence": u.confidence,
+            })
+        if swap_roles:
+            role_map = {"AGENT": "CUSTOMER", "CUSTOMER": "AGENT"}
+            for s in segments:
+                s["role"] = role_map.get(s["role"], s["role"])
+        return segments
+
+    # Fallback: no utterances, try channels[0]
+    text = ""
+    try:
+        text = response.results.channels[0].alternatives[0].transcript or ""
+    except Exception:
+        pass
+    segments = [{"speaker": "SPEAKER_00", "role": "AGENT", "start": 0.0, "end": duration, "text": text.strip(), "confidence": None}]
+    if swap_roles:
+        role_map = {"AGENT": "CUSTOMER", "CUSTOMER": "AGENT"}
+        for s in segments:
+            s["role"] = role_map.get(s["role"], s["role"])
+    return segments

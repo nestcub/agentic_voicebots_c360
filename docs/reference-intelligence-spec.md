@@ -21,8 +21,8 @@ The production reference bots are **not** gold standards — they have documente
 | `data/system_prompts/adani_bot_sp.md` (129KB) | 6 `## SYSTEM PROMPT – …` sections | Recipe corpus → `reference_system_prompt` units |
 | `data/intents_description.jsons/adani_bot_intents.md` (87KB) | 10 `## CATEGORY: …` sections | Recipe corpus → `reference_intent` units |
 | `data/bot_transcripts/adani_bot.md` (5.5KB) | live Adani call transcripts (failures visible) | Failure distillation |
-| `data/analytics_jsons/*.json` (adani_stage, arka, tvscredit, jp_infra, borosil) | per-bot `performance`, `drop_call_metrics`, `disposition_analytics`, `sentiment_analysis` | Failure distillation + populate `performance` |
-| `data/bot_jsons/*.json` (adani 12.8MB, jp 1.6MB, arka, tvs, borosil) | full bot flow exports | Recipe corpus → `reference_bot_flow` units (chunked) |
+| `data/analytics_jsons/*.json` (adani_stage, arka, tvscredit, jp_infra, borosil) | per-bot `drop_call_metrics`, `disposition_analytics`, `sentiment_analysis`, `performance` | Failure distillation (Wave 2). Populate-performance is DEFERRED |
+| `data/bot_jsons/*.json` (adani 12.8MB, …) | full bot flow exports | **Deferred** — compact bots already in RAG; full-flow ingest skipped for now |
 | Adani filler context | provided below (§Wave 1c) | Recipe corpus → `reference_filler` unit |
 
 ---
@@ -48,10 +48,10 @@ Add a reusable helper module, then three ingest passes. All write into `bot_exam
 - Read `data/intents_description.jsons/adani_bot_intents.md`; split on `^## CATEGORY:` → 10 sections. unit_type=`reference_intent`, name=category, use_case="Adani intent — <category>".
 - Print counts. **Commit:** `add ingest_reference_prompts: chunk Adani system prompts and intents into RAG`
 
-### 1b. NEW `scripts/ingest_reference_flows.py`
-- For each `data/bot_jsons/*.json`: extract the node configs (walk the JSON; pull each node's `prompt`/`initial_message`/`use_tools`/`rag`/`routing_table`/type where present). unit_type=`reference_bot_flow`, name=`<bot_file> — node <id/type>`, content=the node dict, body=`json.dumps(node)`. One unit per node (sub-window if a node prompt >1500 tok).
-- **Size guard:** `adani_bot.json` is 12.8MB — stream/iterate, do not load-and-dump into one string. Process node-by-node, `embed_batch` in batches of ~50. If a bot JSON has no recognizable node array, skip it and log.
-- Print per-bot node counts. **Commit:** `add ingest_reference_flows: chunk production bot node configs into RAG`
+### 1b. NEW `scripts/ingest_reference_flows.py` — **SKIP for now (decision)**
+The compact production bots (incl. `Prod_Replicate_Adani`) are already in RAG from `best_bots.json`. Ingesting the full `data/bot_jsons/*.json` flows (Adani is 12.8MB) is **deferred** — do not build unless the compact bots prove too thin in practice. If revisited later: walk each JSON node-by-node (never load-and-dump), one `reference_bot_flow` unit per node, `embed_batch` in batches of ~50.
+
+> Transcripts are **not** added to RAG in Wave 1 — they are consumed in Wave 2 (distillation). Skip them here.
 
 ### 1c. NEW `scripts/ingest_reference_filler.py`
 - Store the Adani AVIO filler context (below) as one `reference_filler` unit (name="Adani AVIO filler generator", use_case="filler-word generation context — strict @bot_language lock").
@@ -80,21 +80,16 @@ A **one-time critique** that turns the reference bots' real failures into always
 - Idempotent: delete any existing `Reference-bot known pitfalls (must fix)` row (source=`distill`) before inserting.
 - Print the extracted failures. **Commit:** `add distill_reference_failures: extract reference failure modes into always-on pitfalls`
 
-This fact is dumped into every plan via `_platform_knowledge_block`, so the designer always engineers around the known bugs.
+This fact is dumped into every plan via `_platform_knowledge_block`, so the designer always engineers around the known bugs. **Note:** the raw transcripts and stage analytics are read once here and are NOT embedded into RAG — only the distilled pitfalls list is persisted (as cached platform knowledge).
 
 ---
 
-## WAVE 3 — real analytics → populate `performance`, after Wave 1
-
-### NEW `scripts/populate_bot_performance.py`
-- Map each `data/analytics_jsons/<x>.json` → the bot in `intelligence/data/best_bots.json` by case-insensitive substring: `arka→Arka`, `tvscredit→TVS`, `adani_stage→Prod_Replicate_Adani`, `jp_infra→JP_Infra`, `borosil→borosill`.
-- From each analytics file read the `performance` block (+ pull `drop_call_metrics`/`disposition` summary if useful) and write real numbers into that bot's `performance` field in `best_bots.json` (replace the current nulls/zeros). Keep the existing performance schema keys where they map; add a `stage_analytics_summary` sub-key for the richer fields.
-- Then **re-run** `python -m seed.seed_bot_examples` so the bot units are re-embedded with the populated performance in their `content`.
-- Print which bots got real numbers. **Commit:** `add populate_bot_performance: fill best_bots performance from real analytics`
+## WAVE 3 — populate `performance` from analytics — **DEFERRED (decision)**
+Skipped for now: no trustworthy real numbers to populate yet. The `performance` blocks in `best_bots.json` stay as-is. (Revisit when real analytics numbers are available — map `data/analytics_jsons/<x>.json` → best_bots bot by name, write the `performance` block, then re-run `python -m seed.seed_bot_examples`.) Note Wave 2 still *reads* `adani_stage_analytics.json` for failure signal — that is independent of populating performance.
 
 ---
 
-## WAVE 4 — wire reference retrieval into the designer (after Waves 1–3)
+## WAVE 4 — wire reference retrieval into the designer (after Waves 1–2)
 
 `intelligence/designer.py` already RAGs `bot_examples` via `_retrieve_examples`, so the new `reference_*` units are **already retrieved**. Two small reinforcements:
 - In the `generate_plan` and `converse` user prompts, where the system-prompt is being designed, add one instruction line: *"Before writing the system_prompt, study the retrieved `reference_system_prompt` sections and mirror their structure (CRITICAL LANGUAGE RULE block, @bot_language handling, tool/RAG usage). Apply every item in 'Reference-bot known pitfalls'."*
@@ -106,12 +101,11 @@ This fact is dumped into every plan via `_platform_knowledge_block`, so the desi
 ## Verification (run and report)
 
 1. Wave 0: `get_knowledge('active')` shows the new rule topics + (after Wave 2) `Reference-bot known pitfalls (must fix)`.
-2. `SELECT unit_type, count(*) FROM bot_examples GROUP BY unit_type;` → shows `reference_system_prompt` (~6+), `reference_intent` (~10+), `reference_bot_flow` (many), `reference_filler` (1), plus the original units.
+2. `SELECT unit_type, count(*) FROM bot_examples GROUP BY unit_type;` → shows `reference_system_prompt` (~6+), `reference_intent` (~10+), `reference_filler` (1), plus the original units. (`reference_bot_flow` is deferred — not expected.)
 3. Retrieval: embed a query like *"hindi voice bot that must not switch to english, airport ticket status"* → `search_bot_examples` returns the Adani reference system-prompt + the language-lock material near the top.
-4. `python -c "import json; b=json.load(open('intelligence/data/best_bots.json')); print([(x['name'], x['performance']) for x in b['bot_examples']])"` → real numbers, not zeros.
-5. Run `POST /converse` for a Hindi use-case → confirm (temporary debug log) the prompt now contains reference system-prompt chunks + the pitfalls fact, and the generated `system_prompt` includes a strict `@bot_language` lock. Remove debug log before final commit.
+4. Run `POST /converse` for a Hindi use-case → confirm (temporary debug log) the prompt now contains reference system-prompt chunks + the pitfalls fact, and the generated `system_prompt` includes a strict `@bot_language` lock. Remove debug log before final commit.
 
-Report the output of steps 2–4 to the user.
+Report the output of steps 2–3 to the user.
 
 ## Notes / out of scope
 - Bot-example decomposition (5 bots = 5 units) is correct and unchanged — verified, no truncation.

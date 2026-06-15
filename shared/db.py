@@ -142,6 +142,28 @@ def init_db(path: str = DB_PATH) -> None:
             ON transcript_chunks(client_id)""",
         """CREATE INDEX IF NOT EXISTS transcript_chunks_embedding_idx
             ON transcript_chunks USING hnsw (embedding vector_cosine_ops)""",
+        """CREATE TABLE IF NOT EXISTS transcription_batches (
+            id          TEXT PRIMARY KEY,
+            client_id   TEXT NOT NULL,
+            provider    TEXT NOT NULL,
+            total       INTEGER NOT NULL DEFAULT 0,
+            completed   INTEGER NOT NULL DEFAULT 0,
+            failed      INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS transcription_batch_items (
+            id            TEXT PRIMARY KEY,
+            batch_id      TEXT NOT NULL,
+            filename      TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'pending',
+            transcript_id TEXT,
+            error         TEXT,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        )""",
+        """CREATE INDEX IF NOT EXISTS batch_items_batch_idx
+            ON transcription_batch_items(batch_id)""",
     ]
     with _get_pool().connection() as conn:
         for stmt in ddl_statements:
@@ -501,3 +523,64 @@ def search_transcript_chunks(embedding: list, client_id: str, k: int = 5) -> lis
 def delete_transcript_chunks(transcript_id: str) -> None:
     with _get_pool().connection() as conn:
         conn.execute("DELETE FROM transcript_chunks WHERE transcript_id=%s", (transcript_id,))
+
+
+# ── Transcription batches ─────────────────────────────────────────────────────
+
+def create_batch(client_id: str, provider: str, total_files: int) -> str:
+    row_id = str(uuid.uuid4())
+    now = _now()
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO transcription_batches VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (row_id, client_id, provider, total_files, 0, 0, now, now),
+        )
+    return row_id
+
+
+def get_batch(batch_id: str) -> dict | None:
+    with _get_pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM transcription_batches WHERE id=%s", (batch_id,)
+        ).fetchone()
+
+
+def create_batch_item(batch_id: str, filename: str) -> str:
+    row_id = str(uuid.uuid4())
+    now = _now()
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO transcription_batch_items VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (row_id, batch_id, filename, "pending", None, None, now, now),
+        )
+    return row_id
+
+
+def update_batch_item(item_id: str, status: str, transcript_id: str = None, error: str = None) -> None:
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "UPDATE transcription_batch_items SET status=%s, transcript_id=%s, error=%s, updated_at=%s WHERE id=%s",
+            (status, transcript_id, error, _now(), item_id),
+        )
+
+
+def get_batch_items(batch_id: str) -> list:
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM transcription_batch_items WHERE batch_id=%s ORDER BY created_at ASC",
+            (batch_id,),
+        ).fetchall()
+    return list(rows)
+
+
+def refresh_batch_counts(batch_id: str) -> None:
+    """Recompute completed/failed counts from items and update the batch row."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """UPDATE transcription_batches SET
+               completed = (SELECT COUNT(*) FROM transcription_batch_items WHERE batch_id=%s AND status='done'),
+               failed    = (SELECT COUNT(*) FROM transcription_batch_items WHERE batch_id=%s AND status='failed'),
+               updated_at = %s
+               WHERE id=%s""",
+            (batch_id, batch_id, _now(), batch_id),
+        )
