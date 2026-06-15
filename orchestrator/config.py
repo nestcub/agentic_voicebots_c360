@@ -8,21 +8,14 @@ load_dotenv()
 
 
 # ── Store backend ──────────────────────────────────────────────────────────────
-SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
-SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY", "")
-
-# "memory" | "supabase" | "auto". auto = supabase if creds present, else memory.
-ORCH_STORE = os.getenv("ORCH_STORE", "auto").lower()
+# Neon Postgres connection string — the sole orchestration store backend
+# (the same Neon instance the intelligence plane uses).
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 
-def store_backend() -> str:
-    """Resolve which store backend to use."""
-    if ORCH_STORE == "memory":
-        return "memory"
-    if ORCH_STORE == "supabase":
-        return "supabase"
-    return "supabase" if (SUPABASE_URL and SUPABASE_SERVICE_KEY) else "memory"
+# ── CRM connections ─────────────────────────────────────────────────────────────
+# HTTP timeout (seconds) for external CRM connections.
+CRM_TIMEOUT_SEC = int(os.getenv("CRM_TIMEOUT_SEC", "15"))
 
 
 # ── Chat360 voice dispatch ──────────────────────────────────────────────────────
@@ -48,7 +41,3 @@ FOLLOWUP_BACKOFF_HOURS = [
 # Capacity split between new-goal outreach and honoring prior-goal commitments (Pain B).
 # Fraction of capacity reserved for protected follow-ups; remainder pursues the new goal.
 FOLLOWUP_CAPACITY_RESERVE = float(os.getenv("FOLLOWUP_CAPACITY_RESERVE", "0.5"))
-
-
-# ── Local store path (MemoryStore can persist to disk for the demo) ─────────────
-ORCH_DB_PATH = os.getenv("ORCH_DB_PATH", "orchestrator_state.db")
