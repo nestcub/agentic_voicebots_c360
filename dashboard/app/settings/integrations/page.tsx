@@ -1,15 +1,38 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   RiFileExcel2Line,
   RiDatabase2Line,
   RiCloudLine,
   RiLoaderLine,
+  RiServerLine,
 } from "react-icons/ri";
 import { Card } from "@/components/Card";
 import type { UploadResult, Lead } from "@/lib/types";
+
+// TODO: AccountContext only exposes scope, not an account id. Default to "autovista"
+// until the real account id is wired through context/auth.
+const ACCOUNT_ID = "autovista";
+
+const ORCH = process.env.NEXT_PUBLIC_ORCH_API_URL || "http://localhost:8000";
+
+// Mirrors the orchestrator's CRM connection row (orchestrator/crm/connections).
+interface CrmConnection {
+  id: string;
+  account_id: string;
+  name: string;
+  crm_type: string;
+  base_url: string;
+  api_key: string;
+  status: string;
+  last_tested_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const CRM_TYPES = ["rest", "hubspot", "zoho", "leadsquared"] as const;
 
 function StatusBadge({ label, variant }: { label: string; variant: "emerald" | "slate" }) {
   const cls =
@@ -23,6 +46,21 @@ function StatusBadge({ label, variant }: { label: string; variant: "emerald" | "
   );
 }
 
+// Maps a CRM connection status to a colored pill.
+function CrmStatusBadge({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    ok: "bg-emerald-100 text-emerald-700",
+    error: "bg-rose-100 text-rose-700",
+    configured: "bg-slate-100 text-slate-500",
+  };
+  const cls = map[status] ?? "bg-slate-100 text-slate-500";
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${cls}`}>
+      {status}
+    </span>
+  );
+}
+
 export default function IntegrationsPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -32,6 +70,89 @@ export default function IntegrationsPage() {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [creatingCampaign, setCreatingCampaign] = useState(false);
+
+  // ── CRM connection state ──────────────────────────────────────────────────
+  const [connections, setConnections] = useState<CrmConnection[]>([]);
+  const [crmLoading, setCrmLoading] = useState(false);
+  const [crmError, setCrmError] = useState<string | null>(null);
+  const [crmForm, setCrmForm] = useState({
+    name: "",
+    crm_type: "rest",
+    base_url: "",
+    api_key: "",
+  });
+  const [savingCrm, setSavingCrm] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testNotes, setTestNotes] = useState<Record<string, string>>({});
+
+  async function loadConnections() {
+    setCrmLoading(true);
+    setCrmError(null);
+    try {
+      const res = await fetch(
+        `${ORCH}/orchestrator/crm/connections?account_id=${encodeURIComponent(ACCOUNT_ID)}`,
+      );
+      if (!res.ok) throw new Error(`Failed to load connections (${res.status})`);
+      const data: CrmConnection[] = await res.json();
+      setConnections(data);
+    } catch (err) {
+      setCrmError(err instanceof Error ? err.message : "Unknown error loading connections");
+    } finally {
+      setCrmLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadConnections();
+  }, []);
+
+  async function handleSaveConnection(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingCrm(true);
+    setSaveError(null);
+    try {
+      const res = await fetch(`${ORCH}/orchestrator/crm/connections`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_id: ACCOUNT_ID, ...crmForm }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Save failed (${res.status})`);
+      }
+      setCrmForm({ name: "", crm_type: "rest", base_url: "", api_key: "" });
+      await loadConnections();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Unknown error saving connection");
+    } finally {
+      setSavingCrm(false);
+    }
+  }
+
+  async function handleTestConnection(id: string) {
+    setTestingId(id);
+    setTestNotes((prev) => ({ ...prev, [id]: "" }));
+    try {
+      const res = await fetch(`${ORCH}/orchestrator/crm/connections/${id}/test`, {
+        method: "POST",
+      });
+      const data: { ok: boolean; status_code: number; message: string } = await res.json();
+      setTestNotes((prev) => ({
+        ...prev,
+        [id]: `${data.ok ? "OK" : "Failed"} (${data.status_code}) — ${data.message}`,
+      }));
+      // The test endpoint updates the row's status server-side; refresh to reflect it.
+      await loadConnections();
+    } catch (err) {
+      setTestNotes((prev) => ({
+        ...prev,
+        [id]: err instanceof Error ? err.message : "Test request failed",
+      }));
+    } finally {
+      setTestingId(null);
+    }
+  }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -310,6 +431,137 @@ export default function IntegrationsPage() {
           )}
         </div>
       )}
+
+      {/* ── Connect a CRM ──────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Connect form */}
+        <Card className="p-5 flex flex-col gap-4">
+          <div className="flex items-center gap-3">
+            <RiServerLine className="text-blue-600 text-2xl shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Connect a CRM</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Register an external CRM connection for this account
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveConnection} className="flex flex-col gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Name</label>
+              <input
+                type="text"
+                required
+                value={crmForm.name}
+                onChange={(e) => setCrmForm({ ...crmForm, name: e.target.value })}
+                placeholder="e.g. Production HubSpot"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">CRM Type</label>
+              <select
+                value={crmForm.crm_type}
+                onChange={(e) => setCrmForm({ ...crmForm, crm_type: e.target.value })}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              >
+                {CRM_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Base URL</label>
+              <input
+                type="url"
+                required
+                value={crmForm.base_url}
+                onChange={(e) => setCrmForm({ ...crmForm, base_url: e.target.value })}
+                placeholder="https://api.example.com"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">API Key</label>
+              <input
+                type="password"
+                required
+                value={crmForm.api_key}
+                onChange={(e) => setCrmForm({ ...crmForm, api_key: e.target.value })}
+                placeholder="••••••••"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+
+            {saveError && (
+              <div className="bg-rose-50 border border-rose-200 rounded-lg p-2.5 text-xs text-rose-700">
+                {saveError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={savingCrm}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2 self-start"
+            >
+              {savingCrm && <RiLoaderLine className="animate-spin text-base" />}
+              Save connection
+            </button>
+          </form>
+        </Card>
+
+        {/* Connected CRMs list */}
+        <Card className="p-5 flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-slate-800">Connected CRMs</p>
+            {crmLoading && <RiLoaderLine className="animate-spin text-blue-600 text-lg" />}
+          </div>
+
+          {crmError && (
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-2.5 text-xs text-rose-700">
+              {crmError}
+            </div>
+          )}
+
+          {!crmLoading && !crmError && connections.length === 0 && (
+            <p className="text-sm text-slate-400">No CRM connections yet.</p>
+          )}
+
+          <div className="divide-y divide-slate-100">
+            {connections.map((conn) => (
+              <div key={conn.id} className="py-3 first:pt-0 flex flex-col gap-1.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-slate-800 truncate">{conn.name}</p>
+                      <CrmStatusBadge status={conn.status} />
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {conn.crm_type} · {conn.base_url}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleTestConnection(conn.id)}
+                    disabled={testingId === conn.id}
+                    className="border border-slate-300 text-slate-700 px-3 py-1.5 rounded-lg text-xs hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0"
+                  >
+                    {testingId === conn.id && <RiLoaderLine className="animate-spin text-sm" />}
+                    Test
+                  </button>
+                </div>
+                {testNotes[conn.id] && (
+                  <p className="text-xs text-slate-500">{testNotes[conn.id]}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
