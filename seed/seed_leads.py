@@ -1,7 +1,12 @@
-"""Seed mock automobile leads + an account/goal/target into the orchestrator Store.
+"""Seed the Autovista demo dataset into the orchestrator Store (Neon Postgres).
 
-Runs against whichever Store is configured (LocalStore with no creds, or SupabaseStore
-when SUPABASE_* env is set). Usage:  python -m seed.seed_leads [--count N]
+Seeds a dealership account + an active monthly goal/target and a batch of mock
+automobile leads across the Mumbai/Pune branches. All writes go through the
+orchestrator `Store` (`get_store()` -> Neon `PostgresStore`); there is no direct
+database client access here.
+
+Usage:
+    python -m seed.seed_leads [--count N] [--account NAME]
 """
 
 from __future__ import annotations
@@ -10,11 +15,15 @@ import argparse
 import random
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
+
 from orchestrator.models import (
     Account, Goal, Target, Lead, FocusType,
     T_ACCOUNTS, T_GOALS, T_TARGETS, T_LEADS, to_row,
 )
 from orchestrator.store import get_store
+
+load_dotenv()
 
 # ~15 Maruti/Autovista dealer areas across the two regions (demo scope filters).
 BRANCHES = {
@@ -78,12 +87,27 @@ def seed(count: int = 40, account_name: str = "Autovista") -> dict:
         store.insert(T_LEADS, to_row(lead))
         leads.append(lead)
 
-    return {"account_id": acct.id, "goal_id": goal.id, "leads": len(leads), "month": month}
+    return {
+        "account_id": acct.id,
+        "goal_id": goal.id,
+        "target_id": target.id,
+        "accounts": 1,
+        "goals": 1,
+        "targets": 1,
+        "leads": len(leads),
+        "month": month,
+    }
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=40)
+    ap.add_argument("--account", default="Autovista")
     args = ap.parse_args()
-    result = seed(args.count)
-    print(f"Seeded: {result}")
+    result = seed(args.count, args.account)
+    print(
+        "Seeded into Neon store: "
+        f"{result['accounts']} account, {result['goals']} goal, "
+        f"{result['targets']} target, {result['leads']} leads "
+        f"(month={result['month']}, account_id={result['account_id']})"
+    )
