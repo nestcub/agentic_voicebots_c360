@@ -16,7 +16,7 @@ from shared.embeddings import embed_batch
 
 load_dotenv()
 
-DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")
+DB_PATH = os.getenv("DB_PATH", "")  # deprecated no-op; persistence is Neon Postgres via DATABASE_URL
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 
 INSIGHT_SYSTEM = """You are an expert call analyst specialising in Indian voice bot quality assessment.

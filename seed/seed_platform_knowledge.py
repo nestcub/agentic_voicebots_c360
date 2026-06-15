@@ -8,7 +8,7 @@ load_dotenv()
 
 from shared.db import init_db, add_knowledge, get_knowledge, delete_knowledge
 
-DB_PATH = os.getenv("DB_PATH", "intelligence_fabric.db")
+DB_PATH = os.getenv("DB_PATH", "")  # deprecated no-op; persistence is Neon Postgres via DATABASE_URL
 
 FACTS = [
     {

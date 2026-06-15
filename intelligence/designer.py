@@ -19,7 +19,7 @@ from shared.embeddings import embed
 
 load_dotenv()
 
-DB_PATH   = os.getenv("DB_PATH", "intelligence_fabric.db")
+DB_PATH   = os.getenv("DB_PATH", "")  # deprecated no-op; persistence is Neon Postgres via DATABASE_URL
 BOTS_PATH = Path(__file__).parent / "data" / "best_bots.json"
 
 
