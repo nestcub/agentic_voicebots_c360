@@ -62,10 +62,12 @@ T_ASSIGNMENTS  = "assignments"
 T_COMMITMENTS  = "commitments"
 T_CALL_OUTCOMES = "call_outcomes"
 T_ROLLUPS      = "rollups"
+T_CRM_CONNECTIONS = "crm_connections"
 
 ALL_TABLES = [
     T_ACCOUNTS, T_GOALS, T_TARGETS, T_LEADS,
     T_ASSIGNMENTS, T_COMMITMENTS, T_CALL_OUTCOMES, T_ROLLUPS,
+    T_CRM_CONNECTIONS,
 ]
 
 
@@ -198,6 +200,21 @@ class Rollup:
     narrative: str = ""
     id: str = field(default_factory=new_id)
     created_at: str = field(default_factory=now_iso)
+
+
+@dataclass
+class CrmConnection:
+    """An account's connection to an external CRM (config stored + tested + adapted)."""
+    account_id: str
+    name: str
+    crm_type: str                    # rest|hubspot|zoho|leadsquared
+    base_url: str
+    api_key: str = ""
+    status: str = "configured"       # configured|ok|error
+    last_tested_at: str = ""
+    id: str = field(default_factory=new_id)
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
 
 
 def to_row(obj) -> dict:
