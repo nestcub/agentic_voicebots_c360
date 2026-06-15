@@ -18,7 +18,10 @@ dashboard's `lib/sources/compute.ts` so the numbers match exactly.
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import config
@@ -257,6 +260,16 @@ class CrmConnectionReq(BaseModel):
 # ── app ──────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Autovista Orchestrator")
+
+# CORS — the dashboard (browser) calls this API directly via NEXT_PUBLIC_ORCH_API_URL.
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
