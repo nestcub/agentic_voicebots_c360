@@ -22,6 +22,7 @@ type Patch = {
   admin_request: string;
   llm_reasoning: string;
   created_at: string;
+  patch: Record<string, unknown>;
 };
 
 type HistoryEntry = {
@@ -30,6 +31,17 @@ type HistoryEntry = {
   reasoning: string;
   date: string;
   initial: boolean;
+  patch: Record<string, unknown> | null; // changed keys for patch rows; null for initial
+};
+
+const SECTION_TITLES: Record<string, string> = {
+  workflow_blueprint: "Workflow Blueprint",
+  system_prompt: "System Prompt",
+  qualification_questions: "Qualification Questions",
+  objection_handling: "Objection Handling",
+  escalation_rules: "Escalation Rules",
+  kb_scaffold: "KB Scaffold",
+  build_notes: "Build Notes",
 };
 
 type WorkflowStage = {
@@ -287,6 +299,28 @@ function GenericContent({ value }: { value: unknown }) {
   );
 }
 
+// Dispatch a plan key to its purpose-built renderer (shared by Current + History).
+function sectionBody(sectionKey: string, value: unknown) {
+  switch (sectionKey) {
+    case "workflow_blueprint":
+      return <WorkflowBlueprintContent value={value} />;
+    case "system_prompt":
+      return <SystemPromptContent value={value} />;
+    case "qualification_questions":
+      return <QualificationQuestionsContent value={value} />;
+    case "objection_handling":
+      return <ObjectionHandlingContent value={value} />;
+    case "escalation_rules":
+      return <EscalationRulesContent value={value} />;
+    case "kb_scaffold":
+      return <KbScaffoldContent value={value} />;
+    case "build_notes":
+      return <BuildNotesContent value={value} />;
+    default:
+      return <GenericContent value={value} />;
+  }
+}
+
 function DiffPanel({ before, after }: { before: unknown; after: unknown }) {
   return (
     <div className="mx-5 mb-4 space-y-1">
@@ -320,27 +354,6 @@ function Section({ sectionKey, title, value, diff, flashedKeys }: SectionProps) 
   const hasChange = diff != null && sectionKey in diff;
   const isFlashing = flashedKeys.has(sectionKey);
 
-  const renderContent = () => {
-    switch (sectionKey) {
-      case "workflow_blueprint":
-        return <WorkflowBlueprintContent value={value} />;
-      case "system_prompt":
-        return <SystemPromptContent value={value} />;
-      case "qualification_questions":
-        return <QualificationQuestionsContent value={value} />;
-      case "objection_handling":
-        return <ObjectionHandlingContent value={value} />;
-      case "escalation_rules":
-        return <EscalationRulesContent value={value} />;
-      case "kb_scaffold":
-        return <KbScaffoldContent value={value} />;
-      case "build_notes":
-        return <BuildNotesContent value={value} />;
-      default:
-        return <GenericContent value={value} />;
-    }
-  };
-
   return (
     <div
       className={`border border-gray-100 rounded-xl overflow-hidden ${
@@ -367,11 +380,84 @@ function Section({ sectionKey, title, value, diff, flashedKeys }: SectionProps) 
       </button>
       {open && (
         <>
-          {renderContent()}
+          {sectionBody(sectionKey, value)}
           {hasChange && diff && (
             <DiffPanel before={diff[sectionKey].before} after={diff[sectionKey].after} />
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── History row (collapsible: renders full plan for v1, the delta for patches) ──
+
+function HistoryRow({
+  entry,
+  plan,
+}: {
+  entry: HistoryEntry;
+  plan: Record<string, unknown> | null;
+}) {
+  const [open, setOpen] = useState(false);
+
+  // For the initial plan, render every populated section of the full plan.
+  // For a patch, render only the keys it changed.
+  const keys = entry.initial
+    ? Object.keys(SECTION_TITLES).filter((k) => plan?.[k] != null)
+    : Object.keys(entry.patch ?? {});
+
+  const valueFor = (k: string): unknown =>
+    entry.initial ? plan?.[k] : entry.patch?.[k];
+
+  return (
+    <div className="border border-gray-100 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+      >
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-700">v{entry.version}</span>
+            {entry.initial ? (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded-full">
+                initial plan
+              </span>
+            ) : (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full">
+                patch
+              </span>
+            )}
+            {entry.date && (
+              <span className="text-xs text-gray-400">{entry.date.slice(0, 10)}</span>
+            )}
+          </div>
+          <p className="text-sm text-gray-700 truncate mt-0.5">{entry.request}</p>
+        </div>
+        {open ? (
+          <RiArrowUpSLine className="w-4 h-4 text-gray-400 shrink-0" />
+        ) : (
+          <RiArrowDownSLine className="w-4 h-4 text-gray-400 shrink-0" />
+        )}
+      </button>
+
+      {open && (
+        <div className="bg-white">
+          {entry.reasoning && (
+            <p className="px-4 pt-3 text-xs text-gray-500 italic">{entry.reasoning}</p>
+          )}
+          {keys.length === 0 && (
+            <p className="px-4 py-4 text-sm text-gray-400">Nothing to display.</p>
+          )}
+          {keys.map((k) => (
+            <div key={k} className="px-1 pb-2">
+              <p className="px-4 pt-3 pb-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                {SECTION_TITLES[k] ?? k}
+              </p>
+              {sectionBody(k, valueFor(k))}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -409,6 +495,7 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
           reasoning: pt.llm_reasoning,
           date: pt.created_at,
           initial: false,
+          patch: pt.patch ?? {},
         }));
         // Synthesize the v1 entry — initial generation never writes a patch row
         entries.push({
@@ -417,6 +504,7 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
           reasoning: "",
           date: planRow?.created_at ?? "",
           initial: true,
+          patch: null,
         });
         entries.sort((a, b) => b.version - a.version);
         setHistory(entries);
@@ -493,24 +581,13 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
             {planId && historyLoading && (
               <p className="text-sm text-gray-400 text-center pt-12">Loading history…</p>
             )}
+            {planId && !historyLoading && history.length === 0 && (
+              <p className="text-sm text-gray-400 text-center pt-12">No history yet</p>
+            )}
             {planId && !historyLoading && history.length > 0 && (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {history.map((h) => (
-                  <div key={h.version} className="border-l-2 border-blue-200 pl-4">
-                    <p className="text-xs text-gray-400 flex items-center gap-2">
-                      <span className="font-semibold text-gray-600">v{h.version}</span>
-                      {h.date && <span>{h.date.slice(0, 10)}</span>}
-                      {h.initial && (
-                        <span className="text-[10px] font-medium px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded-full">
-                          initial
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-sm text-gray-700 font-medium mt-0.5">{h.request}</p>
-                    {h.reasoning && (
-                      <p className="text-xs text-gray-400 mt-0.5">{h.reasoning}</p>
-                    )}
-                  </div>
+                  <HistoryRow key={h.version} entry={h} plan={plan} />
                 ))}
               </div>
             )}
