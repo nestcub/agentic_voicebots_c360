@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 
 # Make the repo root importable when run directly.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from orchestrator.store import LocalStore
+from orchestrator.store import MemoryStore
 from orchestrator.adapters.simulation import SimulationVoiceDispatcher, StoreCRMAdapter
 from orchestrator.engines.followup import FollowupEngine
 from orchestrator.engines.dispatch import DispatchEngine
@@ -32,17 +31,9 @@ from orchestrator.models import (
 DIDS = ["+910000000001", "+910000000002"]
 
 
-def _fresh_path() -> str:
-    """A unique temp DB path so every test starts on a fresh, empty LocalStore."""
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.unlink(path)  # let LocalStore create it from scratch
-    return path
-
-
 def _build():
     """Fresh store + the full engine stack wired exactly as the orchestrator wires it."""
-    store = LocalStore(_fresh_path())
+    store = MemoryStore()
     voice = SimulationVoiceDispatcher(DIDS)
     crm = StoreCRMAdapter(store)
     followup = FollowupEngine(store, voice, crm)

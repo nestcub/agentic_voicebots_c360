@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 from datetime import datetime, timedelta, timezone
 
 # Make the repo root importable when run as a plain script (python3 tests/test_followup.py).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator.engines.followup import FollowupEngine
-from orchestrator.store import LocalStore
+from orchestrator.store import MemoryStore
 from orchestrator.adapters.simulation import SimulationVoiceDispatcher, StoreCRMAdapter
 from orchestrator.adapters.base import CallResult
 from orchestrator.models import (
@@ -37,14 +36,12 @@ from orchestrator.models import (
 
 # ── helpers ──────────────────────────────────────────────────────────────────────
 
-def _fresh_store() -> LocalStore:
-    """A LocalStore on a unique temp path, so every test is fully isolated."""
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="followup_test_")
-    os.close(fd)
-    return LocalStore(path)
+def _fresh_store() -> MemoryStore:
+    """A brand-new in-memory store, so every test is fully isolated."""
+    return MemoryStore()
 
 
-def _seed_lead(store: LocalStore, *, account_id="a", region="Mumbai",
+def _seed_lead(store: MemoryStore, *, account_id="a", region="Mumbai",
                branch="Andheri") -> str:
     """Insert a Lead into T_LEADS so process_due can resolve a phone; return its id."""
     lead = Lead(
