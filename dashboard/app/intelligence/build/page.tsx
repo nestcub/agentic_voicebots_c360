@@ -18,6 +18,12 @@ export default function BuildPage() {
   const [diff, setDiff] = useState<Record<string, { before: unknown; after: unknown }> | null>(null);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
 
+  const [useCase, setUseCase] = useState("");
+  const [useCaseSaved, setUseCaseSaved] = useState(false);
+  const [kbContent, setKbContent] = useState("");
+  const [kbSaved, setKbSaved] = useState(false);
+  const [kbOpen, setKbOpen] = useState(false);
+
   // Hydrate plan from context
   useEffect(() => {
     if (latestPlan && !plan) {
@@ -26,6 +32,19 @@ export default function BuildPage() {
       setVersion(latestPlan.version);
     }
   }, [latestPlan]);
+
+  // Prefill use case and KB when clientId changes
+  useEffect(() => {
+    if (!clientId) return;
+    fetch(`/api/intelligence/session/${clientId}`)
+      .then(r => r.json())
+      .then(d => setUseCase(d.use_case || ""))
+      .catch(() => {});
+    fetch(`/api/intelligence/kb/${clientId}`)
+      .then(r => r.json())
+      .then(d => setKbContent(d.content || ""))
+      .catch(() => {});
+  }, [clientId]);
 
   function handlePlanUpdate(data: {
     plan: Record<string, unknown> | null;
@@ -40,6 +59,26 @@ export default function BuildPage() {
     if (data.version != null) setVersion(data.version);
     if (data.plan_changed && data.diff) setDiff(data.diff);
     else setDiff(null);
+  }
+
+  async function saveUseCase() {
+    await fetch(`/api/intelligence/session/${clientId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ use_case: useCase }),
+    });
+    setUseCaseSaved(true);
+    setTimeout(() => setUseCaseSaved(false), 2000);
+  }
+
+  async function saveKb() {
+    await fetch(`/api/intelligence/kb/${clientId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: kbContent }),
+    });
+    setKbSaved(true);
+    setTimeout(() => setKbSaved(false), 2000);
   }
 
   async function approveFact(id: string) {
@@ -81,9 +120,58 @@ export default function BuildPage() {
 
       {/* Main split layout */}
       <div className="grid lg:grid-cols-[1fr_1.2fr] gap-6">
-        {/* Left: Chat */}
-        <div className="min-w-0">
-          <ChatThread clientId={clientId} onPlanUpdate={handlePlanUpdate} />
+        {/* Left: Use Case + KB + Chat */}
+        <div className="min-w-0 flex flex-col gap-0 rounded-xl overflow-hidden border border-white/10 bg-white/5">
+          {/* Use Case section */}
+          <div className="flex flex-col gap-2 p-4 border-b border-white/10">
+            <label className="text-xs font-semibold text-white/50 uppercase tracking-wide">Use Case</label>
+            <textarea
+              className="w-full rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 p-2 resize-none focus:outline-none focus:border-white/30"
+              rows={3}
+              placeholder="Describe the bot you want to build..."
+              value={useCase}
+              onChange={e => { setUseCase(e.target.value); setUseCaseSaved(false); }}
+            />
+            <button
+              onClick={saveUseCase}
+              className="self-end text-xs px-3 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition"
+            >
+              {useCaseSaved ? "Saved ✓" : "Save"}
+            </button>
+          </div>
+
+          {/* Knowledge Base section (collapsible) */}
+          <div className="border-b border-white/10">
+            <button
+              onClick={() => setKbOpen(o => !o)}
+              className="w-full flex items-center justify-between px-4 py-2 text-xs font-semibold text-white/50 uppercase tracking-wide hover:text-white/70 transition"
+            >
+              <span>Knowledge Base</span>
+              <span>{kbOpen ? "▲" : "▼"}</span>
+            </button>
+            {kbOpen && (
+              <div className="flex flex-col gap-2 px-4 pb-4">
+                <textarea
+                  className="w-full rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 p-2 resize-none focus:outline-none focus:border-white/30"
+                  rows={6}
+                  placeholder="Paste FAQs, pricing, scripts, escalation contacts..."
+                  value={kbContent}
+                  onChange={e => { setKbContent(e.target.value); setKbSaved(false); }}
+                />
+                <button
+                  onClick={saveKb}
+                  className="self-end text-xs px-3 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition"
+                >
+                  {kbSaved ? "Saved ✓" : "Save"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Chat */}
+          <div className="flex-1">
+            <ChatThread clientId={clientId} onPlanUpdate={handlePlanUpdate} />
+          </div>
         </div>
 
         {/* Right: Plan artifact + Knowledge drawer toggle */}
