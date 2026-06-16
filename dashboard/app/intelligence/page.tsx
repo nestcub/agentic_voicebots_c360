@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, CardHeader } from "@/components/Card";
 import { RiMicLine, RiHammerLine, RiBookOpenLine } from "react-icons/ri";
+import { useIntelligence } from "@/context/IntelligenceContext";
 
 const SECTIONS = [
   { href: "/intelligence/transcribe", label: "Transcribe", Icon: RiMicLine,      desc: "Upload call recordings and extract insights" },
@@ -12,27 +12,7 @@ const SECTIONS = [
 ];
 
 export default function IntelligencePage() {
-  const [clientId, setClientId] = useState("");
-  const [transcripts, setTranscripts] = useState<any[]>([]);
-  const [plans, setPlans] = useState<any[]>([]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem("intel_client_id") ?? "";
-    setClientId(saved);
-  }, []);
-
-  useEffect(() => {
-    if (!clientId) return;
-    fetch(`/api/intelligence/transcripts?client_id=${encodeURIComponent(clientId)}`)
-      .then((r) => r.json()).then((d) => setTranscripts(Array.isArray(d) ? d.slice(0, 5) : [])).catch(() => {});
-    fetch(`/api/intelligence/plans?client_id=${encodeURIComponent(clientId)}`)
-      .then((r) => r.json()).then((d) => setPlans(Array.isArray(d) ? d.slice(0, 5) : [])).catch(() => {});
-  }, [clientId]);
-
-  function saveClientId(v: string) {
-    setClientId(v);
-    localStorage.setItem("intel_client_id", v);
-  }
+  const { clientId, setClientId, plans, transcripts } = useIntelligence();
 
   return (
     <div className="space-y-6">
@@ -47,7 +27,7 @@ export default function IntelligencePage() {
         <input
           type="text"
           value={clientId}
-          onChange={(e) => saveClientId(e.target.value)}
+          onChange={(e) => setClientId(e.target.value)}
           placeholder="e.g. autovista"
           className="mt-2 w-full max-w-sm px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />

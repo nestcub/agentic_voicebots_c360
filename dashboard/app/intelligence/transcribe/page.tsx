@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardHeader } from "@/components/Card";
+import { useTranscriptCache } from "@/context/IntelligenceContext";
 import {
   RiUploadCloud2Line,
   RiCheckboxCircleLine,
@@ -60,8 +61,6 @@ type TranscriptDetail = {
 };
 type InsightDetail = Insights & { insight_id: string; raw_insights_json?: Record<string, unknown> };
 
-type StoredTranscript = { id: string; filename: string; duration: number; created_at: string };
-
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const SENTIMENT_COLOR: Record<string, string> = {
@@ -82,6 +81,7 @@ function fmtSeconds(s: number) {
 
 export default function TranscribePage() {
   const [clientId, setClientId] = useState("");
+  const { transcripts, refreshTranscripts } = useTranscriptCache();
 
   // provider & options
   const [provider, setProvider] = useState<"sarvam" | "deepgram">("sarvam");
@@ -104,9 +104,6 @@ export default function TranscribePage() {
   const [saveError, setSaveError] = useState("");
   const [viewerError, setViewerError] = useState<string | null>(null);
 
-  // history
-  const [history, setHistory] = useState<StoredTranscript[]>([]);
-
   const inputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -115,21 +112,8 @@ export default function TranscribePage() {
   // ── Init ──
 
   useEffect(() => {
-    const id = localStorage.getItem("intel_client_id") ?? "";
-    setClientId(id);
-    if (id) loadHistory(id);
+    setClientId(localStorage.getItem("intel_client_id") ?? "");
   }, []);
-
-  // ── History ──
-
-  function loadHistory(id: string) {
-    fetch(`${INTEL_URL}/transcripts?client_id=${encodeURIComponent(id)}`, {
-      headers: apiHeaders(),
-    })
-      .then((r) => r.json())
-      .then((d) => setHistory(Array.isArray(d) ? d : []))
-      .catch(() => {});
-  }
 
   // ── Drop zone ──
 
@@ -204,7 +188,7 @@ export default function TranscribePage() {
         stopPolling();
         stopTimer();
         setBatchDone(true);
-        loadHistory(clientId);
+        refreshTranscripts();
       }
     } catch {
       // swallow network errors during polling
@@ -419,7 +403,7 @@ export default function TranscribePage() {
       </Card>
 
       {/* Queue / History (left) + Viewer (right) — always rendered once there's something to show */}
-      {(showQueue || history.length > 0 || viewingTranscript || loadingViewer || viewerError) && (
+      {(showQueue || transcripts.length > 0 || viewingTranscript || loadingViewer || viewerError) && (
         <div className="grid md:grid-cols-2 gap-6">
           {/* Left column: Queue when active, History when idle */}
           {showQueue ? (
@@ -486,12 +470,12 @@ export default function TranscribePage() {
             </Card>
           ) : (
             <Card className="p-0 overflow-hidden">
-              <CardHeader title="Transcript history" hint={`${history.length} recordings`} />
+              <CardHeader title="Transcript history" hint={`${transcripts.length} recordings`} />
               <div className="divide-y divide-gray-100 max-h-[420px] overflow-y-auto">
-                {history.length === 0 && (
+                {transcripts.length === 0 && (
                   <p className="px-5 py-6 text-sm text-gray-400">No recordings yet.</p>
                 )}
-                {history.map((t) => (
+                {transcripts.map((t) => (
                   <div
                     key={t.id}
                     onClick={() => loadTranscript(t.id)}
