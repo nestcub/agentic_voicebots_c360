@@ -126,7 +126,7 @@ export default function BuildPage() {
           <div className="flex flex-col gap-2 p-4 border-b border-white/10">
             <label className="text-xs font-semibold text-white/50 uppercase tracking-wide">Use Case</label>
             <textarea
-              className="w-full rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 p-2 resize-none focus:outline-none focus:border-white/30"
+              className="w-full rounded-lg bg-white/5 border border-white/10 text-sm text-black placeholder-gray-400 p-2 resize-none focus:outline-none focus:border-white/30"
               rows={3}
               placeholder="Describe the bot you want to build..."
               value={useCase}
@@ -146,13 +146,13 @@ export default function BuildPage() {
               onClick={() => setKbOpen(o => !o)}
               className="w-full flex items-center justify-between px-4 py-2 text-xs font-semibold text-white/50 uppercase tracking-wide hover:text-white/70 transition"
             >
-              <span>Knowledge Base</span>
+              <span>Bot&apos;s Knowledge Base</span>
               <span>{kbOpen ? "▲" : "▼"}</span>
             </button>
             {kbOpen && (
               <div className="flex flex-col gap-2 px-4 pb-4">
                 <textarea
-                  className="w-full rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 p-2 resize-none focus:outline-none focus:border-white/30"
+                  className="w-full rounded-lg bg-white/5 border border-white/10 text-sm text-black placeholder-gray-400 p-2 resize-none focus:outline-none focus:border-white/30"
                   rows={6}
                   placeholder="Paste FAQs, pricing, scripts, escalation contacts..."
                   value={kbContent}
