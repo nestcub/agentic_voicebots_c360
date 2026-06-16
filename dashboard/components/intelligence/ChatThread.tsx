@@ -6,6 +6,47 @@ import { RiSendPlaneLine, RiRobot2Line, RiUserLine } from "react-icons/ri";
 
 type Turn = { role: "user" | "assistant"; content: string };
 
+function safeParseJson(value: string): unknown | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractErrorMessage(payload: unknown, fallback: string): string {
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    const candidates = [
+      record.message,
+      record.error,
+      record.detail,
+      record.details,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+
+      if (candidate && typeof candidate === "object") {
+        const nested = extractErrorMessage(candidate, "");
+        if (nested) return nested;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+function formatAssistantError(status: number | null, message: string): string {
+  const prefix = status ? `Request failed (${status})` : "Request failed";
+  return `${prefix}: ${message}`;
+}
+
 export interface ChatThreadProps {
   clientId: string;
   onPlanUpdate: (data: {
@@ -40,29 +81,68 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ client_id: clientId, message: userMsg }),
       });
-      const data = await res.json();
-      setTurns((t) => [
-        ...t,
-        { role: "assistant", content: data.reply ?? JSON.stringify(data) },
-      ]);
-      onPlanUpdate({
-        plan: data.plan ?? null,
-        plan_id: data.plan_id ?? null,
-        diff: data.diff ?? null,
-        version: data.version ?? null,
-        plan_changed: data.plan_changed ?? false,
-        mode: data.mode ?? "",
-      });
-    } catch {
+
+      const raw = await res.text();
+      const data = safeParseJson(raw);
+
+      if (!res.ok) {
+        const message = extractErrorMessage(
+          data ?? raw,
+          "The intelligence service returned an error.",
+        );
+        setTurns((t) => [
+          ...t,
+          {
+            role: "assistant",
+            content: formatAssistantError(res.status, message),
+          },
+        ]);
+        return;
+      }
+
       setTurns((t) => [
         ...t,
         {
           role: "assistant",
-          content: "Request failed. Is the intelligence server running?",
+          content:
+            data && typeof data === "object" && "reply" in data
+              ? String((data as { reply?: unknown }).reply ?? "")
+              : raw,
         },
       ]);
+
+      const response =
+        data && typeof data === "object"
+          ? (data as Record<string, unknown>)
+          : {};
+
+      onPlanUpdate({
+        plan: (response.plan as Record<string, unknown> | null | undefined) ?? null,
+        plan_id: (response.plan_id as string | null | undefined) ?? null,
+        diff:
+          (response.diff as
+            | Record<string, { before: unknown; after: unknown }>
+            | null
+            | undefined) ?? null,
+        version: (response.version as number | null | undefined) ?? null,
+        plan_changed: (response.plan_changed as boolean | undefined) ?? false,
+        mode: (response.mode as string | undefined) ?? "",
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Unable to reach the intelligence service.";
+      setTurns((t) => [
+        ...t,
+        {
+          role: "assistant",
+          content: formatAssistantError(null, message),
+        },
+      ]);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   return (

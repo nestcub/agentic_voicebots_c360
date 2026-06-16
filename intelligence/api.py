@@ -9,12 +9,14 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from transcription.engine import TranscriptionEngine
 from intelligence.designer import WorkflowDesigner
+from shared.llm_client import LLMCompletionError
 from shared.db import (
     init_db,
     get_transcripts, get_transcript, get_insight_by_transcript,
@@ -217,7 +219,10 @@ async def converse(body: dict, _: None = Depends(auth)):
     message = body.get("message", "").strip()
     if not client_id or not message:
         raise HTTPException(status_code=400, detail="client_id and message are required.")
-    return _designer().converse(client_id, message)
+    try:
+        return _designer().converse(client_id, message)
+    except LLMCompletionError as exc:
+        return JSONResponse(status_code=502, content=exc.to_dict())
 
 # ── Plans ─────────────────────────────────────────────────────────────────────
 @app.get("/plans")
