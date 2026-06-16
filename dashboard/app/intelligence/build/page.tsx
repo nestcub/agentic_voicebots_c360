@@ -5,62 +5,27 @@ import ChatThread from "@/components/intelligence/ChatThread";
 import PlanArtifact from "@/components/intelligence/PlanArtifact";
 import { Card } from "@/components/Card";
 import { RiBookOpenLine, RiCloseLine, RiCheckLine } from "react-icons/ri";
-
-type KnowledgeFact = {
-  id: string;
-  topic: string;
-  fact: string;
-  source: string;
-  status: string;
-  created_at: string;
-};
+import { useIntelligence, usePlanCache, useKnowledgeCache } from "@/context/IntelligenceContext";
 
 export default function BuildPage() {
-  const [clientId, setClientId] = useState("");
+  const { clientId } = useIntelligence();
+  const { latestPlan, plansLoading } = usePlanCache();
+  const { knowledgeFacts, knowledgeLoading, refreshKnowledge } = useKnowledgeCache();
+
   const [plan, setPlan] = useState<Record<string, unknown> | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
   const [version, setVersion] = useState<number | null>(null);
   const [diff, setDiff] = useState<Record<string, { before: unknown; after: unknown }> | null>(null);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
-  const [knowledgeFacts, setKnowledgeFacts] = useState<KnowledgeFact[]>([]);
-  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
 
-  // Load clientId and hydrate latest plan on mount
+  // Hydrate plan from context
   useEffect(() => {
-    const id = localStorage.getItem("intel_client_id") ?? "";
-    setClientId(id);
-    if (id) {
-      fetch(`/api/intelligence/plans?client_id=${encodeURIComponent(id)}`)
-        .then((r) => r.json())
-        .then(async (plans) => {
-          if (Array.isArray(plans) && plans.length > 0) {
-            const latest = plans[0];
-            const full = await fetch(`/api/intelligence/plans/${latest.id}`).then((r) => r.json());
-            setPlan(full.plan ?? null);
-            setPlanId(full.id);
-            setVersion(full.version);
-          }
-        })
-        .catch(() => {});
+    if (latestPlan && !plan) {
+      setPlan(latestPlan.plan ?? null);
+      setPlanId(latestPlan.id);
+      setVersion(latestPlan.version);
     }
-  }, []);
-
-  // Fetch knowledge when drawer opens
-  useEffect(() => {
-    if (!knowledgeOpen) return;
-    setKnowledgeLoading(true);
-    Promise.all([
-      fetch("/api/intelligence/knowledge?status=active").then((r) => r.json()),
-      fetch("/api/intelligence/knowledge?status=pending").then((r) => r.json()),
-    ])
-      .then(([active, pending]) => {
-        const a = Array.isArray(active) ? active : [];
-        const p = Array.isArray(pending) ? pending : [];
-        setKnowledgeFacts([...a, ...p]);
-      })
-      .catch(() => {})
-      .finally(() => setKnowledgeLoading(false));
-  }, [knowledgeOpen]);
+  }, [latestPlan]);
 
   function handlePlanUpdate(data: {
     plan: Record<string, unknown> | null;
@@ -84,9 +49,7 @@ export default function BuildPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "active" }),
       });
-      setKnowledgeFacts((facts) =>
-        facts.map((f) => (f.id === id ? { ...f, status: "active" } : f))
-      );
+      refreshKnowledge();
     } catch {
       // ignore
     }
@@ -112,6 +75,10 @@ export default function BuildPage() {
         </div>
       )}
 
+      {plansLoading && !plan && (
+        <p className="text-sm text-gray-400">Loading plan…</p>
+      )}
+
       {/* Main split layout */}
       <div className="grid lg:grid-cols-[1fr_1.2fr] gap-6">
         {/* Left: Chat */}
@@ -125,7 +92,7 @@ export default function BuildPage() {
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium text-gray-600">Plan Artifact</span>
             <button
-              onClick={() => setKnowledgeOpen((o) => !o)}
+              onClick={() => { setKnowledgeOpen((o) => !o); if (!knowledgeOpen) refreshKnowledge(); }}
               title="Toggle Knowledge Drawer"
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
                 knowledgeOpen
