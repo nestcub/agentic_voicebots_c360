@@ -152,10 +152,11 @@ export default function TranscribePage() {
 
     if (fileItems.length === 1) {
       setFileItems((prev) => [{ ...prev[0], status: "processing" }]);
+      startTimer();
       const form = new FormData();
       form.append("file", fileItems[0].file);
       form.append("client_id", clientId);
-      form.append("provider", provider);
+      form.append("provider", "deepgram");
       form.append("language_code", language);
       form.append("insight_model", insightModel);
       form.append("swap_roles", String(swapRoles));
@@ -177,6 +178,7 @@ export default function TranscribePage() {
         setFileItems((prev) => [{ ...prev[0], status: "failed", error: err instanceof Error ? err.message : "Failed." }]);
         setSubmitError(err instanceof Error ? err.message : "Submission failed.");
       } finally {
+        stopTimer();
         setSubmitting(false);
       }
       return;
@@ -454,6 +456,7 @@ export default function TranscribePage() {
           />
           Customer speaks first
         </label>
+        <p className="text-xs text-gray-400">Single files always use Deepgram for speed.</p>
       </div>
 
       {/* Upload zone */}
@@ -517,7 +520,9 @@ export default function TranscribePage() {
                     ? batchDone
                       ? `${completedCount}/${totalCount} done`
                       : `${completedCount}/${totalCount} complete · ${fmtSeconds(elapsed)} elapsed`
-                    : `${totalCount} file(s) ready`
+                    : submitting
+                      ? `Transcribing… ${fmtSeconds(elapsed)}`
+                      : `${totalCount} file(s) ready`
                 }
               />
 
