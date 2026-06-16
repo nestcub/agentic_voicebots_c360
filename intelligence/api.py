@@ -93,6 +93,10 @@ async def transcribe(
     insight_provider = _INSIGHT_PROVIDER_MAP.get(insight_model, "anthropic")
     try:
         return _engine().transcribe(tmp_path, client_id, provider=provider, language_code=language_code, insight_provider=insight_provider)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {e}")
     finally:
         os.unlink(tmp_path)
 
