@@ -74,12 +74,13 @@ const IntelligenceContext = createContext<IntelligenceContextValue | null>(null)
 // ---------------------------------------------------------------------------
 
 export function IntelligenceProvider({ children }: { children: ReactNode }) {
-  const [clientId, _setClientId] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("intel_client_id") ?? "";
-    }
-    return "";
-  });
+  const [clientId, _setClientId] = useState<string>("");
+
+  // Read localStorage after mount — avoids SSR/client hydration mismatch
+  useEffect(() => {
+    const stored = localStorage.getItem("intel_client_id") ?? "";
+    if (stored) _setClientId(stored);
+  }, []);
 
   // Plans
   const [plans, setPlans] = useState<PlanRow[]>([]);

@@ -82,12 +82,12 @@ export default function BuildPage() {
       {/* Main split layout */}
       <div className="grid lg:grid-cols-[1fr_1.2fr] gap-6">
         {/* Left: Chat */}
-        <div>
+        <div className="min-w-0">
           <ChatThread clientId={clientId} onPlanUpdate={handlePlanUpdate} />
         </div>
 
         {/* Right: Plan artifact + Knowledge drawer toggle */}
-        <div className="relative">
+        <div className="relative min-w-0">
           {/* Artifact column header with knowledge toggle */}
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium text-gray-600">Plan Artifact</span>

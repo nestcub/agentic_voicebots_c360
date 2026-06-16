@@ -33,6 +33,10 @@ def _get_pool() -> ConnectionPool:
         _pool = ConnectionPool(
             _DATABASE_URL,
             kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            min_size=0,       # no persistent idle connections — lets Neon auto-suspend
+            max_size=10,
+            max_idle=30,      # discard connections idle >30s before Neon kills them
+            max_lifetime=180, # recycle connections every 3 min < Neon's 5-min suspend
             open=True,
         )
     return _pool
