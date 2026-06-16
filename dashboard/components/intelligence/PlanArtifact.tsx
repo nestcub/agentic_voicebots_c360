@@ -411,7 +411,7 @@ function HistoryRow({
     entry.initial ? plan?.[k] : entry.patch?.[k];
 
   return (
-    <div className="border border-gray-100 rounded-xl overflow-hidden">
+    <div className="border border-gray-100 rounded-xl overflow-hidden min-w-0">
       <button
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
@@ -450,7 +450,7 @@ function HistoryRow({
             <p className="px-4 py-4 text-sm text-gray-400">Nothing to display.</p>
           )}
           {keys.map((k) => (
-            <div key={k} className="px-1 pb-2">
+            <div key={k} className="px-1 pb-2 min-w-0 overflow-x-hidden">
               <p className="px-4 pt-3 pb-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
                 {SECTION_TITLES[k] ?? k}
               </p>
@@ -574,7 +574,7 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
         )}
 
         {tab === "history" && (
-          <div className="p-5">
+          <div className="p-5 min-w-0 overflow-x-hidden">
             {!planId && (
               <p className="text-sm text-gray-400 text-center pt-12">No plan loaded yet</p>
             )}
@@ -585,7 +585,7 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
               <p className="text-sm text-gray-400 text-center pt-12">No history yet</p>
             )}
             {planId && !historyLoading && history.length > 0 && (
-              <div className="space-y-2">
+              <div className="space-y-2 min-w-0">
                 {history.map((h) => (
                   <HistoryRow key={h.version} entry={h} plan={plan} />
                 ))}
