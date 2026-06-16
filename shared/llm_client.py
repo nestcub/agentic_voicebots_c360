@@ -1,4 +1,4 @@
-"""Provider-agnostic LLM client. Tonight: Anthropic only. Tomorrow: add Azure OpenAI."""
+"""Provider-agnostic LLM client — Anthropic and OpenAI."""
 
 import json
 import os
@@ -23,29 +23,35 @@ class LLMClient:
             import anthropic
             self._client = anthropic.Anthropic(api_key=api_key)
 
-        # Tomorrow: Azure OpenAI
-        # elif self.provider == "azure":
-        #     from openai import AzureOpenAI
-        #     self._client = AzureOpenAI(
-        #         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        #         api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
-        #         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        #     )
-        #     self.model = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        elif self.provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY is not set in environment.")
+            self.model = os.getenv("OPENAI_INSIGHT_MODEL", "gpt-4.1")
+            from openai import OpenAI
+            self._client = OpenAI(api_key=api_key)
+
+        elif self.provider == "azure":
+            api_key = os.getenv("AZURE_OPENAI_API_KEY")
+            azure_endpoint = os.getenv("AZURE_OPENAI_BASE_URL")
+            if not api_key or not azure_endpoint:
+                raise ValueError("AZURE_OPENAI_API_KEY and AZURE_OPENAI_BASE_URL must be set in environment.")
+            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+            self.model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1")
+            from openai import AzureOpenAI
+            self._client = AzureOpenAI(api_key=api_key, azure_endpoint=azure_endpoint, api_version=api_version)
 
         else:
             raise ValueError(
-                f"Unsupported LLM provider: '{self.provider}'. Supported: 'anthropic'."
+                f"Unsupported LLM provider: '{self.provider}'. Supported: 'anthropic', 'openai', 'azure'."
             )
 
     def complete(self, system, user: str, max_tokens: int = 4096, cache_system: bool = True) -> str:
         """Send system + user prompt; return assistant text as string.
 
         system may be:
-          - str: wrapped in a single cached block (as before)
-          - list of {"text": str, "cache": bool}: each block rendered with optional cache_control
-        The large canvas reference (block 1) and platform knowledge (block 2) are both marked
-        cache=True so each warms its own cache breakpoint. Max 4 breakpoints — we use 2.
+          - str: wrapped in a single cached block (Anthropic) or plain string (OpenAI)
+          - list of {"text": str, "cache": bool}: Anthropic cache-control blocks; flattened for OpenAI
         """
         if self.provider == "anthropic":
             if isinstance(system, list):
@@ -70,6 +76,32 @@ class LLMClient:
             )
             self.last_usage = getattr(response, "usage", None)
             return response.content[0].text
+
+        elif self.provider == "openai":
+            # Flatten list-of-blocks to plain string — OpenAI doesn't use cache blocks
+            sys_text = system if isinstance(system, str) else "\n\n".join(
+                b["text"] for b in system if b.get("text")
+            )
+            response = self._client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "system", "content": sys_text},
+                           {"role": "user",   "content": user}],
+            )
+            return response.choices[0].message.content
+
+        elif self.provider == "azure":
+            sys_text = system if isinstance(system, str) else "\n\n".join(
+                b["text"] for b in system if b.get("text")
+            )
+            response = self._client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "system", "content": sys_text},
+                           {"role": "user",   "content": user}],
+            )
+            return response.choices[0].message.content
+
         raise NotImplementedError(f"complete() not implemented for '{self.provider}'.")
 
     @staticmethod
