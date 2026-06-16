@@ -220,11 +220,17 @@ class LLMClient:
         try:
             if self.provider == "anthropic":
                 if isinstance(system, list):
-                    system_param = [
-                        {"type": "text", "text": b["text"],
-                         **({"cache_control": {"type": "ephemeral"}} if b.get("cache") else {})}
-                        for b in system if b.get("text")
-                    ]
+                    system_param = []
+                    for b in system:
+                        if not b.get("text"):
+                            continue
+                        block = {"type": "text", "text": b["text"]}
+                        if b.get("cache"):
+                            cc = {"type": "ephemeral"}
+                            if b.get("ttl"):
+                                cc["ttl"] = b["ttl"]
+                            block["cache_control"] = cc
+                        system_param.append(block)
                 elif cache_system and system:
                     system_param = [{
                         "type": "text",

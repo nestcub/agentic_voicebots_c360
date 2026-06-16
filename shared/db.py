@@ -168,6 +168,11 @@ def init_db(path: str = DB_PATH) -> None:
         )""",
         """CREATE INDEX IF NOT EXISTS batch_items_batch_idx
             ON transcription_batch_items(batch_id)""",
+        """CREATE TABLE IF NOT EXISTS bot_kb (
+            client_id  TEXT PRIMARY KEY,
+            content    TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )""",
     ]
     with _get_pool().connection() as conn:
         for stmt in ddl_statements:
@@ -576,6 +581,31 @@ def get_batch_items(batch_id: str) -> list:
         ).fetchall()
     return list(rows)
 
+
+# ── Bot KB ───────────────────────────────────────────────────────────────────
+
+def get_kb(client_id: str, path: str = DB_PATH) -> dict | None:
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT content, updated_at FROM bot_kb WHERE client_id=%s",
+            (client_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"content": row["content"], "updated_at": row["updated_at"]}
+
+
+def upsert_kb(client_id: str, content: str, path: str = DB_PATH) -> None:
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """INSERT INTO bot_kb (client_id, content, updated_at)
+               VALUES (%s, %s, %s)
+               ON CONFLICT (client_id) DO UPDATE SET content=%s, updated_at=%s""",
+            (client_id, content, _now(), content, _now()),
+        )
+
+
+# ── Transcription batches ─────────────────────────────────────────────────────
 
 def refresh_batch_counts(batch_id: str) -> None:
     """Recompute completed/failed counts from items and update the batch row."""
