@@ -115,8 +115,8 @@ class TranscriptionEngine:
     ) -> None:
         """Transcribe multiple files with optimized parallelism.
 
-        Sarvam: short files (<=25s) go directly to sync API; longer files are grouped
-        into batches of <=20 and submitted as Sarvam batch jobs simultaneously.
+        Sarvam: all files are grouped into batches of <=20 and submitted as Sarvam
+        batch jobs simultaneously.
         Deepgram: fires all files in parallel via ThreadPoolExecutor(max_workers=10).
 
         on_file_done(filename: str, result: dict | Exception) called per file.
@@ -129,43 +129,8 @@ class TranscriptionEngine:
         else:
             self._transcribe_many_sarvam(file_paths, client_id, swap_roles, on_file_done, language_code, insight_provider)
 
-    def _transcribe_sarvam_sync(self, audio_path: str, duration: float, swap_roles: bool = False, language_code: str = "hi-IN") -> list:
-        """Transcribe a short file (<=25s) using Sarvam's synchronous STT API. Much faster than batch for short clips."""
-        if not self._sarvam_key:
-            raise ValueError("SARVAM_API_KEY is not set in environment.")
-
-        from sarvamai import SarvamAI
-
-        sarvam = SarvamAI(api_subscription_key=self._sarvam_key)
-        mime = _mime_type(audio_path)
-        filename = Path(audio_path).name
-
-        with open(audio_path, "rb") as f:
-            response = sarvam.speech_to_text.transcribe(
-                file=(filename, f, mime),
-                model="saarika:v2.5",
-                language_code=language_code,
-                with_diarization=True,
-                with_timestamps=True,
-            )
-
-        # response may be a pydantic model or dict — normalise to dict
-        if hasattr(response, "model_dump"):
-            result = response.model_dump()
-        elif hasattr(response, "__dict__"):
-            result = vars(response)
-        else:
-            result = dict(response)
-
-        return _build_segments(result, duration, swap_roles=swap_roles)
-
     def _transcribe_sarvam(self, audio_path: str, duration: float, swap_roles: bool = False, language_code: str = "hi-IN") -> list:
-        """Transcribe using Sarvam. Routes to sync API for <=25s files, batch API for longer ones."""
-        SYNC_THRESHOLD = 25.0
-        if duration > 0 and duration <= SYNC_THRESHOLD:
-            return self._transcribe_sarvam_sync(audio_path, duration, swap_roles=swap_roles, language_code=language_code)
-
-        # Batch path (unchanged) for longer files or unknown duration
+        """Transcribe using Sarvam's batch API (diarization is only available via batch)."""
         if not self._sarvam_key:
             raise ValueError("SARVAM_API_KEY is not set in environment.")
 
@@ -180,7 +145,10 @@ class TranscriptionEngine:
         )
         job.upload_files([audio_path])
         job.start()
-        status = job.wait_until_complete(poll_interval=5, timeout=600)
+        try:
+            status = job.wait_until_complete(poll_interval=5, timeout=600)
+        except TimeoutError as e:
+            raise RuntimeError(f"Sarvam batch job timed out after 600s — try Deepgram or a shorter file. ({e})") from e
 
         if status.job_state.lower() == "failed":
             raise RuntimeError(f"Sarvam batch job failed: {status.error_message}")
@@ -218,56 +186,17 @@ class TranscriptionEngine:
         return _build_segments_deepgram(response, duration, swap_roles=swap_roles)
 
     def _transcribe_many_sarvam(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done, language_code: str = "hi-IN", insight_provider: str = None) -> None:
-        """Submit files in groups of 20 as Sarvam batch jobs; short files (<=25s) use sync API directly."""
+        """Submit all files as Sarvam batch jobs grouped into chunks of <=20."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from sarvamai import SarvamAI
 
         if not self._sarvam_key:
             raise ValueError("SARVAM_API_KEY is not set.")
 
-        SYNC_THRESHOLD = 25.0
         CHUNK = 20
 
-        # Measure durations and split into short (sync) vs long (batch)
-        short_paths = []
-        long_paths = []
-        for p in file_paths:
-            d = _get_duration(p)
-            if d > 0 and d <= SYNC_THRESHOLD:
-                short_paths.append(p)
-            else:
-                long_paths.append(p)
-
-        def _process_single_sync(path: str) -> tuple:
-            """Handle one short file via sync Sarvam API."""
-            fname = Path(path).name
-            try:
-                duration = _get_duration(path)
-                segments = self._transcribe_sarvam_sync(path, duration, swap_roles=swap_roles, language_code=language_code)
-                transcript_text = "\n".join(
-                    f"[{s['start']:.1f}s] {s['role']}: {s['text']}" for s in segments
-                )
-                transcript_id = save_transcript({
-                    "client_id": client_id,
-                    "filename": fname,
-                    "transcript_text": transcript_text,
-                    "segments": segments,
-                    "duration": duration,
-                }, path=self._db)
-                insight_data = self._extract_insights(transcript_id, client_id, transcript_text, insight_provider=insight_provider)
-                return path, {
-                    "transcript_id": transcript_id,
-                    "transcript": transcript_text,
-                    "segments": segments,
-                    "duration": duration,
-                    "insight_id": insight_data["insight_id"],
-                    "insights": insight_data,
-                }
-            except Exception as e:
-                return path, e
-
         def _run_batch_group(paths: list) -> list:
-            """Submit one Sarvam batch job for a group of long files."""
+            """Submit one Sarvam batch job for a group of files."""
             sarvam = SarvamAI(api_subscription_key=self._sarvam_key)
             job = sarvam.speech_to_text_job.create_job(
                 model="saarika:v2.5",
@@ -277,7 +206,10 @@ class TranscriptionEngine:
             )
             job.upload_files(paths)
             job.start()
-            status = job.wait_until_complete(poll_interval=5, timeout=600)
+            try:
+                status = job.wait_until_complete(poll_interval=5, timeout=600)
+            except TimeoutError as e:
+                raise RuntimeError(f"Sarvam batch job timed out after 600s — try Deepgram or a shorter file. ({e})") from e
 
             results = []
             if status.job_state.lower() == "failed":
@@ -319,29 +251,17 @@ class TranscriptionEngine:
                         results.append((path, e))
             return results
 
-        # Build futures: one per short file + one per batch group of long files
-        groups = [long_paths[i:i + CHUNK] for i in range(0, len(long_paths), CHUNK)]
-        max_workers = len(short_paths) + len(groups)
-        if max_workers == 0:
+        # Build batch groups from all files
+        groups = [file_paths[i:i + CHUNK] for i in range(0, len(file_paths), CHUNK)]
+        if not groups:
             return
 
-        with ThreadPoolExecutor(max_workers=max(max_workers, 1)) as pool:
-            futures = {}
-            for p in short_paths:
-                futures[pool.submit(_process_single_sync, p)] = "sync"
-            for g in groups:
-                futures[pool.submit(_run_batch_group, g)] = "batch"
-
+        with ThreadPoolExecutor(max_workers=max(len(groups), 1)) as pool:
+            futures = [pool.submit(_run_batch_group, g) for g in groups]
             for fut in as_completed(futures):
-                kind = futures[fut]
-                if kind == "sync":
-                    path, result = fut.result()
+                for path, result in fut.result():
                     if on_file_done:
                         on_file_done(Path(path).name, result)
-                else:
-                    for path, result in fut.result():
-                        if on_file_done:
-                            on_file_done(Path(path).name, result)
 
     def _transcribe_many_deepgram(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done, language_code: str = "hi-IN", insight_provider: str = None) -> None:
         """Transcribe all files in parallel via ThreadPoolExecutor."""
