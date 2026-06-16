@@ -11,7 +11,7 @@ from shared.db import (
     save_plan, save_patch, update_plan, init_db,
     load_session, save_session, save_turn, get_turns,
     add_knowledge, get_knowledge, search_bot_examples,
-    search_transcript_chunks,
+    search_transcript_chunks, get_kb,
 )
 from shared.auth import is_admin
 from shared.llm_client import LLMClient
@@ -21,6 +21,48 @@ load_dotenv()
 
 DB_PATH   = os.getenv("DB_PATH", "")  # deprecated no-op; persistence is Neon Postgres via DATABASE_URL
 BOTS_PATH = Path(__file__).parent / "data" / "best_bots.json"
+
+
+_CONVERSE_INSTRUCTIONS = """Decide the intent and respond. Rules:
+- If there is no use case yet, treat the message as the use case (store it in "use_case") and either
+  draft a first plan OR ask 2-4 clarifying questions inside "reply" if key facts are missing.
+- If a plan already exists and the user asks for a change, return ONLY the top-level keys that change in
+  "patch" — never restate unchanged keys (saves tokens). Put a one-paragraph what-changed in "reply".
+- If the user asks an open-ended question or for advice ("the bot fails to recognise speech, what to
+  do?"), set intent="advice", patch=null, full_plan=null, and put the guidance in "reply". Do NOT change
+  the plan unless they explicitly instruct a change.
+- If the user says to incorporate new recordings ("check the new recordings for insights/patterns"),
+  set intent="rescan" and fold the newest insight patterns into the plan as a "patch".
+- Cross-language: you may draw insight PATTERNS from recordings in any language (Marathi etc.), but only
+  build the bot for the languages the user specifies (e.g. keep build_notes.language = Hindi/English).
+- Clarifying questions you need answered go in "reply"; the user answers them in the next message, and you
+  fold the answer in then — do not repeat questions already answered in RECENT TURNS.
+- If the user is teaching a DURABLE Chat360 PLATFORM fact (applies to ALL bots, not just this client —
+  e.g. an engine requirement, a how-to-configure rule, a disconnection/latency technique), set
+  intent="teach" and put it in "proposed_knowledge". If you merely NOTICE such a generalizable platform
+  fact during another request, also add it to "proposed_knowledge" (do not change intent for that).
+  Client-specific project details belong in use_case, NOT in proposed_knowledge.
+  Non-admin teach attempts: the platform knowledge store is curated by the Chat360 team; tell the
+  user their suggestion has been flagged for review.
+- Plan keys, when creating/patching, are exactly: workflow_blueprint, system_prompt,
+  qualification_questions, objection_handling, escalation_rules, kb_scaffold, build_notes. Ground
+  everything in the canvas reference in the system prompt; never invent node types.
+- When writing system_prompt: study every reference_system_prompt section in the retrieved examples
+  above and mirror their structure exactly — include a CRITICAL LANGUAGE RULE block, enforce
+  @bot_language at every GenAI node, follow tool/RAG usage and response-variable conventions.
+  Apply every item in 'Reference-bot known pitfalls' from platform knowledge. Never write a thin
+  or generic system prompt.
+
+Return JSON with exactly these keys:
+{
+  "intent": "use_case | plan | patch | advice | rescan | teach",
+  "use_case": "the current (possibly updated) use case text",
+  "reply": "what to show the user",
+  "plan_action": "none | create | patch",
+  "full_plan": {} or null,
+  "patch": {} or null,
+  "proposed_knowledge": []
+}"""
 
 
 # ── system prompt builder ─────────────────────────────────────────────────────
@@ -123,12 +165,12 @@ def _aggregate_insights(client_id: str, db_path: str) -> dict:
     return {
         "call_count": len(rows),
         "avg_agent_score": avg_score,
-        "objection_patterns": sorted(objections),
-        "qualification_signals": sorted(qual_signals),
-        "escalation_signals": sorted(esc_signals),
-        "kb_gaps": sorted(kb_gaps),
-        "bot_failure_modes": sorted(bot_failures),
-        "suggested_fixes": sorted(suggested_fixes),
+        "objection_patterns": sorted(objections)[:10],
+        "qualification_signals": sorted(qual_signals)[:10],
+        "escalation_signals": sorted(esc_signals)[:10],
+        "kb_gaps": sorted(kb_gaps)[:10],
+        "bot_failure_modes": sorted(bot_failures)[:10],
+        "suggested_fixes": sorted(suggested_fixes)[:10],
     }
 
 
@@ -152,7 +194,7 @@ class WorkflowDesigner:
         """
         insights = _aggregate_insights(client_id, self._db)
         system = [
-            {"text": _canvas_system(), "cache": True},
+            {"text": _canvas_system(), "cache": True, "ttl": "1h"},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
 
@@ -202,7 +244,7 @@ Return JSON array:
         """
         insights = _aggregate_insights(client_id, self._db)
         system = [
-            {"text": _canvas_system(), "cache": True},
+            {"text": _canvas_system(), "cache": True, "ttl": "1h"},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
 
@@ -330,12 +372,17 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
         recent_text = "\n".join(f"{t['role']}: {t['content']}" for t in recent) or "(none)"
 
         system = [
-            {"text": _canvas_system(), "cache": True},
+            {"text": _canvas_system(), "cache": True, "ttl": "1h"},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
+        _kb = get_kb(client_id, path=self._db)
+        if _kb and _kb.get("content", "").strip():
+            system.append({"text": "## Client Bot Knowledge Base\n" + _kb["content"], "cache": True})
+        system.append({"text": _CONVERSE_INSTRUCTIONS, "cache": True, "ttl": "1h"})
 
         _rag_query = f"{use_case or message}\n{message}"
-        _rag_examples = _retrieve_examples(_rag_query, k=8)
+        _k = 3 if current_plan else 8
+        _rag_examples = _retrieve_examples(_rag_query, k=_k)
         _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
 
         _bot_failures_block = ""
@@ -371,48 +418,7 @@ RECENT TURNS:
 {recent_text}
 
 USER MESSAGE:
-{message}
-
-Decide the intent and respond. Rules:
-- If there is no use case yet, treat the message as the use case (store it in "use_case") and either
-  draft a first plan OR ask 2-4 clarifying questions inside "reply" if key facts are missing.
-- If a plan already exists and the user asks for a change, return ONLY the top-level keys that change in
-  "patch" — never restate unchanged keys (saves tokens). Put a one-paragraph what-changed in "reply".
-- If the user asks an open-ended question or for advice ("the bot fails to recognise speech, what to
-  do?"), set intent="advice", patch=null, full_plan=null, and put the guidance in "reply". Do NOT change
-  the plan unless they explicitly instruct a change.
-- If the user says to incorporate new recordings ("check the new recordings for insights/patterns"),
-  set intent="rescan" and fold the newest insight patterns into the plan as a "patch".
-- Cross-language: you may draw insight PATTERNS from recordings in any language (Marathi etc.), but only
-  build the bot for the languages the user specifies (e.g. keep build_notes.language = Hindi/English).
-- Clarifying questions you need answered go in "reply"; the user answers them in the next message, and you
-  fold the answer in then — do not repeat questions already answered in RECENT TURNS.
-- If the user is teaching a DURABLE Chat360 PLATFORM fact (applies to ALL bots, not just this client —
-  e.g. an engine requirement, a how-to-configure rule, a disconnection/latency technique), set
-  intent="teach" and put it in "proposed_knowledge". If you merely NOTICE such a generalizable platform
-  fact during another request, also add it to "proposed_knowledge" (do not change intent for that).
-  Client-specific project details belong in use_case, NOT in proposed_knowledge.
-  Non-admin teach attempts: the platform knowledge store is curated by the Chat360 team; tell the
-  user their suggestion has been flagged for review.
-- Plan keys, when creating/patching, are exactly: workflow_blueprint, system_prompt,
-  qualification_questions, objection_handling, escalation_rules, kb_scaffold, build_notes. Ground
-  everything in the canvas reference in the system prompt; never invent node types.
-- When writing system_prompt: study every reference_system_prompt section in the retrieved examples
-  above and mirror their structure exactly — include a CRITICAL LANGUAGE RULE block, enforce
-  @bot_language at every GenAI node, follow tool/RAG usage and response-variable conventions.
-  Apply every item in 'Reference-bot known pitfalls' from platform knowledge. Never write a thin
-  or generic system prompt.
-
-Return JSON with exactly these keys:
-{{
-  "intent": "use_case | plan | patch | advice | rescan | teach",
-  "use_case": "the current (possibly updated) use case text",
-  "reply": "what to show the user",
-  "plan_action": "none | create | patch",
-  "full_plan": {{}} or null,
-  "patch": {{}} or null,
-  "proposed_knowledge": []
-}}"""
+{message}"""
 
         result = self._llm.complete_json(system, user, max_tokens=16000)
 
