@@ -117,7 +117,7 @@ function SystemPromptContent({ value }: { value: unknown }) {
           </>
         )}
       </button>
-      <pre className="px-5 py-4 pr-20 text-xs text-gray-600 overflow-x-auto whitespace-pre-wrap break-words font-mono leading-relaxed">
+      <pre className="px-5 py-4 pr-20 text-xs text-gray-600 overflow-x-auto max-w-full whitespace-pre-wrap break-words font-mono leading-relaxed">
         {text}
       </pre>
     </div>
@@ -283,7 +283,7 @@ function BuildNotesContent({ value }: { value: unknown }) {
       )}
 
       {Object.keys(rest).length > 0 && (
-        <pre className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words">
+        <pre className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 overflow-x-auto max-w-full whitespace-pre-wrap break-words">
           {JSON.stringify(rest, null, 2)}
         </pre>
       )}
@@ -293,7 +293,7 @@ function BuildNotesContent({ value }: { value: unknown }) {
 
 function GenericContent({ value }: { value: unknown }) {
   return (
-    <pre className="px-5 py-4 text-xs text-gray-600 bg-white overflow-x-auto whitespace-pre-wrap break-words">
+    <pre className="px-5 py-4 text-xs text-gray-600 bg-white overflow-x-auto max-w-full whitespace-pre-wrap break-words">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -323,13 +323,13 @@ function sectionBody(sectionKey: string, value: unknown) {
 
 function DiffPanel({ before, after }: { before: unknown; after: unknown }) {
   return (
-    <div className="mx-5 mb-4 space-y-1">
+    <div className="mx-5 mb-4 space-y-1 min-w-0">
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Diff</p>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div className="bg-red-50 border border-red-100 rounded p-2 text-red-700 font-mono whitespace-pre-wrap break-words">
+      <div className="grid grid-cols-2 gap-2 text-xs min-w-0">
+        <div className="min-w-0 bg-red-50 border border-red-100 rounded p-2 text-red-700 font-mono whitespace-pre-wrap break-words overflow-x-auto">
           {JSON.stringify(before, null, 2)}
         </div>
-        <div className="bg-emerald-50 border border-emerald-100 rounded p-2 text-emerald-700 font-mono whitespace-pre-wrap break-words">
+        <div className="min-w-0 bg-emerald-50 border border-emerald-100 rounded p-2 text-emerald-700 font-mono whitespace-pre-wrap break-words overflow-x-auto">
           {JSON.stringify(after, null, 2)}
         </div>
       </div>
@@ -356,7 +356,7 @@ function Section({ sectionKey, title, value, diff, flashedKeys }: SectionProps) 
 
   return (
     <div
-      className={`border border-gray-100 rounded-xl overflow-hidden ${
+      className={`border border-gray-100 rounded-xl overflow-hidden min-w-0 ${
         isFlashing ? "flash-row" : ""
       }`}
     >
@@ -442,7 +442,7 @@ function HistoryRow({
       </button>
 
       {open && (
-        <div className="bg-white">
+        <div className="bg-white min-w-0 max-w-full overflow-x-hidden">
           {entry.reasoning && (
             <p className="px-4 pt-3 text-xs text-gray-500 italic">{entry.reasoning}</p>
           )}
@@ -524,7 +524,7 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
   ];
 
   return (
-    <Card className="flex flex-col p-0 overflow-hidden min-h-150">
+    <Card className="flex flex-col p-0 overflow-hidden min-h-150 max-w-full">
       {/* Header */}
       <div className="px-5 pt-4 pb-2 flex items-center justify-between border-b border-gray-100">
         <div>
@@ -551,7 +551,7 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
         {tab === "current" && (
           <div className="p-5 space-y-2">
             {!plan && (
