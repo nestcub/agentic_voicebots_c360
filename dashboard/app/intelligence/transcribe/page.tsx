@@ -49,7 +49,7 @@ type Insights = {
   qualification_signals: string[];
   escalation_signals: string[];
   kb_gaps: string[];
-  bot_failure_modes: string[];
+  agent_failure_modes: string[];
   suggested_fixes: string[];
 };
 type TranscriptDetail = {
@@ -85,6 +85,8 @@ export default function TranscribePage() {
 
   // provider & options
   const [provider, setProvider] = useState<"sarvam" | "deepgram">("sarvam");
+  const [language, setLanguage] = useState<"hi-IN" | "mr-IN">("hi-IN");
+  const [insightModel, setInsightModel] = useState<"sonnet" | "gpt-4.1">("sonnet");
   const [swapRoles, setSwapRoles] = useState(false);
 
   // file queue
@@ -134,7 +136,7 @@ export default function TranscribePage() {
     setSubmitError("");
   };
 
-  // ── Submit batch ──
+  // ── Submit ──
 
   async function handleTranscribe() {
     if (!fileItems.length || !clientId) {
@@ -146,10 +148,41 @@ export default function TranscribePage() {
     setBatchDone(false);
     setElapsed(0);
 
+    if (fileItems.length === 1) {
+      setFileItems((prev) => [{ ...prev[0], status: "processing" }]);
+      const form = new FormData();
+      form.append("file", fileItems[0].file);
+      form.append("client_id", clientId);
+      form.append("provider", provider);
+      form.append("language_code", language);
+      form.append("insight_model", insightModel);
+      form.append("swap_roles", String(swapRoles));
+      try {
+        const res = await fetch(`${INTEL_URL}/transcribe`, {
+          method: "POST",
+          headers: apiHeaders(),
+          body: form,
+        });
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const data: { transcript_id: string; transcript: string; segments: Segment[]; duration: number; insight_id: string; insights: Insights } = await res.json();
+        setFileItems([{ file: fileItems[0].file, status: "done", transcriptId: data.transcript_id }]);
+        setBatchDone(true);
+        refreshTranscripts();
+      } catch (err: unknown) {
+        setFileItems((prev) => [{ ...prev[0], status: "failed", error: err instanceof Error ? err.message : "Failed." }]);
+        setSubmitError(err instanceof Error ? err.message : "Submission failed.");
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     const form = new FormData();
     fileItems.forEach((fi) => form.append("files", fi.file));
     form.append("client_id", clientId);
     form.append("provider", provider);
+    form.append("language_code", language);
+    form.append("insight_model", insightModel);
     form.append("swap_roles", String(swapRoles));
 
     try {
@@ -332,7 +365,7 @@ export default function TranscribePage() {
 
       {/* Provider + options bar */}
       <div className="flex flex-wrap items-center gap-4">
-        {/* Pill toggle */}
+        {/* Provider pill toggle */}
         <div className="flex items-center bg-gray-100 rounded-full p-0.5 text-sm font-medium">
           {(["sarvam", "deepgram"] as const).map((p) => (
             <button
@@ -345,6 +378,40 @@ export default function TranscribePage() {
               }`}
             >
               {p === "sarvam" ? "Sarvam" : "Deepgram"}
+            </button>
+          ))}
+        </div>
+
+        {/* Language pill toggle */}
+        <div className="flex items-center bg-gray-100 rounded-full p-0.5 text-sm font-medium">
+          {([["hi-IN", "Hindi"], ["mr-IN", "Marathi"]] as const).map(([code, label]) => (
+            <button
+              key={code}
+              onClick={() => setLanguage(code)}
+              className={`px-4 py-1.5 rounded-full transition-colors ${
+                language === code
+                  ? "bg-white shadow text-blue-600"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Insight model pill toggle */}
+        <div className="flex items-center bg-gray-100 rounded-full p-0.5 text-sm font-medium">
+          {([["sonnet", "Sonnet"], ["gpt-4.1", "GPT-4.1"]] as const).map(([model, label]) => (
+            <button
+              key={model}
+              onClick={() => setInsightModel(model)}
+              className={`px-4 py-1.5 rounded-full transition-colors ${
+                insightModel === model
+                  ? "bg-white shadow text-blue-600"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {label}
             </button>
           ))}
         </div>
@@ -380,7 +447,7 @@ export default function TranscribePage() {
             ref={inputRef}
             type="file"
             multiple
-            accept=".wav,.mp3,.m4a,.aac"
+            accept=".wav,.mp3,.m4a,.aac,.mp4,.mpeg,.mpg"
             className="hidden"
             onChange={onFileChange}
           />
@@ -593,7 +660,7 @@ export default function TranscribePage() {
                       { label: "Qualification Signals", items: viewingInsights.qualification_signals },
                       { label: "Escalation Signals",    items: viewingInsights.escalation_signals },
                       { label: "KB Gaps",               items: viewingInsights.kb_gaps },
-                      { label: "Bot Failure Modes",     items: viewingInsights.bot_failure_modes ?? (viewingInsights.raw_insights_json?.bot_failure_modes as string[]) ?? [] },
+                      { label: "Agent Failure Modes",   items: viewingInsights.agent_failure_modes ?? (viewingInsights.raw_insights_json?.agent_failure_modes as string[]) ?? (viewingInsights.raw_insights_json?.bot_failure_modes as string[]) ?? [] },
                       { label: "Suggested Fixes",       items: viewingInsights.suggested_fixes  ?? (viewingInsights.raw_insights_json?.suggested_fixes  as string[]) ?? [] },
                     ].map(
                       ({ label, items }) =>
