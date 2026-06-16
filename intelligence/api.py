@@ -75,19 +75,24 @@ async def health():
     return {"status": "ok"}
 
 # ── Transcription ─────────────────────────────────────────────────────────────
+_INSIGHT_PROVIDER_MAP = {"sonnet": "anthropic", "gpt-4.1": "azure"}
+
 @app.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
     client_id: str = Form(...),
     provider: str = Form("sarvam"),
+    language_code: str = Form("hi-IN"),
+    insight_model: str = Form("sonnet"),
     _: None = Depends(auth),
 ):
     suffix = Path(file.filename or "audio.wav").suffix or ".wav"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
+    insight_provider = _INSIGHT_PROVIDER_MAP.get(insight_model, "anthropic")
     try:
-        return _engine().transcribe(tmp_path, client_id, provider=provider)
+        return _engine().transcribe(tmp_path, client_id, provider=provider, language_code=language_code, insight_provider=insight_provider)
     finally:
         os.unlink(tmp_path)
 
@@ -126,6 +131,8 @@ async def transcribe_batch(
     files: list[UploadFile] = File(...),
     client_id: str = Form(...),
     provider: str = Form("sarvam"),
+    language_code: str = Form("hi-IN"),
+    insight_model: str = Form("sonnet"),
     swap_roles: bool = Form(False),
     _: None = Depends(auth),
 ):
@@ -161,9 +168,12 @@ async def transcribe_batch(
             refresh_batch_counts(batch_id)
 
         try:
+            insight_provider = _INSIGHT_PROVIDER_MAP.get(insight_model, "anthropic")
             _engine().transcribe_many(
                 saved_paths, client_id, provider=provider,
                 swap_roles=swap_roles, on_file_done=on_done,
+                language_code=language_code,
+                insight_provider=insight_provider,
             )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
