@@ -318,7 +318,7 @@ export default function TranscribePage() {
       const res = await fetch(`${INTEL_URL}/transcripts/${viewingTranscript.id}`, {
         method: "PATCH",
         headers: { ...apiHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ text: editedText }),
+        body: JSON.stringify({ text: editedText, insight_model: insightModel }),
       });
       if (!res.ok) throw new Error(`Save failed: ${res.status}`);
       // Refresh insights after save

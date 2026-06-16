@@ -54,7 +54,7 @@ class TranscriptionEngine:
         self._db = db_path
         init_db(db_path)
 
-    def transcribe(self, audio_path: str, client_id: str, provider: str = None, swap_roles: bool = False, language_code: str = "hi-IN") -> dict:
+    def transcribe(self, audio_path: str, client_id: str, provider: str = None, swap_roles: bool = False, language_code: str = "hi-IN", insight_provider: str = None) -> dict:
         """Transcribe audio file, diarise speakers, extract insights, save both to DB.
 
         provider: "sarvam" or "deepgram". Defaults to TRANSCRIPTION_PROVIDER env var, then "sarvam".
@@ -92,7 +92,7 @@ class TranscriptionEngine:
         )
 
         # ── Extract insights via LLM ──────────────────────────────────────────
-        insight_data = self._extract_insights(transcript_id, client_id, transcript_text)
+        insight_data = self._extract_insights(transcript_id, client_id, transcript_text, insight_provider=insight_provider)
 
         return {
             "transcript_id": transcript_id,
@@ -111,6 +111,7 @@ class TranscriptionEngine:
         swap_roles: bool = False,
         on_file_done=None,
         language_code: str = "hi-IN",
+        insight_provider: str = None,
     ) -> None:
         """Transcribe multiple files with optimized parallelism.
 
@@ -124,9 +125,9 @@ class TranscriptionEngine:
             provider = os.getenv("TRANSCRIPTION_PROVIDER", "sarvam")
 
         if provider == "deepgram":
-            self._transcribe_many_deepgram(file_paths, client_id, swap_roles, on_file_done, language_code)
+            self._transcribe_many_deepgram(file_paths, client_id, swap_roles, on_file_done, language_code, insight_provider)
         else:
-            self._transcribe_many_sarvam(file_paths, client_id, swap_roles, on_file_done, language_code)
+            self._transcribe_many_sarvam(file_paths, client_id, swap_roles, on_file_done, language_code, insight_provider)
 
     def _transcribe_sarvam_sync(self, audio_path: str, duration: float, swap_roles: bool = False, language_code: str = "hi-IN") -> list:
         """Transcribe a short file (<=25s) using Sarvam's synchronous STT API. Much faster than batch for short clips."""
@@ -216,7 +217,7 @@ class TranscriptionEngine:
         )
         return _build_segments_deepgram(response, duration, swap_roles=swap_roles)
 
-    def _transcribe_many_sarvam(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done, language_code: str = "hi-IN") -> None:
+    def _transcribe_many_sarvam(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done, language_code: str = "hi-IN", insight_provider: str = None) -> None:
         """Submit files in groups of 20 as Sarvam batch jobs; short files (<=25s) use sync API directly."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from sarvamai import SarvamAI
@@ -253,7 +254,7 @@ class TranscriptionEngine:
                     "segments": segments,
                     "duration": duration,
                 }, path=self._db)
-                insight_data = self._extract_insights(transcript_id, client_id, transcript_text)
+                insight_data = self._extract_insights(transcript_id, client_id, transcript_text, insight_provider=insight_provider)
                 return path, {
                     "transcript_id": transcript_id,
                     "transcript": transcript_text,
@@ -305,7 +306,7 @@ class TranscriptionEngine:
                             "segments": segments,
                             "duration": duration,
                         }, path=self._db)
-                        insight_data = self._extract_insights(transcript_id, client_id, transcript_text)
+                        insight_data = self._extract_insights(transcript_id, client_id, transcript_text, insight_provider=insight_provider)
                         results.append((path, {
                             "transcript_id": transcript_id,
                             "transcript": transcript_text,
@@ -342,14 +343,14 @@ class TranscriptionEngine:
                         if on_file_done:
                             on_file_done(Path(path).name, result)
 
-    def _transcribe_many_deepgram(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done, language_code: str = "hi-IN") -> None:
+    def _transcribe_many_deepgram(self, file_paths: list, client_id: str, swap_roles: bool, on_file_done, language_code: str = "hi-IN", insight_provider: str = None) -> None:
         """Transcribe all files in parallel via ThreadPoolExecutor."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _one(path: str):
             fname = Path(path).name
             try:
-                result = self.transcribe(path, client_id, provider="deepgram", swap_roles=swap_roles, language_code=language_code)
+                result = self.transcribe(path, client_id, provider="deepgram", swap_roles=swap_roles, language_code=language_code, insight_provider=insight_provider)
                 return fname, result
             except Exception as e:
                 return fname, e
@@ -361,20 +362,21 @@ class TranscriptionEngine:
                 if on_file_done:
                     on_file_done(fname, result)
 
-    def rerun_insights(self, transcript_id: str, client_id: str, edited_text: str) -> dict:
+    def rerun_insights(self, transcript_id: str, client_id: str, edited_text: str, insight_provider: str = None) -> dict:
         """Save edited transcript text and append a fresh insight row.
 
         Previous insight rows are preserved so the caller can diff before vs after.
         Returns the new insight dict.
         """
         update_transcript_text(transcript_id, edited_text, path=self._db)
-        return self._extract_insights(transcript_id, client_id, edited_text)
+        return self._extract_insights(transcript_id, client_id, edited_text, insight_provider=insight_provider)
 
-    def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str) -> dict:
+    def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str, insight_provider: str = None) -> dict:
         """Run second LLM call to extract structured insights from transcript."""
+        llm = LLMClient(provider=insight_provider) if insight_provider else self._llm
         user_prompt = f"Analyse this call transcript:\n\n{transcript_text}"
         try:
-            raw = self._llm.complete_json(INSIGHT_SYSTEM, user_prompt, max_tokens=1024)
+            raw = llm.complete_json(INSIGHT_SYSTEM, user_prompt, max_tokens=1024)
         except Exception as e:
             raw = {
                 "agent_score": None,

@@ -121,7 +121,8 @@ async def edit_transcript(transcript_id: str, body: dict, _: None = Depends(auth
     text = body.get("text", "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required.")
-    result = _engine().rerun_insights(transcript_id, "", text)
+    insight_provider = _INSIGHT_PROVIDER_MAP.get(body.get("insight_model", "sonnet"), "anthropic")
+    result = _engine().rerun_insights(transcript_id, "", text, insight_provider=insight_provider)
     return result
 
 # ── Batch transcription ───────────────────────────────────────────────────────
