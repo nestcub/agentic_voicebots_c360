@@ -110,6 +110,8 @@ export default function TranscribePage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
+  const transcribeAbortRef = useRef<AbortController | null>(null);
+  const saveAbortRef = useRef<AbortController | null>(null);
 
   // ── Init ──
 
@@ -158,10 +160,12 @@ export default function TranscribePage() {
       form.append("insight_model", insightModel);
       form.append("swap_roles", String(swapRoles));
       try {
+        transcribeAbortRef.current = new AbortController();
         const res = await fetch(`${INTEL_URL}/transcribe`, {
           method: "POST",
           headers: apiHeaders(),
           body: form,
+          signal: transcribeAbortRef.current.signal,
         });
         if (!res.ok) throw new Error(`Server error ${res.status}`);
         const data: { transcript_id: string; transcript: string; segments: Segment[]; duration: number; insight_id: string; insights: Insights } = await res.json();
@@ -169,6 +173,7 @@ export default function TranscribePage() {
         setBatchDone(true);
         refreshTranscripts();
       } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") return;
         setFileItems((prev) => [{ ...prev[0], status: "failed", error: err instanceof Error ? err.message : "Failed." }]);
         setSubmitError(err instanceof Error ? err.message : "Submission failed.");
       } finally {
@@ -186,10 +191,12 @@ export default function TranscribePage() {
     form.append("swap_roles", String(swapRoles));
 
     try {
+      transcribeAbortRef.current = new AbortController();
       const res = await fetch(`${INTEL_URL}/transcribe/batch`, {
         method: "POST",
         headers: apiHeaders(),
         body: form,
+        signal: transcribeAbortRef.current.signal,
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: { batch_id: string } = await res.json();
@@ -198,10 +205,22 @@ export default function TranscribePage() {
       startPolling(data.batch_id);
       startTimer();
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return;
       setSubmitError(err instanceof Error ? err.message : "Submission failed.");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function cancelTranscribe() {
+    transcribeAbortRef.current?.abort();
+    stopPolling();
+    stopTimer();
+    setFileItems((prev) => prev.map((fi) => ({ ...fi, status: "pending" })));
+    setBatchId(null);
+    setSubmitting(false);
+    setBatchDone(false);
+    setElapsed(0);
   }
 
   // ── Polling ──
@@ -315,22 +334,31 @@ export default function TranscribePage() {
     setSaving(true);
     setSaveError("");
     try {
+      saveAbortRef.current = new AbortController();
       const res = await fetch(`${INTEL_URL}/transcripts/${viewingTranscript.id}`, {
         method: "PATCH",
         headers: { ...apiHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ text: editedText, insight_model: insightModel }),
+        signal: saveAbortRef.current.signal,
       });
       if (!res.ok) throw new Error(`Save failed: ${res.status}`);
       // Refresh insights after save
       const iRes = await fetch(`${INTEL_URL}/transcripts/${viewingTranscript.id}/insights`, {
         headers: apiHeaders(),
+        signal: saveAbortRef.current.signal,
       });
       if (iRes.ok) setViewingInsights(await iRes.json());
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return;
       setSaveError(err instanceof Error ? err.message : "Save failed.");
     } finally {
       setSaving(false);
     }
+  }
+
+  function cancelSave() {
+    saveAbortRef.current?.abort();
+    setSaving(false);
   }
 
   // ── Computed ──
@@ -460,13 +488,20 @@ export default function TranscribePage() {
           </p>
         )}
 
-        <button
-          onClick={handleTranscribe}
-          disabled={submitting || !fileItems.length || !clientId}
-          className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
-        >
-          {submitting ? "Submitting…" : "Transcribe"}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleTranscribe}
+            disabled={submitting || !fileItems.length || !clientId}
+            className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
+          >
+            {submitting ? "Submitting…" : "Transcribe"}
+          </button>
+          {submitting && (
+            <button onClick={cancelTranscribe} className="px-4 py-2 text-sm font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors">
+              Cancel
+            </button>
+          )}
+        </div>
       </Card>
 
       {/* Queue / History (left) + Viewer (right) — always rendered once there's something to show */}
@@ -608,18 +643,25 @@ export default function TranscribePage() {
                       {saveError}
                     </p>
                   )}
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
-                  >
-                    {saving ? (
-                      <RiLoader4Line className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RiSaveLine className="w-4 h-4" />
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleSave}
+                      disabled={saving}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
+                    >
+                      {saving ? (
+                        <RiLoader4Line className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RiSaveLine className="w-4 h-4" />
+                      )}
+                      {saving ? "Saving…" : "Save & Re-analyse"}
+                    </button>
+                    {saving && (
+                      <button onClick={cancelSave} className="px-4 py-2 text-sm font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors">
+                        Cancel
+                      </button>
                     )}
-                    {saving ? "Saving…" : "Save & Re-analyse"}
-                  </button>
+                  </div>
                 </div>
 
                 {/* Insights */}
