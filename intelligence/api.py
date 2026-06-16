@@ -24,6 +24,7 @@ from shared.db import (
     get_knowledge, add_knowledge, delete_knowledge, set_knowledge_status,
     create_batch, get_batch, create_batch_item,
     update_batch_item, get_batch_items, refresh_batch_counts,
+    load_session, save_session, get_kb, upsert_kb,
 )
 
 app = FastAPI(title="Chat360 Intelligence API", version="1.0.0")
@@ -223,6 +224,43 @@ async def converse(body: dict, _: None = Depends(auth)):
         return _designer().converse(client_id, message)
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
+
+# ── Session (use case) ────────────────────────────────────────────────────────
+@app.get("/session/{client_id}")
+async def get_session(client_id: str, _: None = Depends(auth)):
+    sess = load_session(client_id)
+    return {"use_case": sess.get("use_case") or "", "plan_id": sess.get("plan_id")}
+
+@app.patch("/session/{client_id}")
+async def update_session_use_case(client_id: str, body: dict, _: None = Depends(auth)):
+    use_case = body.get("use_case", "").strip()
+    if not use_case:
+        raise HTTPException(status_code=400, detail="use_case is required.")
+    sess = load_session(client_id)
+    save_session(
+        client_id,
+        sess.get("questions", []),
+        sess.get("answers", {}),
+        plan_id=sess.get("plan_id"),
+        use_case=use_case,
+    )
+    return {"ok": True}
+
+# ── Bot KB ────────────────────────────────────────────────────────────────────
+@app.get("/kb/{client_id}")
+async def get_bot_kb(client_id: str, _: None = Depends(auth)):
+    kb = get_kb(client_id)
+    if kb is None:
+        return {"content": "", "updated_at": None}
+    return kb
+
+@app.post("/kb/{client_id}")
+async def upsert_bot_kb(client_id: str, body: dict, _: None = Depends(auth)):
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required.")
+    upsert_kb(client_id, content)
+    return {"ok": True}
 
 # ── Plans ─────────────────────────────────────────────────────────────────────
 @app.get("/plans")
