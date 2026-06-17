@@ -239,8 +239,9 @@ async def clarify(body: dict, _: None = Depends(auth)):
     use_case  = body.get("use_case", "").strip()
     if not client_id or not use_case:
         raise HTTPException(status_code=400, detail="client_id and use_case are required.")
+    source_client_id = body.get("source_client_id") or None
     try:
-        questions = _designer().generate_clarifying_questions(client_id, use_case)
+        questions = _designer().generate_clarifying_questions(client_id, use_case, source_client_id=source_client_id)
         return {"questions": questions}
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
@@ -254,8 +255,9 @@ async def generate(body: dict, _: None = Depends(auth)):
     if not client_id or not use_case:
         raise HTTPException(status_code=400, detail="client_id and use_case are required.")
     cfg = _INTEL_MODEL_MAP.get(model_key, _INTEL_MODEL_MAP["gpt-5.4"])  # noqa: F841
+    source_client_id = body.get("source_client_id") or None
     try:
-        plan = _designer().generate_plan(client_id, use_case, answers)
+        plan = _designer().generate_plan(client_id, use_case, answers, source_client_id=source_client_id)
         return plan
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
