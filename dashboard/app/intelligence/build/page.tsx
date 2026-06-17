@@ -4,8 +4,212 @@ import { useEffect, useState } from "react";
 import ChatThread from "@/components/intelligence/ChatThread";
 import PlanArtifact from "@/components/intelligence/PlanArtifact";
 import { Card } from "@/components/Card";
-import { RiBookOpenLine, RiCloseLine, RiCheckLine } from "react-icons/ri";
+import { RiBookOpenLine, RiCloseLine, RiCheckLine, RiFileCopyLine } from "react-icons/ri";
 import { useIntelligence, usePlanCache, useKnowledgeCache } from "@/context/IntelligenceContext";
+
+// Helper: snake_case → Title Case
+const toLabel = (key: string) =>
+  key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+// ── Per-section card with patch box ──────────────────────────────────────────
+
+interface SectionCardProps {
+  sectionKey: string;
+  text: string;
+  planId: string | null;
+  onPatchSuccess: (sections: Record<string, string>) => void;
+}
+
+function SectionCard({ sectionKey, text, planId, onPatchSuccess }: SectionCardProps) {
+  const [copied, setCopied] = useState(false);
+  const [patchOpen, setPatchOpen] = useState(false);
+  const [patchRequest, setPatchRequest] = useState("");
+  const [patchLoading, setPatchLoading] = useState(false);
+  const [patchError, setPatchError] = useState<string | null>(null);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
+  async function applyPatch() {
+    if (!planId || !patchRequest.trim()) return;
+    setPatchLoading(true);
+    setPatchError(null);
+    try {
+      const res = await fetch("/api/intelligence/patch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_id: planId,
+          request: patchRequest.trim(),
+          section: sectionKey,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // data.patch may contain system_prompt_sections with changed keys
+      const patch = data.patch as Record<string, unknown>;
+      if (patch?.system_prompt_sections) {
+        onPatchSuccess(patch.system_prompt_sections as Record<string, string>);
+      }
+      setPatchRequest("");
+      setPatchOpen(false);
+    } catch (err) {
+      setPatchError(err instanceof Error ? err.message : "Patch failed");
+    } finally {
+      setPatchLoading(false);
+    }
+  }
+
+  return (
+    <div className="border border-gray-100 rounded-xl overflow-hidden">
+      {/* Section header */}
+      <div className="flex items-center justify-between gap-2 px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+        <span className="text-sm font-semibold text-gray-700">{toLabel(sectionKey)}</span>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={copy}
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-gray-100 transition-colors"
+          >
+            {copied ? (
+              <>
+                <RiCheckLine className="w-3.5 h-3.5 text-emerald-500" /> Copied
+              </>
+            ) : (
+              <>
+                <RiFileCopyLine className="w-3.5 h-3.5" /> Copy
+              </>
+            )}
+          </button>
+          <button
+            onClick={() => { setPatchOpen((o) => !o); setPatchError(null); }}
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-100 transition-colors"
+          >
+            Patch this section
+          </button>
+        </div>
+      </div>
+
+      {/* Section body */}
+      <pre className="px-4 py-3 text-xs text-gray-600 overflow-x-auto whitespace-pre-wrap wrap-break-word font-mono leading-relaxed bg-white">
+        {text}
+      </pre>
+
+      {/* Inline patch box */}
+      {patchOpen && (
+        <div className="px-4 pb-4 pt-2 bg-gray-50 border-t border-gray-100 space-y-2">
+          <textarea
+            className="w-full rounded-lg bg-white border border-gray-200 text-sm text-gray-800 placeholder-gray-400 p-2 resize-none focus:outline-none focus:border-blue-300"
+            rows={2}
+            placeholder="Describe the change for this section…"
+            value={patchRequest}
+            onChange={(e) => setPatchRequest(e.target.value)}
+          />
+          {patchError && <p className="text-xs text-red-500">{patchError}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={applyPatch}
+              disabled={patchLoading || !patchRequest.trim()}
+              className="px-3 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              {patchLoading ? "Applying…" : "Apply Patch"}
+            </button>
+            <button
+              onClick={() => { setPatchOpen(false); setPatchError(null); }}
+              className="px-3 py-1 text-xs font-medium rounded bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── System-prompt sections panel ─────────────────────────────────────────────
+
+interface SystemPromptSectionsPanelProps {
+  sections: Record<string, string | undefined>;
+  planId: string | null;
+  onPatchSuccess: (sections: Record<string, string>) => void;
+}
+
+function SystemPromptSectionsPanel({
+  sections,
+  planId,
+  onPatchSuccess,
+}: SystemPromptSectionsPanelProps) {
+  const entries = Object.entries(sections).filter(
+    ([, v]) => v != null && String(v).trim() !== ""
+  ) as [string, string][];
+
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {entries.map(([key, text]) => (
+        <SectionCard
+          key={key}
+          sectionKey={key}
+          text={text}
+          planId={planId}
+          onPatchSuccess={onPatchSuccess}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Bot KB panel ──────────────────────────────────────────────────────────────
+
+function BotKBPanel({ kb }: { kb: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const text = JSON.stringify(kb, null, 2);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
+  return (
+    <Card className="p-0 overflow-hidden">
+      <div className="flex items-center justify-between px-5 pt-4 pb-2 border-b border-gray-100">
+        <p className="text-base font-semibold text-gray-800">Bot Knowledge Base</p>
+        <button
+          onClick={copy}
+          className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700 transition-colors"
+        >
+          {copied ? (
+            <>
+              <RiCheckLine className="w-3.5 h-3.5 text-emerald-500" /> Copied
+            </>
+          ) : (
+            <>
+              <RiFileCopyLine className="w-3.5 h-3.5" /> Copy KB
+            </>
+          )}
+        </button>
+      </div>
+      <pre className="px-5 py-4 text-xs text-gray-600 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap wrap-break-word bg-white">
+        {text}
+      </pre>
+    </Card>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function BuildPage() {
   const { clientId } = useIntelligence();
@@ -37,12 +241,12 @@ export default function BuildPage() {
   useEffect(() => {
     if (!clientId) return;
     fetch(`/api/intelligence/session/${clientId}`)
-      .then(r => r.json())
-      .then(d => setUseCase(d.use_case || ""))
+      .then((r) => r.json())
+      .then((d) => setUseCase(d.use_case || ""))
       .catch(() => {});
     fetch(`/api/intelligence/kb/${clientId}`)
-      .then(r => r.json())
-      .then(d => setKbContent(d.content || ""))
+      .then((r) => r.json())
+      .then((d) => setKbContent(d.content || ""))
       .catch(() => {});
   }, [clientId]);
 
@@ -59,6 +263,19 @@ export default function BuildPage() {
     if (data.version != null) setVersion(data.version);
     if (data.plan_changed && data.diff) setDiff(data.diff);
     else setDiff(null);
+  }
+
+  // Merge patched system_prompt_sections back into plan state
+  function handleSectionPatchSuccess(changedSections: Record<string, string>) {
+    setPlan((prev) => {
+      if (!prev) return prev;
+      const existingSections =
+        (prev.system_prompt_sections as Record<string, string | undefined> | undefined) ?? {};
+      return {
+        ...prev,
+        system_prompt_sections: { ...existingSections, ...changedSections },
+      };
+    });
   }
 
   async function saveUseCase() {
@@ -97,6 +314,14 @@ export default function BuildPage() {
   const activeFacts = knowledgeFacts.filter((f) => f.status === "active");
   const pendingFacts = knowledgeFacts.filter((f) => f.status === "pending");
 
+  // Derive plan fields for new shape
+  const systemPromptSections = plan?.system_prompt_sections as
+    | Record<string, string | undefined>
+    | undefined;
+  const hasSections =
+    systemPromptSections != null && Object.keys(systemPromptSections).length > 0;
+  const botKb = plan?.bot_kb;
+
   return (
     <div className="space-y-6">
       {/* Page header */}
@@ -130,7 +355,7 @@ export default function BuildPage() {
               rows={3}
               placeholder="Describe the bot you want to build..."
               value={useCase}
-              onChange={e => { setUseCase(e.target.value); setUseCaseSaved(false); }}
+              onChange={(e) => { setUseCase(e.target.value); setUseCaseSaved(false); }}
             />
             <button
               onClick={saveUseCase}
@@ -143,7 +368,7 @@ export default function BuildPage() {
           {/* Knowledge Base section (collapsible) */}
           <div className="border-b border-white/10">
             <button
-              onClick={() => setKbOpen(o => !o)}
+              onClick={() => setKbOpen((o) => !o)}
               className="w-full flex items-center justify-between px-4 py-2 text-xs font-semibold text-white/50 uppercase tracking-wide hover:text-white/70 transition"
             >
               <span>Bot&apos;s Knowledge Base</span>
@@ -156,7 +381,7 @@ export default function BuildPage() {
                   rows={6}
                   placeholder="Paste FAQs, pricing, scripts, escalation contacts..."
                   value={kbContent}
-                  onChange={e => { setKbContent(e.target.value); setKbSaved(false); }}
+                  onChange={(e) => { setKbContent(e.target.value); setKbSaved(false); }}
                 />
                 <button
                   onClick={saveKb}
@@ -175,7 +400,7 @@ export default function BuildPage() {
         </div>
 
         {/* Right: Plan artifact + Knowledge drawer toggle */}
-        <div className="relative min-w-0">
+        <div className="relative min-w-0 space-y-4">
           {/* Artifact column header with knowledge toggle */}
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium text-gray-600">Plan Artifact</span>
@@ -272,7 +497,27 @@ export default function BuildPage() {
             </Card>
           )}
 
+          {/* System Prompt Sections (new plan shape) */}
+          {plan && hasSections && (
+            <Card className="p-0 overflow-hidden">
+              <div className="px-5 pt-4 pb-2 border-b border-gray-100">
+                <p className="text-base font-semibold text-gray-800">System Prompt</p>
+                <p className="text-xs text-gray-400 mt-0.5">12-section view — patch individual sections below</p>
+              </div>
+              <div className="p-5 space-y-2">
+                <SystemPromptSectionsPanel
+                  sections={systemPromptSections!}
+                  planId={planId}
+                  onPatchSuccess={handleSectionPatchSuccess}
+                />
+              </div>
+            </Card>
+          )}
+
           <PlanArtifact plan={plan} planId={planId} version={version} diff={diff} />
+
+          {/* Bot KB panel (new plan shape) */}
+          {plan && botKb != null && <BotKBPanel kb={botKb} />}
         </div>
       </div>
     </div>
