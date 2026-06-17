@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardHeader } from "@/components/Card";
 import { useTranscriptCache } from "@/context/IntelligenceContext";
 import {
@@ -79,9 +80,10 @@ function fmtSeconds(s: number) {
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 
-export default function TranscribePage() {
+function TranscribePageInner() {
   const [clientId, setClientId] = useState("");
   const { transcripts, refreshTranscripts } = useTranscriptCache();
+  const searchParams = useSearchParams();
 
   // provider & options
   const [provider, setProvider] = useState<"sarvam" | "deepgram">("sarvam");
@@ -116,8 +118,14 @@ export default function TranscribePage() {
   // ── Init ──
 
   useEffect(() => {
-    setClientId(localStorage.getItem("intel_client_id") ?? "");
-  }, []);
+    const fromUrl = searchParams.get("client_id");
+    if (fromUrl) {
+      localStorage.setItem("intel_client_id", fromUrl);
+      setClientId(fromUrl);
+    } else {
+      setClientId(localStorage.getItem("intel_client_id") ?? "");
+    }
+  }, [searchParams]);
 
   // ── Drop zone ──
 
@@ -760,5 +768,13 @@ export default function TranscribePage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function TranscribePage() {
+  return (
+    <Suspense>
+      <TranscribePageInner />
+    </Suspense>
   );
 }
