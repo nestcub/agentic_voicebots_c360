@@ -130,6 +130,11 @@ class LLMClient:
                 self._get_attr(choice, "finish_reason")
             )
         self.last_usage = self._get_attr(response, "usage")
+        if self.provider in ("openai", "azure"):
+            _details = self._get_attr(self.last_usage, "prompt_tokens_details") or {}
+            _cached = self._get_attr(_details, "cached_tokens")
+            if _cached is not None:
+                metadata["cached_tokens"] = _cached
         self.last_completion_metadata = metadata
         return metadata
 
@@ -207,7 +212,7 @@ class LLMClient:
             return True
         return self._looks_like_truncated_json(self._extract_json(raw_text))
 
-    def complete(self, system, user: str, max_tokens: int = 4096, cache_system: bool = True) -> str:
+    def complete(self, system, user: str, max_tokens: int = 4096, cache_system: bool = True, reasoning_effort: str | None = None) -> str:
         """Send system + user prompt; return assistant text as string.
 
         system may be:
@@ -254,11 +259,15 @@ class LLMClient:
                 sys_text = system if isinstance(system, str) else "\n\n".join(
                     b["text"] for b in system if b.get("text")
                 )
+                _extra = {}
+                if reasoning_effort is not None:
+                    _extra["reasoning_effort"] = reasoning_effort
                 response = self._client.chat.completions.create(
                     model=self.model,
                     max_tokens=max_tokens,
                     messages=[{"role": "system", "content": sys_text},
                                {"role": "user",   "content": user}],
+                    **_extra,
                 )
                 self._record_completion_metadata(response, max_tokens)
                 return response.choices[0].message.content or ""
@@ -269,17 +278,28 @@ class LLMClient:
                 )
                 _msgs = [{"role": "system", "content": sys_text},
                          {"role": "user",   "content": user}]
-                try:
+                _extra = {}
+                if reasoning_effort is not None:
+                    _extra["reasoning_effort"] = reasoning_effort
+                if self.model.startswith("gpt-5"):
                     response = self._client.chat.completions.create(
-                        model=self.model, max_tokens=max_tokens, messages=_msgs,
+                        model=self.model, max_completion_tokens=max_tokens, messages=_msgs,
+                        **_extra,
                     )
-                except Exception as _e:
-                    if "unsupported_parameter" in str(_e) and "max_tokens" in str(_e):
+                else:
+                    try:
                         response = self._client.chat.completions.create(
-                            model=self.model, max_completion_tokens=max_tokens, messages=_msgs,
+                            model=self.model, max_tokens=max_tokens, messages=_msgs,
+                            **_extra,
                         )
-                    else:
-                        raise
+                    except Exception as _e:
+                        if "unsupported_parameter" in str(_e) and "max_tokens" in str(_e):
+                            response = self._client.chat.completions.create(
+                                model=self.model, max_completion_tokens=max_tokens, messages=_msgs,
+                                **_extra,
+                            )
+                        else:
+                            raise
                 self._record_completion_metadata(response, max_tokens)
                 return response.choices[0].message.content or ""
 
@@ -308,7 +328,7 @@ class LLMClient:
                 return text[start:end + 1]
         return text.strip()
 
-    def complete_json(self, system, user: str, max_tokens: int = 4096) -> dict:
+    def complete_json(self, system, user: str, max_tokens: int = 4096, reasoning_effort: str | None = None) -> dict:
         """Send prompt expecting JSON; parse and return as dict.
 
         system may be str or list of {"text": str, "cache": bool} blocks.
@@ -320,7 +340,7 @@ class LLMClient:
             json_system = system[:-1] + [{**system[-1], "text": system[-1]["text"] + _JSON_SUFFIX}]
         else:
             json_system = system + _JSON_SUFFIX
-        raw = self.complete(json_system, user, max_tokens)
+        raw = self.complete(json_system, user, max_tokens, reasoning_effort=reasoning_effort)
         try:
             return json.loads(self._extract_json(raw))
         except json.JSONDecodeError as exc:
@@ -337,7 +357,7 @@ class LLMClient:
                 + "\n\nYour previous response was not valid JSON. "
                 "Return ONLY a valid JSON object — no markdown, no extra text."
             )
-            raw = self.complete(json_system, retry_user, max_tokens)
+            raw = self.complete(json_system, retry_user, max_tokens, reasoning_effort=reasoning_effort)
             try:
                 return json.loads(self._extract_json(raw))
             except json.JSONDecodeError as retry_exc:
