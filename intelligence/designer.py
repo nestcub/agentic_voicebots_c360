@@ -349,7 +349,7 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
 
     # ── conversational intent router ──────────────────────────────────────────
 
-    def converse(self, client_id: str, message: str) -> dict:
+    def converse(self, client_id: str, message: str, intent_aware: bool = True, provider: str | None = None) -> dict:
         """One conversational turn: route intent, update remembered use case + plan, return a reply.
 
         Returns {reply, use_case, mode, plan, plan_id, plan_changed, diff, version}.
@@ -382,8 +382,23 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
 
         _rag_query = f"{use_case or message}\n{message}"
         _k = 3 if current_plan else 8
-        _rag_examples = _retrieve_examples(_rag_query, k=_k)
-        _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
+        _skip_heavy_context = (
+            intent_aware
+            and current_plan is not None
+            and len(message) > 200
+            and not any(kw in message.lower() for kw in [
+                "change", "update", "fix", "add", "remove", "patch",
+                "restructure", "modify", "edit", "revise", "redo",
+            ])
+        )
+        if _skip_heavy_context:
+            _rag_examples = ""
+            _call_evidence = ""
+            _current_plan_for_prompt = None
+        else:
+            _rag_examples = _retrieve_examples(_rag_query, k=_k)
+            _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
+            _current_plan_for_prompt = current_plan
 
         _bot_failures_block = ""
         if insights.get("bot_failure_modes"):
@@ -412,7 +427,7 @@ CALL INSIGHTS (aggregated from all their real agent recordings):
 {_rag_examples}
 
 CURRENT PLAN:
-{json.dumps(current_plan, ensure_ascii=False, indent=2) if current_plan else "(no plan yet)"}
+{json.dumps(_current_plan_for_prompt, ensure_ascii=False, indent=2) if _current_plan_for_prompt else "(no plan yet — context pruned for this advice turn)"}
 
 RECENT TURNS:
 {recent_text}
@@ -420,7 +435,8 @@ RECENT TURNS:
 USER MESSAGE:
 {message}"""
 
-        result = self._llm.complete_json(system, user, max_tokens=16000)
+        _llm = LLMClient(provider=provider) if provider else self._llm
+        result = _llm.complete_json(system, user, max_tokens=16000)
 
         # teach / auto-propose: store durable platform facts before continuing
         _proposed = result.get("proposed_knowledge") or []
