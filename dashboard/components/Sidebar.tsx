@@ -19,6 +19,7 @@ import {
   RiMicLine,
   RiHammerLine,
   RiBookOpenLine,
+  RiRobotLine,
   RiArrowDownSLine,
   RiArrowUpSLine,
 } from "react-icons/ri";
@@ -37,9 +38,10 @@ const NAV_AFTER_INTELLIGENCE = [
 ];
 
 const INTELLIGENCE_SUB = [
-  { href: "/intelligence/transcribe", label: "Transcribe", Icon: RiMicLine },
-  { href: "/intelligence/build",      label: "Build",      Icon: RiHammerLine },
-  { href: "/intelligence/knowledge",  label: "Knowledge",  Icon: RiBookOpenLine },
+  { href: "/intelligence",            label: "Bots",       Icon: RiRobotLine,   exact: true },
+  { href: "/intelligence/transcribe", label: "Transcribe", Icon: RiMicLine,     exact: false },
+  { href: "/intelligence/build",      label: "Build",      Icon: RiHammerLine,  exact: false },
+  { href: "/intelligence/knowledge",  label: "Knowledge",  Icon: RiBookOpenLine, exact: false },
 ];
 
 export function Sidebar() {
@@ -136,8 +138,8 @@ export function Sidebar() {
           {/* Sub-items — only when sidebar is open and group is open */}
           {isOpen && intelligenceOpen && (
             <div className="mt-0.5 space-y-0.5">
-              {INTELLIGENCE_SUB.map(({ href, label, Icon }) => {
-                const active = pathname.startsWith(href);
+              {INTELLIGENCE_SUB.map(({ href, label, Icon, exact }) => {
+                const active = exact ? pathname === href : pathname.startsWith(href);
                 return (
                   <Link
                     key={href}
