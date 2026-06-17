@@ -201,7 +201,7 @@ class WorkflowDesigner:
 
     # ── clarifying questions ──────────────────────────────────────────────────
 
-    def generate_clarifying_questions(self, client_id: str, use_case_text: str, source_client_id: str | None = None) -> list:
+    def generate_clarifying_questions(self, client_id: str, use_case_text: str, source_client_id: str | None = None, provider: str | None = None, model: str | None = None) -> list:
         """Generate LLM-driven clarifying questions grounded in call insights and use case.
 
         Returns list of dicts: [{id, question, why}]
@@ -260,7 +260,8 @@ Return JSON array:
 ]"""
 
         _max_tokens = 1024 if has_recordings else 2048
-        return self._llm.complete_json(system, user, max_tokens=_max_tokens)
+        _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
+        return _llm.complete_json(system, user, max_tokens=_max_tokens)
 
     # ── plan generation ───────────────────────────────────────────────────────
 
@@ -270,6 +271,8 @@ Return JSON array:
         use_case_text: str,
         answers: list,
         source_client_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> dict:
         """Generate a full workflow plan JSON from use case, insights, and QnA answers.
 
@@ -399,7 +402,8 @@ bot_kb shape is domain-specific — choose keys that fit this bot's use case (e.
 Ground every stage in real Chat360 node types from the canvas reference.
 build_notes.canvas_instructions must be specific enough for an admin to build without guessing."""
 
-        plan = self._llm.complete_json(system, user, max_tokens=16000, reasoning_effort="high")
+        _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
+        plan = _llm.complete_json(system, user, max_tokens=16000, reasoning_effort="high")
         plan_id = save_plan({"client_id": client_id, "plan": plan}, path=self._db)
         plan["plan_id"] = plan_id
         return plan

@@ -140,7 +140,7 @@ export default function WizardPage() {
       const res = await fetch(`${INTEL_URL}/clarify`, {
         method: "POST",
         headers: apiHeaders(),
-        body: JSON.stringify({ client_id: clientId, use_case: useCase, ...(sourceClientId ? { source_client_id: sourceClientId } : {}) }),
+        body: JSON.stringify({ client_id: clientId, use_case: useCase, model: "gpt-5.4", ...(sourceClientId ? { source_client_id: sourceClientId } : {}) }),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: { questions: ClarifyQuestion[] } = await res.json();
