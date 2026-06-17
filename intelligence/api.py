@@ -214,6 +214,12 @@ async def batch_status(batch_id: str, _: None = Depends(auth)):
     }
 
 # ── Conversational designer ───────────────────────────────────────────────────
+_INTEL_MODEL_MAP: dict[str, dict] = {
+    "sonnet":  {"provider": "anthropic", "model": None},
+    "gpt-4.1": {"provider": "azure",     "model": "gpt-4.1"},
+    "gpt-5.4": {"provider": "azure",     "model": "gpt-5.4"},
+}
+
 @app.post("/converse")
 async def converse(body: dict, _: None = Depends(auth)):
     client_id = body.get("client_id", "").strip()
@@ -221,9 +227,15 @@ async def converse(body: dict, _: None = Depends(auth)):
     if not client_id or not message:
         raise HTTPException(status_code=400, detail="client_id and message are required.")
     intent_aware = bool(body.get("intent_aware", True))
-    provider = body.get("provider") or None
+    model_key = body.get("model", "sonnet")
+    cfg = _INTEL_MODEL_MAP.get(model_key, _INTEL_MODEL_MAP["sonnet"])
     try:
-        return _designer().converse(client_id, message, intent_aware=intent_aware, provider=provider)
+        return _designer().converse(
+            client_id, message,
+            intent_aware=intent_aware,
+            provider=cfg["provider"],
+            model=cfg["model"],
+        )
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
 

@@ -54,9 +54,10 @@ class LLMCompletionError(RuntimeError):
 class LLMClient:
     """Wraps LLM provider calls behind a uniform complete / complete_json interface."""
 
-    def __init__(self, provider: str = None):
+    def __init__(self, provider: str = None, model: str = None):
         """Load provider, model, and API key from env; raise ValueError if missing."""
         self.provider = (provider or os.getenv("LLM_PROVIDER", "anthropic")).lower()
+        self._model_override = model  # applied after provider block sets self.model
         self.last_usage = None
         self.last_completion_metadata = {}
 
@@ -90,6 +91,9 @@ class LLMClient:
             raise ValueError(
                 f"Unsupported LLM provider: '{self.provider}'. Supported: 'anthropic', 'openai', 'azure'."
             )
+
+        if self._model_override:
+            self.model = self._model_override
 
     @staticmethod
     def _get_attr(value, name: str, default=None):

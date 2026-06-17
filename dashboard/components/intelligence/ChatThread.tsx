@@ -118,8 +118,7 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
   const [loading, setLoading] = useState(false);
   const [intentAware, setIntentAware] = useState(true);
   const [showIntentInfo, setShowIntentInfo] = useState(false);
-  const [model, setModel] = useState<"sonnet" | "gpt-4.1">("sonnet");
-  const providerMap: Record<string, string> = { "sonnet": "anthropic", "gpt-4.1": "openai" };
+  const [model, setModel] = useState<"sonnet" | "gpt-4.1" | "gpt-5.4">("sonnet");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -140,7 +139,7 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
           client_id: clientId,
           message: userMsg,
           intent_aware: intentAware,
-          provider: providerMap[model],
+          model: model,
         }),
       });
 
@@ -314,7 +313,7 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
         </label>
         {/* Model pills */}
         <div className="flex items-center gap-1 ml-auto">
-          {(["sonnet", "gpt-4.1"] as const).map(m => (
+          {(["sonnet", "gpt-4.1", "gpt-5.4"] as const).map(m => (
             <button
               key={m}
               onClick={() => setModel(m)}
@@ -324,7 +323,7 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
                   : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
               }`}
             >
-              {m === "sonnet" ? "Sonnet 4.6" : "GPT-4.1"}
+              {m === "sonnet" ? "Sonnet 4.6" : m === "gpt-4.1" ? "GPT-4.1" : "GPT-5.4"}
             </button>
           ))}
         </div>
