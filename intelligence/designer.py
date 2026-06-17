@@ -21,6 +21,7 @@ load_dotenv()
 
 DB_PATH   = os.getenv("DB_PATH", "")  # deprecated no-op; persistence is Neon Postgres via DATABASE_URL
 BOTS_PATH = Path(__file__).parent / "data" / "best_bots.json"
+TWELVE_POINTS_PATH = Path(__file__).parent.parent / "data" / "system_prompts" / "12_points_prompt_template.md"
 
 
 _CONVERSE_INSTRUCTIONS = """Decide the intent and respond. Rules:
@@ -85,6 +86,19 @@ def _canvas_system() -> str:
         "Always ground your output in the node types, field schemas, routing patterns, "
         "and prompt conventions shown above. Never invent node types or fields that "
         "are not in the reference."
+    )
+
+
+def _twelve_points_template() -> str:
+    """Load the 12-section system prompt template as a cached system block."""
+    with open(TWELVE_POINTS_PATH, encoding="utf-8") as f:
+        content = f.read()
+    return (
+        "## 12-Section System Prompt Template\n\n"
+        "The document below is a gold-standard example of the required 12-section system prompt structure. "
+        "Mirror this exact section structure for the bot you are building — produce equivalent sections "
+        "for THIS bot's use case, domain, language, and call patterns.\n\n"
+        + content
     )
 
 
@@ -196,7 +210,34 @@ class WorkflowDesigner:
         system = [
             {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
+            {"text": _twelve_points_template(), "cache": True},
         ]
+
+        has_recordings = insights.get("call_count", 0) > 0
+
+        if has_recordings:
+            question_guidance = """Based on the use case and insights, generate targeted clarifying questions to fill gaps the recordings could not answer.
+
+Rules:
+- Do NOT ask about things already clear from the use case or insights
+- Focus on: CRM variable names, API availability, escalation team setup, language preferences, specific qualification thresholds, campaign parameters
+- 6 questions maximum
+- Each question should directly improve the quality of the workflow plan"""
+        else:
+            question_guidance = """No call recordings are available. You must ask questions to understand what recordings would normally reveal.
+
+Rules:
+- Ask about: caller personas, common objections, conversational tone, language (primary + fallback), typical call flow stages, what a successful call looks like, escalation scenarios, key KB topics
+- Also ask about: CRM variable names, API availability, escalation team setup, qualification thresholds, campaign parameters
+- 10 questions maximum — be thorough since there are no recordings to learn from
+- Prefer multiple-choice questions where you can offer options drawn from domain knowledge
+- Each question should directly fill a gap that call recordings would normally answer"""
+
+        insights_block = f"""Here are patterns extracted from their real agent call recordings:
+
+<insights>
+{json.dumps(insights, ensure_ascii=False, indent=2)}
+</insights>""" if has_recordings else "No call recordings have been uploaded for this bot."
 
         user = f"""A client wants to build a Chat360 voice bot. Here is their use case:
 
@@ -204,30 +245,22 @@ class WorkflowDesigner:
 {use_case_text}
 </use_case>
 
-Here are patterns extracted from their real agent call recordings:
+{insights_block}
 
-<insights>
-{json.dumps(insights, ensure_ascii=False, indent=2)}
-</insights>
-
-Based on the use case and insights, generate targeted clarifying questions to fill gaps the recordings could not answer.
-
-Rules:
-- Do NOT ask about things already clear from the use case or insights
-- Focus on: CRM variable names, API availability, escalation team setup, language preferences, specific qualification thresholds, campaign parameters
-- 4–10 questions maximum
-- Each question should directly improve the quality of the workflow plan
+{question_guidance}
 
 Return JSON array:
 [
   {{
     "id": "q1",
     "question": "...",
+    "options": ["option A", "option B", "option C"] or null,
     "why": "one sentence explaining what this unlocks in the plan"
   }}
 ]"""
 
-        return self._llm.complete_json(system, user, max_tokens=1024)
+        _max_tokens = 1024 if has_recordings else 2048
+        return self._llm.complete_json(system, user, max_tokens=_max_tokens)
 
     # ── plan generation ───────────────────────────────────────────────────────
 
@@ -246,6 +279,7 @@ Return JSON array:
         system = [
             {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
+            {"text": _twelve_points_template(), "cache": True},
         ]
 
         qa_text = "\n".join(
@@ -268,6 +302,28 @@ Return JSON array:
                 + "\n</bot_failures_to_fix>"
             )
 
+        # Get 1-2 best diarised sequences for conversational flow structure
+        _diarised_block = ""
+        try:
+            _all_insights = get_insights(client_id, path=self._db)
+            _best = sorted(
+                [r for r in _all_insights if r.get("diarised_segments")],
+                key=lambda r: r.get("agent_score") or 0,
+                reverse=True,
+            )[:2]
+            if _best:
+                _seqs = []
+                for i, r in enumerate(_best):
+                    segs = r["diarised_segments"]
+                    if isinstance(segs, str):
+                        import json as _json
+                        segs = _json.loads(segs)
+                    lines = [f"{s.get('speaker','?')}: {s.get('text','')}" for s in (segs or [])[:40]]
+                    _seqs.append(f"Call {i+1} (score {r.get('agent_score','?')}):\n" + "\n".join(lines))
+                _diarised_block = "\n\n".join(_seqs)
+        except Exception:
+            pass
+
         user = f"""Design a production-grade Chat360 voice bot workflow plan.
 
 <use_case>
@@ -282,6 +338,10 @@ Return JSON array:
 {_call_evidence}
 </call_evidence>
 
+<diarised_best_calls>
+{_diarised_block if _diarised_block else "(no call recordings available)"}
+</diarised_best_calls>
+
 <clarifying_answers>
 {qa_text}
 </clarifying_answers>
@@ -293,63 +353,59 @@ Return JSON array:
 Return a single JSON object with exactly these keys:
 
 {{
+  "system_prompt_sections": {{
+    "critical_rules": "Full text for section 1 — Critical Rules (language & voice rules). Mirror the structure of the template exactly.",
+    "roles": "Full text for section 2 — Roles.",
+    "objectives": "Full text for section 3 — Objectives.",
+    "personality": "Full text for section 4 — Personality.",
+    "important_flow_rules": "Full text for section 5 — Important Flow Rules.",
+    "guardrails": "Full text for section 6 — Guardrails.",
+    "instructions": "Full text for section 7 — Instructions.",
+    "conversational_flow": "Full text for section 8 — Conversational Flow. Build this from the diarised call sequences if available — mirror their stage ordering and flow.",
+    "closure": "Full text for section 9 — Closure.",
+    "objection_handling": "Full text for section 10 — Objection Handling.",
+    "conversation_example": "Full text for section 11 — Conversation Example(s). Draw from real call patterns.",
+    "safety_guardrails": "Full text for section 12 — Safety Guardrails (restate key safety rules for recency)."
+  }},
+  "system_prompt": "The full rendered system prompt: all 12 sections concatenated in order, ready to paste into Chat360.",
   "workflow_blueprint": {{
-    "description": "Human-readable 2-3 sentence flow narrative",
+    "description": "...",
     "stages": [
       {{
         "stage_id": 1,
-        "name": "Stage name",
+        "name": "...",
         "node_type": "VOICE_GENAI|VOICE_INTENT|VOICE_CONDITIONAL|...",
-        "purpose": "What this stage achieves",
-        "chat360_config": {{
-          "initial_message": "...",
-          "routing_table": {{"default": "<next_stage_node_id_placeholder>"}},
-          "any_other_key_fields": "..."
-        }}
+        "purpose": "...",
+        "chat360_config": {{"initial_message": "...", "routing_table": {{"default": "<next>"}}}}
       }}
     ]
   }},
-  "system_prompt": "Full LLM system prompt for the primary VOICE_GENAI node(s). REQUIRED: Before writing this, study every retrieved reference_system_prompt section in <retrieved_examples> and mirror their structure — include a CRITICAL LANGUAGE RULE block, strict @bot_language enforcement at every GenAI node, tool/RAG usage conventions, and response-variable discipline. Never produce a thin or generic system prompt. Apply every item listed in 'Reference-bot known pitfalls' from platform knowledge.",
-  "qualification_questions": [
-    {{"question": "...", "variable": "@variable_name", "purpose": "..."}}
-  ],
-  "objection_handling": {{
-    "<objection in caller's language>": "<bot response>",
-    "...": "..."
-  }},
-  "escalation_rules": [
-    {{"trigger": "...", "action": "...", "node_type": "VOICE_MESSAGE|VOICE_WEBHOOK"}}
-  ],
-  "kb_scaffold": {{
-    "<topic>": "<content or data the bot needs to answer this topic>"
-  }},
   "build_notes": {{
-    "canvas_instructions": [
-      "Step-by-step instructions for an admin to build this flow in the Chat360 canvas UI"
-    ],
-    "variables_required": ["@var1", "@var2"],
+    "canvas_instructions": ["Step-by-step instructions for an admin to build in Chat360 canvas UI"],
+    "variables_required": ["@var1"],
     "tts_engine": "elevenlabs|azure",
     "stt_engine": "azure|deepgram",
     "language": "hinglish|hindi|english",
-    "outbound_params": ["@var1", "@var2"],
-    "silence_handle_config": {{
-      "retry_count": 2,
-      "retry_prompt": "..."
-    }}
+    "outbound_params": ["@var1"],
+    "silence_handle_config": {{"retry_count": 2, "retry_prompt": "..."}}
+  }},
+  "bot_kb": {{
+    "<LLM-decided key>": "<LLM-decided value — shape varies by domain>"
   }}
 }}
 
+bot_kb shape is domain-specific — choose keys that fit this bot's use case (e.g. faqs, pricing, models, dealers, scripts, entities). Do not use a fixed schema.
 Ground every stage in real Chat360 node types from the canvas reference.
 build_notes.canvas_instructions must be specific enough for an admin to build without guessing."""
 
-        plan = self._llm.complete_json(system, user, max_tokens=16000)
+        plan = self._llm.complete_json(system, user, max_tokens=16000, reasoning_effort="high")
         plan_id = save_plan({"client_id": client_id, "plan": plan}, path=self._db)
         plan["plan_id"] = plan_id
         return plan
 
     # ── conversational intent router ──────────────────────────────────────────
 
-    def converse(self, client_id: str, message: str, intent_aware: bool = True, provider: str | None = None, model: str | None = None) -> dict:
+    def converse(self, client_id: str, message: str, intent_aware: bool = True, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None, section: str | None = None) -> dict:
         """One conversational turn: route intent, update remembered use case + plan, return a reply.
 
         Returns {reply, use_case, mode, plan, plan_id, plan_changed, diff, version}.
@@ -371,10 +427,15 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
         recent   = get_turns(client_id, limit=6, path=self._db)
         recent_text = "\n".join(f"{t['role']}: {t['content']}" for t in recent) or "(none)"
 
+        # On create turns (no plan yet) include the 12-section template; patch turns skip it
+        _include_raw_context = current_plan is None
+
         system = [
             {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
+        if _include_raw_context:
+            system.append({"text": _twelve_points_template(), "cache": True})
         _kb = get_kb(client_id, path=self._db)
         if _kb and _kb.get("content", "").strip():
             system.append({"text": "## Client Bot Knowledge Base\n" + _kb["content"], "cache": True})
@@ -397,11 +458,11 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
             _current_plan_for_prompt = None
         else:
             _rag_examples = _retrieve_examples(_rag_query, k=_k)
-            _call_evidence = _retrieve_call_evidence(client_id, _rag_query)
+            _call_evidence = _retrieve_call_evidence(client_id, _rag_query) if _include_raw_context else ""
             _current_plan_for_prompt = current_plan
 
         _bot_failures_block = ""
-        if insights.get("bot_failure_modes"):
+        if _include_raw_context and insights.get("bot_failure_modes"):
             _bot_failures_block = (
                 "\n<bot_failures_to_fix>\n"
                 "Failures observed in THIS client's own bot calls — address in every plan/patch:\n"
@@ -411,20 +472,38 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
                 + "\n</bot_failures_to_fix>"
             )
 
+        # Build the user prompt — insights and call evidence only on create turns
+        _insights_section = ""
+        _call_evidence_section = ""
+        if _include_raw_context:
+            _insights_section = f"""
+CALL INSIGHTS (aggregated from all their real agent recordings):
+{json.dumps(insights, ensure_ascii=False, indent=2)}
+{_bot_failures_block}"""
+            _call_evidence_section = f"""<call_evidence>
+{_call_evidence}
+</call_evidence>
+"""
+
+        # On patch turns, include workflow_blueprint and build_notes as grounding anchors
+        _patch_anchor = ""
+        if not _include_raw_context and _current_plan_for_prompt:
+            _patch_anchor = f"""<workflow_blueprint>
+{json.dumps(_current_plan_for_prompt.get("workflow_blueprint", {}), ensure_ascii=False, indent=2)}
+</workflow_blueprint>
+
+<build_notes>
+{json.dumps(_current_plan_for_prompt.get("build_notes", {}), ensure_ascii=False, indent=2)}
+</build_notes>
+"""
+
         user = f"""You are the conversational architect for a Chat360 voice-bot workflow. Hold a running
 design session with one human via a single text box. Remember the use case; never ask them to retype it.
 
 REMEMBERED USE CASE:
 {use_case or "(none yet — the user's message likely IS the use case)"}
-
-CALL INSIGHTS (aggregated from all their real agent recordings):
-{json.dumps(insights, ensure_ascii=False, indent=2)}
-{_bot_failures_block}
-<call_evidence>
-{_call_evidence}
-</call_evidence>
-
-{_rag_examples}
+{_insights_section}
+{_call_evidence_section}{_patch_anchor}{_rag_examples}
 
 CURRENT PLAN:
 {json.dumps(_current_plan_for_prompt, ensure_ascii=False, indent=2) if _current_plan_for_prompt else "(no plan yet — context pruned for this advice turn)"}
@@ -436,7 +515,7 @@ USER MESSAGE:
 {message}"""
 
         _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
-        result = _llm.complete_json(system, user, max_tokens=16000)
+        result = _llm.complete_json(system, user, max_tokens=16000, reasoning_effort=reasoning_effort)
 
         # teach / auto-propose: store durable platform facts before continuing
         _proposed = result.get("proposed_knowledge") or []
@@ -493,7 +572,7 @@ USER MESSAGE:
 
     # ── patch-based refinement ────────────────────────────────────────────────
 
-    def apply_patch(self, plan_id: str, admin_request: str) -> dict:
+    def apply_patch(self, plan_id: str, admin_request: str, section: str | None = None) -> dict:
         """Apply an LLM-generated patch to a plan. Never regenerates the full plan.
 
         Returns dict: {new_plan, patch, diff, reasoning, version}
@@ -509,12 +588,20 @@ USER MESSAGE:
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
 
+        _section_block = ""
+        if section and current_plan.get("system_prompt_sections", {}).get(section):
+            _section_block = f'\n<target_section name="{section}">{json.dumps(current_plan.get("system_prompt_sections", {}).get(section, ""), ensure_ascii=False, indent=2)}</target_section>'
+
         user = f"""You are patching an existing Chat360 voice bot workflow plan.
 
-<current_plan>
-{json.dumps(current_plan, ensure_ascii=False, indent=2)}
-</current_plan>
+<workflow_blueprint>
+{json.dumps(current_plan.get("workflow_blueprint", {}), ensure_ascii=False, indent=2)}
+</workflow_blueprint>
 
+<build_notes>
+{json.dumps(current_plan.get("build_notes", {}), ensure_ascii=False, indent=2)}
+</build_notes>
+{_section_block}
 <admin_request>
 {admin_request}
 </admin_request>
@@ -522,17 +609,18 @@ USER MESSAGE:
 Rules:
 - ONLY modify the keys that need to change
 - Do NOT regenerate or touch keys that are unaffected
+- If you change any system_prompt_sections key, also re-render the full system_prompt field
 - Preserve all existing content in unchanged keys
 
 Return JSON with exactly these keys:
 {{
   "patch": {{
-    "<top_level_key>": <new_value_for_that_key_only>
+    "<top_level_key>": <new_value>
   }},
-  "reasoning": "One paragraph explaining what changed, why, and what was deliberately left untouched."
+  "reasoning": "One paragraph explaining what changed and what was deliberately left untouched."
 }}"""
 
-        result = self._llm.complete_json(system, user, max_tokens=16000)
+        result = self._llm.complete_json(system, user, max_tokens=16000, reasoning_effort="low")
         patch     = result.get("patch", {})
         reasoning = result.get("reasoning", "")
 
