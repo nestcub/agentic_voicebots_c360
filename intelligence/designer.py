@@ -273,6 +273,7 @@ Return JSON array:
         source_client_id: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict:
         """Generate a full workflow plan JSON from use case, insights, and QnA answers.
 
@@ -403,7 +404,7 @@ Ground every stage in real Chat360 node types from the canvas reference.
 build_notes.canvas_instructions must be specific enough for an admin to build without guessing."""
 
         _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
-        plan = _llm.complete_json(system, user, max_tokens=16000, reasoning_effort="high")
+        plan = _llm.complete_json(system, user, max_tokens=32000, reasoning_effort=reasoning_effort)
         plan_id = save_plan({"client_id": client_id, "plan": plan}, path=self._db)
         plan["plan_id"] = plan_id
         return plan

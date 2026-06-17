@@ -269,6 +269,7 @@ async def generate(body: dict, _: None = Depends(auth)):
             source_client_id=source_client_id,
             provider=cfg["provider"],
             model=cfg["model"],
+            reasoning_effort="low",
         )
         return plan
     except LLMCompletionError as exc:
