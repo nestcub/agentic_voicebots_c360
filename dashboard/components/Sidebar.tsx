@@ -16,8 +16,6 @@ import {
   RiCrosshair2Line,
   RiMenuFoldLine,
   RiMenuUnfoldLine,
-  RiMicLine,
-  RiHammerLine,
   RiBookOpenLine,
   RiRobotLine,
   RiArrowDownSLine,
@@ -38,10 +36,8 @@ const NAV_AFTER_INTELLIGENCE = [
 ];
 
 const INTELLIGENCE_SUB = [
-  { href: "/intelligence",            label: "Bots",       Icon: RiRobotLine,   exact: true },
-  { href: "/intelligence/transcribe", label: "Transcribe", Icon: RiMicLine,     exact: false },
-  { href: "/intelligence/build",      label: "Build",      Icon: RiHammerLine,  exact: false },
-  { href: "/intelligence/knowledge",  label: "Knowledge",  Icon: RiBookOpenLine, exact: false },
+  { href: "/intelligence",           label: "Bots",      Icon: RiRobotLine,    exact: true },
+  { href: "/intelligence/knowledge", label: "Knowledge", Icon: RiBookOpenLine, exact: false },
 ];
 
 export function Sidebar() {

@@ -644,7 +644,8 @@ def list_bots(path: str = DB_PATH) -> list[dict]:
                    SELECT client_id, MAX(created_at) AS ts FROM transcripts GROUP BY client_id
                ),
                session_clients AS (
-                   SELECT client_id, updated_at AS ts, use_case FROM workflow_sessions
+                   SELECT client_id, MAX(updated_at) AS ts, MAX(use_case) AS use_case
+                   FROM workflow_sessions GROUP BY client_id
                ),
                latest_ts AS (
                    SELECT client_id,

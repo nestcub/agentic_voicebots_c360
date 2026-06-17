@@ -80,7 +80,7 @@ export default function IntelligencePage() {
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
-      router.push(`/intelligence/build?client_id=${data.client_id}&wizard=true`);
+      router.push(`/intelligence/wizard?client_id=${data.client_id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create bot");
       setCreating(false);
@@ -143,7 +143,7 @@ export default function IntelligencePage() {
           {bots.map((bot) => (
             <button
               key={bot.client_id}
-              onClick={() => router.push(`/intelligence/build?client_id=${bot.client_id}`)}
+              onClick={() => router.push(`/intelligence/bot?client_id=${bot.client_id}`)}
               className="text-left bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer"
             >
               <div className="flex items-start justify-between gap-2 mb-2">
