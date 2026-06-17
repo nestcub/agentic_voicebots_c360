@@ -201,12 +201,12 @@ class WorkflowDesigner:
 
     # ── clarifying questions ──────────────────────────────────────────────────
 
-    def generate_clarifying_questions(self, client_id: str, use_case_text: str) -> list:
+    def generate_clarifying_questions(self, client_id: str, use_case_text: str, source_client_id: str | None = None) -> list:
         """Generate LLM-driven clarifying questions grounded in call insights and use case.
 
         Returns list of dicts: [{id, question, why}]
         """
-        insights = _aggregate_insights(client_id, self._db)
+        insights = _aggregate_insights(source_client_id or client_id, self._db)
         system = [
             {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
@@ -269,13 +269,14 @@ Return JSON array:
         client_id: str,
         use_case_text: str,
         answers: list,
+        source_client_id: str | None = None,
     ) -> dict:
         """Generate a full workflow plan JSON from use case, insights, and QnA answers.
 
         answers: list of {question, answer}
         Returns: plan dict saved to DB; includes plan_id key.
         """
-        insights = _aggregate_insights(client_id, self._db)
+        insights = _aggregate_insights(source_client_id or client_id, self._db)
         system = [
             {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
@@ -305,7 +306,7 @@ Return JSON array:
         # Get 1-2 best diarised sequences for conversational flow structure
         _diarised_block = ""
         try:
-            _all_insights = get_insights(client_id, path=self._db)
+            _all_insights = get_insights(source_client_id or client_id, path=self._db)
             _best = sorted(
                 [r for r in _all_insights if r.get("diarised_segments")],
                 key=lambda r: r.get("agent_score") or 0,
