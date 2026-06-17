@@ -226,10 +226,7 @@ class LLMClient:
                             continue
                         block = {"type": "text", "text": b["text"]}
                         if b.get("cache"):
-                            cc = {"type": "ephemeral"}
-                            if b.get("ttl"):
-                                cc["ttl"] = b["ttl"]
-                            block["cache_control"] = cc
+                            block["cache_control"] = {"type": "ephemeral"}
                         system_param.append(block)
                 elif cache_system and system:
                     system_param = [{

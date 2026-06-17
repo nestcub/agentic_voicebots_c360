@@ -194,7 +194,7 @@ class WorkflowDesigner:
         """
         insights = _aggregate_insights(client_id, self._db)
         system = [
-            {"text": _canvas_system(), "cache": True, "ttl": "1h"},
+            {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
 
@@ -244,7 +244,7 @@ Return JSON array:
         """
         insights = _aggregate_insights(client_id, self._db)
         system = [
-            {"text": _canvas_system(), "cache": True, "ttl": "1h"},
+            {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
 
@@ -372,13 +372,13 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
         recent_text = "\n".join(f"{t['role']}: {t['content']}" for t in recent) or "(none)"
 
         system = [
-            {"text": _canvas_system(), "cache": True, "ttl": "1h"},
+            {"text": _canvas_system(), "cache": True},
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
         _kb = get_kb(client_id, path=self._db)
         if _kb and _kb.get("content", "").strip():
             system.append({"text": "## Client Bot Knowledge Base\n" + _kb["content"], "cache": True})
-        system.append({"text": _CONVERSE_INSTRUCTIONS, "cache": True, "ttl": "1h"})
+        system.append({"text": _CONVERSE_INSTRUCTIONS, "cache": True})
 
         _rag_query = f"{use_case or message}\n{message}"
         _k = 3 if current_plan else 8
