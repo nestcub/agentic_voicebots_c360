@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from intelligence.designer import WorkflowDesigner
 from shared.llm_client import LLMCompletionError
 from shared.db import (
     init_db,
+    list_bots,
     get_transcripts, get_transcript, get_insight_by_transcript,
     get_plans, get_plan, get_patches,
     get_knowledge, add_knowledge, delete_knowledge, set_knowledge_status,
@@ -220,6 +222,57 @@ _INTEL_MODEL_MAP: dict[str, dict] = {
     "gpt-5.4": {"provider": "azure",     "model": "gpt-5.4"},
 }
 
+# ── Bots ──────────────────────────────────────────────────────────────────────
+@app.get("/bots")
+async def get_bots(_: None = Depends(auth)):
+    return {"bots": list_bots()}
+
+@app.post("/bots")
+async def create_bot(_: None = Depends(auth)):
+    client_id = str(uuid.uuid4())
+    return {"client_id": client_id}
+
+# ── Clarify / Generate / Patch ────────────────────────────────────────────────
+@app.post("/clarify")
+async def clarify(body: dict, _: None = Depends(auth)):
+    client_id = body.get("client_id", "").strip()
+    use_case  = body.get("use_case", "").strip()
+    if not client_id or not use_case:
+        raise HTTPException(status_code=400, detail="client_id and use_case are required.")
+    try:
+        questions = _designer().generate_clarifying_questions(client_id, use_case)
+        return {"questions": questions}
+    except LLMCompletionError as exc:
+        return JSONResponse(status_code=502, content=exc.to_dict())
+
+@app.post("/generate")
+async def generate(body: dict, _: None = Depends(auth)):
+    client_id = body.get("client_id", "").strip()
+    use_case  = body.get("use_case", "").strip()
+    answers   = body.get("answers", [])   # list of {question, answer}
+    model_key = body.get("model", "gpt-5.4")
+    if not client_id or not use_case:
+        raise HTTPException(status_code=400, detail="client_id and use_case are required.")
+    cfg = _INTEL_MODEL_MAP.get(model_key, _INTEL_MODEL_MAP["gpt-5.4"])  # noqa: F841
+    try:
+        plan = _designer().generate_plan(client_id, use_case, answers)
+        return plan
+    except LLMCompletionError as exc:
+        return JSONResponse(status_code=502, content=exc.to_dict())
+
+@app.post("/patch")
+async def patch_plan(body: dict, _: None = Depends(auth)):
+    plan_id = body.get("plan_id", "").strip()
+    request = body.get("request", "").strip()
+    section = body.get("section")   # optional snake_case key e.g. "closure"
+    if not plan_id or not request:
+        raise HTTPException(status_code=400, detail="plan_id and request are required.")
+    try:
+        result = _designer().apply_patch(plan_id, request, section=section)
+        return result
+    except LLMCompletionError as exc:
+        return JSONResponse(status_code=502, content=exc.to_dict())
+
 @app.post("/converse")
 async def converse(body: dict, _: None = Depends(auth)):
     client_id = body.get("client_id", "").strip()
@@ -229,12 +282,14 @@ async def converse(body: dict, _: None = Depends(auth)):
     intent_aware = bool(body.get("intent_aware", True))
     model_key = body.get("model", "sonnet")
     cfg = _INTEL_MODEL_MAP.get(model_key, _INTEL_MODEL_MAP["sonnet"])
+    reasoning_effort = body.get("reasoning_effort")  # e.g. "low", "medium", "high" or None
     try:
         return _designer().converse(
             client_id, message,
             intent_aware=intent_aware,
             provider=cfg["provider"],
             model=cfg["model"],
+            reasoning_effort=reasoning_effort,
         )
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
