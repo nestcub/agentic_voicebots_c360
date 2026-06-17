@@ -220,8 +220,10 @@ async def converse(body: dict, _: None = Depends(auth)):
     message = body.get("message", "").strip()
     if not client_id or not message:
         raise HTTPException(status_code=400, detail="client_id and message are required.")
+    intent_aware = bool(body.get("intent_aware", True))
+    provider = body.get("provider") or None
     try:
-        return _designer().converse(client_id, message)
+        return _designer().converse(client_id, message, intent_aware=intent_aware, provider=provider)
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
 
