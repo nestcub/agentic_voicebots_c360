@@ -267,12 +267,19 @@ class LLMClient:
                 sys_text = system if isinstance(system, str) else "\n\n".join(
                     b["text"] for b in system if b.get("text")
                 )
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    messages=[{"role": "system", "content": sys_text},
-                               {"role": "user",   "content": user}],
-                )
+                _msgs = [{"role": "system", "content": sys_text},
+                         {"role": "user",   "content": user}]
+                try:
+                    response = self._client.chat.completions.create(
+                        model=self.model, max_tokens=max_tokens, messages=_msgs,
+                    )
+                except Exception as _e:
+                    if "unsupported_parameter" in str(_e) and "max_tokens" in str(_e):
+                        response = self._client.chat.completions.create(
+                            model=self.model, max_completion_tokens=max_tokens, messages=_msgs,
+                        )
+                    else:
+                        raise
                 self._record_completion_metadata(response, max_tokens)
                 return response.choices[0].message.content or ""
 
