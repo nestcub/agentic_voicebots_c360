@@ -442,6 +442,8 @@ USER MESSAGE:
         _proposed = result.get("proposed_knowledge") or []
         _intent_raw = result.get("intent", "advice")
         for _item in _proposed:
+            if not isinstance(_item, dict):
+                continue
             _topic = (_item.get("topic") or "").strip()
             _fact  = (_item.get("fact") or "").strip()
             if not _topic or not _fact:
