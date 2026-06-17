@@ -321,22 +321,6 @@ function sectionBody(sectionKey: string, value: unknown) {
   }
 }
 
-function DiffPanel({ before, after }: { before: unknown; after: unknown }) {
-  return (
-    <div className="mx-5 mb-4 space-y-1 min-w-0">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Diff</p>
-      <div className="grid grid-cols-2 gap-2 text-xs min-w-0">
-        <div className="min-w-0 bg-red-50 border border-red-100 rounded p-2 text-red-700 font-mono whitespace-pre-wrap break-words overflow-x-auto">
-          {JSON.stringify(before, null, 2)}
-        </div>
-        <div className="min-w-0 bg-emerald-50 border border-emerald-100 rounded p-2 text-emerald-700 font-mono whitespace-pre-wrap break-words overflow-x-auto">
-          {JSON.stringify(after, null, 2)}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Section wrapper ─────────────────────────────────────────────────────────────
 
 interface SectionProps {
@@ -378,14 +362,7 @@ function Section({ sectionKey, title, value, diff, flashedKeys }: SectionProps) 
           <RiArrowDownSLine className="w-4 h-4 text-gray-400 shrink-0" />
         )}
       </button>
-      {open && (
-        <>
-          {sectionBody(sectionKey, value)}
-          {hasChange && diff && (
-            <DiffPanel before={diff[sectionKey].before} after={diff[sectionKey].after} />
-          )}
-        </>
-      )}
+      {open && sectionBody(sectionKey, value)}
     </div>
   );
 }
