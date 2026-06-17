@@ -92,6 +92,11 @@ export default function WizardPage() {
   // Step 1
   const [useCase, setUseCase] = useState("");
 
+  // Step 2 – copy from existing bot
+  const [sourceClientId, setSourceClientId] = useState<string>("");
+  const [existingBots, setExistingBots] = useState<{ client_id: string; bot_name: string; status: string }[]>([]);
+  const [loadingBots, setLoadingBots] = useState(false);
+
   // Step 3
   const [clarifyLoading, setClarifyLoading] = useState(false);
   const [clarifyError, setClarifyError] = useState("");
@@ -103,6 +108,21 @@ export default function WizardPage() {
   const [generateError, setGenerateError] = useState("");
   const [generating, setGenerating] = useState(false);
   const generateCalledRef = useRef(false);
+
+  // ── Step 2: fetch existing bots ──
+
+  useEffect(() => {
+    if (step !== 2) return;
+    setLoadingBots(true);
+    fetch(`${INTEL_URL}/bots`, { headers: apiHeaders() })
+      .then(r => r.json())
+      .then(data => {
+        setExistingBots(
+          (data.bots ?? []).filter((b: { client_id: string }) => b.client_id !== clientId)
+        );
+      })
+      .finally(() => setLoadingBots(false));
+  }, [step, clientId]);
 
   // ── Step 3: call /clarify on enter ──
 
@@ -120,7 +140,7 @@ export default function WizardPage() {
       const res = await fetch(`${INTEL_URL}/clarify`, {
         method: "POST",
         headers: apiHeaders(),
-        body: JSON.stringify({ client_id: clientId, use_case: useCase }),
+        body: JSON.stringify({ client_id: clientId, use_case: useCase, ...(sourceClientId ? { source_client_id: sourceClientId } : {}) }),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: { questions: ClarifyQuestion[] } = await res.json();
@@ -164,6 +184,7 @@ export default function WizardPage() {
           use_case: useCase,
           answers: answerList,
           model: "gpt-5.4",
+          ...(sourceClientId ? { source_client_id: sourceClientId } : {}),
         }),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -253,6 +274,37 @@ export default function WizardPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
               </svg>
             </a>
+          </div>
+
+          <div className="mt-4 border-t border-gray-100 pt-4">
+            <p className="text-sm font-medium text-gray-700 mb-2">
+              Or copy insights from an existing bot:
+            </p>
+            {loadingBots ? (
+              <p className="text-xs text-gray-400">Loading bots…</p>
+            ) : existingBots.length === 0 ? (
+              <p className="text-xs text-gray-400">No other bots with recordings found.</p>
+            ) : (
+              <select
+                value={sourceClientId}
+                onChange={e => setSourceClientId(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— select a bot —</option>
+                {existingBots
+                  .filter(b => b.status === "built" || b.status === "transcribed")
+                  .map(b => (
+                    <option key={b.client_id} value={b.client_id}>
+                      {b.bot_name || b.client_id} ({b.status})
+                    </option>
+                  ))}
+              </select>
+            )}
+            {sourceClientId && (
+              <p className="text-xs text-green-600 mt-1.5">
+                ✓ Insights from this bot will be used to guide generation.
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3 pt-2">
