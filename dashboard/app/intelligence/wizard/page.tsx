@@ -189,7 +189,7 @@ export default function WizardPage() {
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       await res.json();
-      router.push(`/intelligence/build?client_id=${encodeURIComponent(clientId)}`);
+      router.push(`/intelligence/bot?client_id=${encodeURIComponent(clientId)}&tab=build`);
     } catch (err: unknown) {
       setGenerateError(err instanceof Error ? err.message : "Generation failed.");
       setGenerating(false);
