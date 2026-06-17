@@ -316,16 +316,52 @@ class LLMClient:
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """Strip markdown fences and extract the outermost JSON object or array."""
+        """Strip markdown fences and extract the first complete JSON object or array.
+
+        Uses bracket counting so trailing text (common in reasoning models like GPT-5)
+        that happens to contain brackets does not corrupt the extracted payload.
+        """
         import re
         fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
         if fenced:
             return fenced.group(1).strip()
-        for open_c, close_c in [('{', '}'), ('[', ']')]:
+
+        # Try whichever JSON opener appears first in the text
+        pos_curly = text.find('{')
+        pos_square = text.find('[')
+        if pos_curly == -1 and pos_square == -1:
+            return text.strip()
+        if pos_square != -1 and (pos_curly == -1 or pos_square < pos_curly):
+            pairs = [('[', ']'), ('{', '}')]
+        else:
+            pairs = [('{', '}'), ('[', ']')]
+
+        for open_c, close_c in pairs:
             start = text.find(open_c)
-            end   = text.rfind(close_c)
-            if start != -1 and end > start:
-                return text[start:end + 1]
+            if start == -1:
+                continue
+            depth = 0
+            in_string = False
+            escape = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape:
+                    escape = False
+                    continue
+                if ch == '\\' and in_string:
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == open_c:
+                    depth += 1
+                elif ch == close_c:
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
         return text.strip()
 
     def complete_json(self, system, user: str, max_tokens: int = 4096, reasoning_effort: str | None = None) -> dict:
