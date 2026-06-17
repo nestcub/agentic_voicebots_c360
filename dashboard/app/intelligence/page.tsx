@@ -1,88 +1,164 @@
 "use client";
 
-import Link from "next/link";
-import { Card, CardHeader } from "@/components/Card";
-import { RiMicLine, RiHammerLine, RiBookOpenLine } from "react-icons/ri";
-import { useIntelligence } from "@/context/IntelligenceContext";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
-const SECTIONS = [
-  { href: "/intelligence/transcribe", label: "Transcribe", Icon: RiMicLine,      desc: "Upload call recordings and extract insights" },
-  { href: "/intelligence/build",      label: "Build",      Icon: RiHammerLine,   desc: "Conversational workflow designer and plan manager" },
-  { href: "/intelligence/knowledge",  label: "Knowledge",  Icon: RiBookOpenLine, desc: "Manage platform knowledge facts" },
-];
+const INTEL_URL = process.env.NEXT_PUBLIC_INTEL_API_URL ?? "http://localhost:8001";
+const INTEL_KEY = process.env.NEXT_PUBLIC_INTEL_API_KEY ?? "";
+
+const apiHeaders = () => ({ "x-api-key": INTEL_KEY });
+
+interface Bot {
+  client_id: string;
+  status: "draft" | "transcribed" | "built";
+  bot_name: string;
+  updated_at: string;
+}
+
+function relativeDate(iso: string): string {
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const secs = Math.floor(diff / 1000);
+    if (secs < 60) return "just now";
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+    return new Date(iso).toLocaleDateString();
+  } catch {
+    return iso;
+  }
+}
+
+const STATUS_CHIP: Record<string, string> = {
+  draft: "bg-gray-100 text-gray-600",
+  transcribed: "bg-amber-100 text-amber-700",
+  built: "bg-green-100 text-green-700",
+};
+
+function SkeletonCard() {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-5 animate-pulse">
+      <div className="h-4 bg-gray-200 rounded w-2/3 mb-3" />
+      <div className="h-3 bg-gray-100 rounded w-1/4 mb-4" />
+      <div className="h-3 bg-gray-100 rounded w-1/3" />
+    </div>
+  );
+}
 
 export default function IntelligencePage() {
-  const { clientId, setClientId, plans, transcripts } = useIntelligence();
+  const router = useRouter();
+  const [bots, setBots] = useState<Bot[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${INTEL_URL}/bots`, { headers: apiHeaders() })
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        setBots(data.bots ?? []);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(e.message);
+        setLoading(false);
+      });
+  }, []);
+
+  async function handleCreate() {
+    setCreating(true);
+    try {
+      const res = await fetch(`${INTEL_URL}/bots`, {
+        method: "POST",
+        headers: { ...apiHeaders(), "Content-Type": "application/json" },
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      router.push(`/intelligence/build?client_id=${data.client_id}&wizard=true`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create bot");
+      setCreating(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-gray-800">Intelligence</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Call analysis, workflow design, and platform knowledge</p>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-gray-800">Bots</h1>
+          <p className="text-xs text-gray-400 mt-0.5">All your intelligence bots</p>
+        </div>
+        <button
+          onClick={handleCreate}
+          disabled={creating}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60 transition-colors"
+        >
+          {creating ? (
+            <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <span className="text-base leading-none">+</span>
+          )}
+          Create new bot
+        </button>
       </div>
 
-      {/* Client ID */}
-      <Card className="p-5">
-        <label className="text-sm font-medium text-gray-700">Client ID</label>
-        <input
-          type="text"
-          value={clientId}
-          onChange={(e) => setClientId(e.target.value)}
-          placeholder="e.g. autovista"
-          className="mt-2 w-full max-w-sm px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <p className="text-xs text-gray-400 mt-1">Saved in browser. All sections below filter by this ID.</p>
-      </Card>
+      {/* Error banner */}
+      {error && (
+        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+          {error}
+        </div>
+      )}
 
-      {/* Quick nav */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {SECTIONS.map(({ href, label, Icon, desc }) => (
-          <Link key={href} href={href}>
-            <Card className="p-5 hover:shadow-md transition-shadow cursor-pointer h-full">
-              <Icon className="w-6 h-6 text-blue-600 mb-3" />
-              <p className="text-sm font-semibold text-gray-800">{label}</p>
-              <p className="text-xs text-gray-400 mt-1">{desc}</p>
-            </Card>
-          </Link>
-        ))}
-      </div>
+      {/* Loading skeletons */}
+      {loading && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1, 2, 3].map((i) => <SkeletonCard key={i} />)}
+        </div>
+      )}
 
-      {/* Recent activity */}
-      <div className="grid md:grid-cols-2 gap-6">
-        <Card className="p-0 overflow-hidden">
-          <CardHeader title="Recent Transcripts" hint={clientId ? `for ${clientId}` : "set a client ID above"} />
-          <div className="divide-y divide-gray-100">
-            {transcripts.length === 0 && (
-              <p className="px-5 py-6 text-sm text-gray-400">No transcripts yet.</p>
-            )}
-            {transcripts.map((t) => (
-              <Link key={t.id} href={`/intelligence/transcribe?id=${t.id}`} className="flex items-center justify-between px-5 py-3 hover:bg-gray-50">
-                <div>
-                  <p className="text-sm font-medium text-gray-800 truncate max-w-[200px]">{t.filename}</p>
-                  <p className="text-xs text-gray-400">{t.duration ? `${Math.round(t.duration)}s` : "—"} · {t.created_at?.slice(0, 10)}</p>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </Card>
+      {/* Empty state */}
+      {!loading && bots.length === 0 && !error && (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <p className="text-gray-400 text-sm mb-3">No bots yet. Create your first bot</p>
+          <button
+            onClick={handleCreate}
+            disabled={creating}
+            className="text-blue-600 text-sm font-medium hover:underline disabled:opacity-60"
+          >
+            Create your first bot →
+          </button>
+        </div>
+      )}
 
-        <Card className="p-0 overflow-hidden">
-          <CardHeader title="Recent Plans" hint={clientId ? `for ${clientId}` : "set a client ID above"} />
-          <div className="divide-y divide-gray-100">
-            {plans.length === 0 && (
-              <p className="px-5 py-6 text-sm text-gray-400">No plans yet.</p>
-            )}
-            {plans.map((p) => (
-              <Link key={p.id} href="/intelligence/build" className="flex items-center justify-between px-5 py-3 hover:bg-gray-50">
-                <div>
-                  <p className="text-sm font-medium text-gray-800">v{p.version} plan</p>
-                  <p className="text-xs text-gray-400">{p.updated_at?.slice(0, 10) ?? p.created_at?.slice(0, 10)}</p>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </Card>
-      </div>
+      {/* Bot grid */}
+      {!loading && bots.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {bots.map((bot) => (
+            <button
+              key={bot.client_id}
+              onClick={() => router.push(`/intelligence/build?client_id=${bot.client_id}`)}
+              className="text-left bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <p className="text-sm font-semibold text-gray-800 truncate">{bot.bot_name || bot.client_id}</p>
+                <span
+                  className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_CHIP[bot.status] ?? "bg-gray-100 text-gray-600"}`}
+                >
+                  {bot.status}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400">{bot.updated_at ? relativeDate(bot.updated_at) : "—"}</p>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
