@@ -618,3 +618,72 @@ def refresh_batch_counts(batch_id: str) -> None:
                WHERE id=%s""",
             (batch_id, batch_id, _now(), batch_id),
         )
+
+
+# ── Bots list ─────────────────────────────────────────────────────────────────
+
+def list_bots(path: str = DB_PATH) -> list[dict]:
+    """Return one dict per distinct client_id with derived status and recency.
+
+    Status precedence: 'built' (plan exists) > 'transcribed' (transcript exists)
+    > 'draft' (session only, nothing uploaded).
+    """
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            """WITH all_clients AS (
+                   SELECT client_id FROM plans
+                   UNION
+                   SELECT client_id FROM transcripts
+                   UNION
+                   SELECT client_id FROM workflow_sessions
+               ),
+               plan_clients AS (
+                   SELECT client_id, MAX(updated_at) AS ts FROM plans GROUP BY client_id
+               ),
+               transcript_clients AS (
+                   SELECT client_id, MAX(created_at) AS ts FROM transcripts GROUP BY client_id
+               ),
+               session_clients AS (
+                   SELECT client_id, updated_at AS ts, use_case FROM workflow_sessions
+               ),
+               latest_ts AS (
+                   SELECT client_id,
+                          GREATEST(
+                              MAX(pc.ts),
+                              MAX(tc.ts),
+                              MAX(sc.ts)
+                          ) AS updated_at
+                   FROM all_clients ac
+                   LEFT JOIN plan_clients       pc USING (client_id)
+                   LEFT JOIN transcript_clients tc USING (client_id)
+                   LEFT JOIN session_clients    sc USING (client_id)
+                   GROUP BY ac.client_id
+               )
+               SELECT
+                   ac.client_id,
+                   CASE
+                       WHEN pc.client_id IS NOT NULL THEN 'built'
+                       WHEN tc.client_id IS NOT NULL THEN 'transcribed'
+                       ELSE 'draft'
+                   END AS status,
+                   lt.updated_at,
+                   sc.use_case
+               FROM all_clients ac
+               LEFT JOIN plan_clients       pc USING (client_id)
+               LEFT JOIN transcript_clients tc USING (client_id)
+               LEFT JOIN session_clients    sc USING (client_id)
+               LEFT JOIN latest_ts          lt USING (client_id)
+               ORDER BY lt.updated_at DESC NULLS LAST"""
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        use_case = row.get("use_case") or ""
+        bot_name = (use_case[:60] if use_case else "") or row["client_id"]
+        result.append({
+            "client_id":  row["client_id"],
+            "status":     row["status"],
+            "updated_at": row["updated_at"],
+            "bot_name":   bot_name,
+        })
+    return result
