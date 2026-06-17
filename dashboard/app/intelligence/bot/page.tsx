@@ -36,7 +36,10 @@ function BotPageInner() {
   const router = useRouter();
   const params = useSearchParams();
   const clientId = params.get("client_id") ?? "";
-  const [tab, setTab] = useState<TabKey>("transcribe");
+  const initialTab = params.get("tab") as TabKey | null;
+  const [tab, setTab] = useState<TabKey>(
+    initialTab && TABS.some(t => t.key === initialTab) ? initialTab : "transcribe"
+  );
 
   // Sync client_id into localStorage so existing Transcribe/Build pages pick it up
   // (both pages read from localStorage("intel_client_id") / IntelligenceContext)
