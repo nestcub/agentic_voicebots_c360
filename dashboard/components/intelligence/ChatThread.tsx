@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Card, CardHeader } from "@/components/Card";
 import { RiSendPlaneLine, RiRobot2Line, RiUserLine } from "react-icons/ri";
 
@@ -47,6 +47,59 @@ function formatAssistantError(status: number | null, message: string): string {
   return `${prefix}: ${message}`;
 }
 
+function renderInline(text: string): React.ReactNode {
+  // Handle **bold**
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
+function MarkdownContent({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.startsWith("### ")) {
+      elements.push(<h3 key={i} className="text-sm font-bold text-gray-800 mt-3 mb-1">{line.slice(4)}</h3>);
+    } else if (line.startsWith("## ")) {
+      elements.push(<h2 key={i} className="text-sm font-bold text-gray-900 mt-4 mb-1 border-b border-gray-200 pb-1">{line.slice(3)}</h2>);
+    } else if (line.startsWith("---")) {
+      elements.push(<hr key={i} className="border-gray-200 my-2" />);
+    } else if (line.startsWith("- ") || line.startsWith("* ")) {
+      // collect consecutive list items
+      const items: string[] = [];
+      while (i < lines.length && (lines[i].startsWith("- ") || lines[i].startsWith("* "))) {
+        items.push(lines[i].slice(2));
+        i++;
+      }
+      elements.push(
+        <ul key={`ul-${i}`} className="list-disc list-inside space-y-0.5 my-1 text-gray-700">
+          {items.map((item, j) => <li key={j} className="text-sm">{renderInline(item)}</li>)}
+        </ul>
+      );
+      continue;
+    } else if (line.trim() === "") {
+      // skip blank lines between blocks
+    } else {
+      elements.push(<p key={i} className="text-sm text-gray-800 leading-relaxed">{renderInline(line)}</p>);
+    }
+    i++;
+  }
+
+  return <div className="space-y-1">{elements}</div>;
+}
+
+function isMarkdown(text: string): boolean {
+  return /^#{1,3} |^\- |\*\*|^---/m.test(text);
+}
+
 export interface ChatThreadProps {
   clientId: string;
   onPlanUpdate: (data: {
@@ -63,6 +116,10 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [intentAware, setIntentAware] = useState(true);
+  const [showIntentInfo, setShowIntentInfo] = useState(false);
+  const [model, setModel] = useState<"sonnet" | "gpt-4.1">("sonnet");
+  const providerMap: Record<string, string> = { "sonnet": "anthropic", "gpt-4.1": "openai" };
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -79,7 +136,12 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
       const res = await fetch("/api/intelligence/converse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: clientId, message: userMsg }),
+        body: JSON.stringify({
+          client_id: clientId,
+          message: userMsg,
+          intent_aware: intentAware,
+          provider: providerMap[model],
+        }),
       });
 
       const raw = await res.text();
@@ -170,28 +232,47 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
         {turns.map((t, i) => (
           <div
             key={i}
-            className={`flex gap-3 ${t.role === "user" ? "flex-row-reverse" : ""}`}
+            className={`flex flex-col ${t.role === "user" ? "items-end" : "items-start"} gap-0.5`}
           >
-            <div
-              className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-                t.role === "user" ? "bg-blue-600" : "bg-gray-100"
-              }`}
-            >
-              {t.role === "user" ? (
-                <RiUserLine className="w-4 h-4 text-white" />
-              ) : (
-                <RiRobot2Line className="w-4 h-4 text-gray-500" />
-              )}
+            <div className={`flex gap-3 ${t.role === "user" ? "flex-row-reverse" : ""}`}>
+              <div
+                className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
+                  t.role === "user" ? "bg-blue-600" : "bg-gray-100"
+                }`}
+              >
+                {t.role === "user" ? (
+                  <RiUserLine className="w-4 h-4 text-white" />
+                ) : (
+                  <RiRobot2Line className="w-4 h-4 text-gray-500" />
+                )}
+              </div>
+              <div
+                className={`max-w-[80%] px-4 py-2.5 rounded-xl text-sm ${
+                  t.role === "user"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-100 text-gray-800"
+                }`}
+              >
+                {t.role === "assistant" ? (
+                  isMarkdown(t.content) ? (
+                    <MarkdownContent text={t.content} />
+                  ) : (
+                    <span className="whitespace-pre-wrap">{t.content}</span>
+                  )
+                ) : (
+                  t.content
+                )}
+              </div>
             </div>
-            <div
-              className={`max-w-[80%] px-4 py-2.5 rounded-xl text-sm ${
-                t.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 text-gray-800"
-              }`}
-            >
-              {t.content}
-            </div>
+            {t.role === "assistant" && (
+              <button
+                onClick={() => navigator.clipboard.writeText(t.content)}
+                className="mt-1 self-end text-xs text-gray-400 hover:text-gray-600 px-2 py-0.5 rounded hover:bg-gray-100 transition"
+                title="Copy"
+              >
+                Copy
+              </button>
+            )}
           </div>
         ))}
         {loading && (
@@ -205,6 +286,48 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
           </div>
         )}
         <div ref={bottomRef} />
+      </div>
+
+      <div className="border-t border-gray-100 px-4 py-2 flex items-center gap-4 text-xs text-gray-500">
+        {/* Intent-aware toggle */}
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={intentAware}
+            onChange={e => setIntentAware(e.target.checked)}
+            className="w-3.5 h-3.5 accent-blue-600"
+          />
+          <span>Smart context</span>
+          <span
+            className="relative cursor-help"
+            onClick={() => setShowIntentInfo(v => !v)}
+          >
+            <span className="text-gray-400 hover:text-gray-600 text-xs border border-gray-300 rounded-full w-4 h-4 inline-flex items-center justify-center">ⓘ</span>
+            {showIntentInfo && (
+              <div className="absolute bottom-6 left-0 z-50 w-64 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs text-gray-700 leading-relaxed">
+                <p className="font-semibold mb-1">Smart Context Loading</p>
+                <p>When enabled, advice and KB questions skip loading your full bot plan and examples — reducing API cost. Disable if the response seems to be missing plan context.</p>
+                <button onClick={() => setShowIntentInfo(false)} className="mt-2 text-blue-600 hover:underline">Close</button>
+              </div>
+            )}
+          </span>
+        </label>
+        {/* Model pills */}
+        <div className="flex items-center gap-1 ml-auto">
+          {(["sonnet", "gpt-4.1"] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setModel(m)}
+              className={`px-2 py-0.5 rounded text-xs border transition ${
+                model === m
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+              }`}
+            >
+              {m === "sonnet" ? "Sonnet 4.6" : "GPT-4.1"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="border-t border-gray-100 p-4 flex gap-3">
