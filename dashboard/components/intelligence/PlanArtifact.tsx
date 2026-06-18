@@ -71,6 +71,21 @@ const SYSTEM_PROMPT_SECTION_ORDER = [
   "conversation_example", "safety_guardrails",
 ];
 
+function CopyButton({ text, size = "sm" }: { text: string; size?: "sm" | "xs" }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* */ }
+  };
+  const cls = size === "xs"
+    ? "flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-white border border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300 transition-colors"
+    : "flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors";
+  return (
+    <button onClick={copy} className={cls}>
+      {copied ? <><RiCheckLine className="w-3 h-3 text-emerald-500" />Copied</> : <><RiFileCopyLine className="w-3 h-3" />Copy</>}
+    </button>
+  );
+}
+
 function SystemPromptSectionsContent({ value }: { value: unknown }) {
   const sections = (value as Record<string, string>) ?? {};
   const toLabel = (k: string) =>
@@ -85,12 +100,19 @@ function SystemPromptSectionsContent({ value }: { value: unknown }) {
   ) as [string, string][];
   const all = [...ordered, ...extra];
 
+  const allText = all.map(([k, t]) => `## ${toLabel(k)}\n${t}`).join("\n\n");
+
   return (
     <div className="px-5 py-4 space-y-3 bg-white">
+      {/* Copy entire prompt */}
+      <div className="flex justify-end">
+        <CopyButton text={allText} />
+      </div>
       {all.map(([key, text]) => (
         <div key={key} className="border border-gray-100 rounded-lg overflow-hidden">
-          <div className="px-3 py-2 bg-gray-50 text-xs font-semibold text-gray-600">
-            {toLabel(key)}
+          <div className="flex items-center justify-between px-3 py-2 bg-gray-50">
+            <span className="text-xs font-semibold text-gray-600">{toLabel(key)}</span>
+            <CopyButton text={text} size="xs" />
           </div>
           <pre className="px-3 py-2 text-xs text-gray-600 whitespace-pre-wrap font-mono leading-relaxed bg-white">
             {text}
@@ -555,7 +577,6 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
     { key: "bot_kb", title: "Bot Knowledge Base" },
     { key: "build_notes", title: "Build Notes" },
     // legacy fallbacks shown only if present
-    { key: "system_prompt", title: "System Prompt (text)" },
     { key: "qualification_questions", title: "Qualification Questions" },
     { key: "objection_handling", title: "Objection Handling" },
     { key: "escalation_rules", title: "Escalation Rules" },
