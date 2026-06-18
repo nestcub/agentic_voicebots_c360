@@ -308,6 +308,13 @@ async def converse(body: dict, _: None = Depends(auth)):
         )
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"code": "internal_error", "message": str(exc)},
+        )
 
 # ── Session (use case) ────────────────────────────────────────────────────────
 @app.get("/session/{client_id}")
