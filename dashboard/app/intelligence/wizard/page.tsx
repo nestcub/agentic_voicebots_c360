@@ -91,6 +91,7 @@ export default function WizardPage() {
 
   // Step 1
   const [useCase, setUseCase] = useState("");
+  const [model, setModel] = useState<"sonnet" | "gpt-4.1" | "gpt-5.4">("gpt-5.4");
 
   // Step 2 – copy from existing bot
   const [sourceClientId, setSourceClientId] = useState<string>("");
@@ -140,7 +141,7 @@ export default function WizardPage() {
       const res = await fetch(`${INTEL_URL}/clarify`, {
         method: "POST",
         headers: apiHeaders(),
-        body: JSON.stringify({ client_id: clientId, use_case: useCase, model: "gpt-5.4", ...(sourceClientId ? { source_client_id: sourceClientId } : {}) }),
+        body: JSON.stringify({ client_id: clientId, use_case: useCase, model, ...(sourceClientId ? { source_client_id: sourceClientId } : {}) }),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: { questions: ClarifyQuestion[] } = await res.json();
@@ -183,7 +184,7 @@ export default function WizardPage() {
           client_id: clientId,
           use_case: useCase,
           answers: answerList,
-          model: "gpt-5.4",
+          model,
           ...(sourceClientId ? { source_client_id: sourceClientId } : {}),
         }),
       });
@@ -231,6 +232,32 @@ export default function WizardPage() {
             value={useCase}
             onChange={(e) => setUseCase(e.target.value)}
           />
+
+          {/* Generation model — pick which LLM writes the 12-section prompt */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Generation model</label>
+            <div className="flex items-center gap-2">
+              {([
+                { key: "sonnet", label: "Sonnet 4.6" },
+                { key: "gpt-4.1", label: "GPT-4.1" },
+                { key: "gpt-5.4", label: "GPT-5.4" },
+              ] as const).map((m) => (
+                <button
+                  key={m.key}
+                  onClick={() => setModel(m.key)}
+                  className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                    model === m.key
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400">This model writes the clarifying questions and the 12-section prompt. Compare outputs by creating one bot per model.</p>
+          </div>
+
           <div className="flex justify-end">
             <button
               onClick={() => setStep(2)}
