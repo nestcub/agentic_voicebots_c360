@@ -13,7 +13,9 @@ export interface PlanArtifactProps {
   plan: Record<string, unknown> | null;
   planId: string | null;
   version: number | null;
-  diff: Record<string, { before: unknown; after: unknown }> | null;
+  // For most keys: { before, after }. For system_prompt_sections (live converse
+  // turn) it may be a nested { subkey: { before, after } } — so allow unknown.
+  diff: Record<string, unknown> | null;
 }
 
 type Patch = {
@@ -408,7 +410,7 @@ interface SectionProps {
   sectionKey: string;
   title: string;
   value: unknown;
-  diff: Record<string, { before: unknown; after: unknown }> | null;
+  diff: Record<string, unknown> | null;
   flashedKeys: Set<string>;
 }
 
@@ -525,8 +527,9 @@ function HistoryRow({
 
 export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifactProps) {
   const [tab, setTab] = useState<"recent" | "history">("recent");
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [patches, setPatches] = useState<Patch[]>([]);
+  const [planCreatedAt, setPlanCreatedAt] = useState<string>("");
+  const [loading, setLoading] = useState(false);
   const [flashedKeys, setFlashedKeys] = useState<Set<string>>(new Set());
 
   // Flash changed sections for 2s when diff changes
@@ -537,39 +540,64 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
     return () => clearTimeout(timer);
   }, [diff]);
 
-  // Build version timeline: patches (v2+) + a synthesized v1 (initial generation)
+  // Fetch plan row + patch list whenever the plan changes (drives both tabs).
   useEffect(() => {
-    if (!planId || tab !== "history") return;
-    setHistoryLoading(true);
+    if (!planId) {
+      setPatches([]);
+      setPlanCreatedAt("");
+      return;
+    }
+    setLoading(true);
     Promise.all([
       fetch(`/api/intelligence/plans/${planId}`).then((r) => r.json()),
       fetch(`/api/intelligence/plans/${planId}/patches`).then((r) => r.json()),
     ])
       .then(([planRow, patchRows]) => {
-        const patches: Patch[] = Array.isArray(patchRows) ? patchRows : [];
-        const entries: HistoryEntry[] = patches.map((pt) => ({
-          version: pt.version,
-          request: pt.admin_request,
-          reasoning: pt.llm_reasoning,
-          date: pt.created_at,
-          initial: false,
-          patch: pt.patch ?? {},
-        }));
-        // Synthesize the v1 entry — initial generation never writes a patch row
-        entries.push({
-          version: 1,
-          request: "Initial plan generated",
-          reasoning: "",
-          date: planRow?.created_at ?? "",
-          initial: true,
-          patch: null,
-        });
-        entries.sort((a, b) => b.version - a.version);
-        setHistory(entries);
+        const rows: Patch[] = Array.isArray(patchRows) ? patchRows : [];
+        rows.sort((a, b) => b.version - a.version);
+        setPatches(rows);
+        setPlanCreatedAt(planRow?.created_at ?? "");
       })
-      .catch(() => setHistory([]))
-      .finally(() => setHistoryLoading(false));
-  }, [planId, tab]);
+      .catch(() => {
+        setPatches([]);
+        setPlanCreatedAt("");
+      })
+      .finally(() => setLoading(false));
+  }, [planId, version]);
+
+  // ── Recent delta: the latest patch matching the current version ──
+  // Show the full plan when at v1 (no patches) or version is unknown;
+  // otherwise show only the keys the latest patch changed.
+  const currentPatch =
+    version != null && version > 1
+      ? patches.find((p) => p.version === version) ?? null
+      : null;
+  const showDelta = currentPatch != null;
+
+  // ── History timeline: prior versions only (version < current). ──
+  const historyEntries: HistoryEntry[] = (() => {
+    const entries: HistoryEntry[] = patches.map((pt) => ({
+      version: pt.version,
+      request: pt.admin_request,
+      reasoning: pt.llm_reasoning,
+      date: pt.created_at,
+      initial: false,
+      patch: pt.patch ?? {},
+    }));
+    // Synthesize the v1 entry — initial generation never writes a patch row.
+    entries.push({
+      version: 1,
+      request: "Initial plan generated",
+      reasoning: "",
+      date: planCreatedAt,
+      initial: true,
+      patch: null,
+    });
+    const filtered =
+      version != null ? entries.filter((e) => e.version < version) : entries;
+    filtered.sort((a, b) => b.version - a.version);
+    return filtered;
+  })();
 
   const SECTIONS: { key: string; title: string }[] = [
     { key: "system_prompt_sections", title: "System Prompt" },
@@ -619,7 +647,48 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
                 Start chatting to generate a plan
               </p>
             )}
+
+            {/* Delta view — current patch version only */}
+            {plan && showDelta && currentPatch && (
+              <>
+                <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-2.5">
+                  <p className="text-xs text-blue-700">
+                    Showing changes in {vLabel(version)} — see History for previous versions.
+                  </p>
+                </div>
+                <div className="rounded-lg bg-gray-50 border border-gray-100 px-4 py-2.5 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-gray-700">
+                      {vLabel(version)}
+                    </span>
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full">
+                      patch
+                    </span>
+                  </div>
+                  {currentPatch.admin_request && (
+                    <p className="text-sm text-gray-700">{currentPatch.admin_request}</p>
+                  )}
+                  {currentPatch.llm_reasoning && (
+                    <p className="text-xs text-gray-500 italic">{currentPatch.llm_reasoning}</p>
+                  )}
+                </div>
+                {Object.keys(currentPatch.patch ?? {}).map((k) => (
+                  <div
+                    key={k}
+                    className="border border-gray-100 rounded-xl overflow-hidden min-w-0"
+                  >
+                    <div className="px-5 py-3 text-sm font-semibold text-gray-700 bg-gray-50">
+                      {SECTION_TITLES[k] ?? k}
+                    </div>
+                    {sectionBody(k, currentPatch.patch?.[k])}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* Full plan — v1 (no patches) or unknown version */}
             {plan &&
+              !showDelta &&
               SECTIONS.map(({ key, title }) => (
                 <Section
                   key={key}
@@ -638,15 +707,17 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
             {!planId && (
               <p className="text-sm text-gray-400 text-center pt-12">No plan loaded yet</p>
             )}
-            {planId && historyLoading && (
+            {planId && loading && (
               <p className="text-sm text-gray-400 text-center pt-12">Loading history…</p>
             )}
-            {planId && !historyLoading && history.length === 0 && (
-              <p className="text-sm text-gray-400 text-center pt-12">No history yet</p>
+            {planId && !loading && historyEntries.length === 0 && (
+              <p className="text-sm text-gray-400 text-center pt-12">
+                No previous versions yet.
+              </p>
             )}
-            {planId && !historyLoading && history.length > 0 && (
+            {planId && !loading && historyEntries.length > 0 && (
               <div className="space-y-2 min-w-0">
-                {history.map((h) => (
+                {historyEntries.map((h) => (
                   <HistoryRow key={h.version} entry={h} plan={plan} />
                 ))}
               </div>
