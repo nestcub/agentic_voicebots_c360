@@ -245,12 +245,24 @@ class LLMClient:
                     }]
                 else:
                     system_param = system
-                response = self._client.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    system=system_param,
-                    messages=[{"role": "user", "content": user}],
-                )
+                # The Anthropic SDK refuses non-streaming requests when max_tokens is
+                # large enough to risk the ~10-minute connection timeout (raises ValueError
+                # above ~16k). Stream those to suppress the guard; small calls stay simple.
+                if max_tokens > 16000:
+                    with self._client.messages.stream(
+                        model=self.model,
+                        max_tokens=max_tokens,
+                        system=system_param,
+                        messages=[{"role": "user", "content": user}],
+                    ) as stream:
+                        response = stream.get_final_message()
+                else:
+                    response = self._client.messages.create(
+                        model=self.model,
+                        max_tokens=max_tokens,
+                        system=system_param,
+                        messages=[{"role": "user", "content": user}],
+                    )
                 self._record_completion_metadata(response, max_tokens)
                 return response.content[0].text
 
