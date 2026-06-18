@@ -29,6 +29,14 @@ _CONVERSE_INSTRUCTIONS = """Decide the intent and respond. Rules:
   draft a first plan OR ask 2-4 clarifying questions inside "reply" if key facts are missing.
 - If a plan already exists and the user asks for a change, return ONLY the top-level keys that change in
   "patch" — never restate unchanged keys (saves tokens). Put a one-paragraph what-changed in "reply".
+- CRITICAL: If a plan already exists and your reply describes ANY change to the bot (patching a
+  section, fixing language, editing the flow, etc.), you MUST set plan_action="patch" and put the
+  actual changed keys in "patch". NEVER claim a change in "reply" while leaving plan_action="advice"
+  or "patch" empty — that silently discards the edit. If you are only giving advice and changing
+  nothing, do not describe edits as if you made them.
+- A patch to system_prompt_sections must be SPARSE: include ONLY the sub-keys you changed, e.g.
+  patch = system_prompt_sections containing just the critical_rules and closure keys with new text.
+  The server deep-merges these into the existing sections, so do not resend unchanged sub-keys.
 - If the user asks an open-ended question or for advice ("the bot fails to recognise speech, what to
   do?"), set intent="advice", patch=null, full_plan=null, and put the guidance in "reply". Do NOT change
   the plan unless they explicitly instruct a change.
@@ -191,6 +199,40 @@ def _aggregate_insights(client_id: str, db_path: str) -> dict:
         "bot_failure_modes": sorted(bot_failures)[:10],
         "suggested_fixes": sorted(suggested_fixes)[:10],
     }
+
+
+# ── plan patch helpers ────────────────────────────────────────────────────────
+
+def _merge_plan_patch(current_plan: dict, patch: dict) -> dict:
+    """Apply a (possibly sparse) patch to a plan.
+
+    Top-level keys are replaced, EXCEPT system_prompt_sections, whose sub-keys are
+    deep-merged so a sparse patch (only the changed sections) preserves the others.
+    """
+    new_plan = {**current_plan, **patch}
+    if "system_prompt_sections" in patch and isinstance(patch["system_prompt_sections"], dict):
+        merged_sections = {
+            **(current_plan.get("system_prompt_sections") or {}),
+            **patch["system_prompt_sections"],
+        }
+        new_plan["system_prompt_sections"] = merged_sections
+    return new_plan
+
+
+def _build_patch_diff(current_plan: dict, patch: dict) -> dict:
+    """Build a before/after diff. For system_prompt_sections, report per sub-key
+    so the UI can show exactly which sections changed."""
+    diff = {}
+    for key, new_val in patch.items():
+        if key == "system_prompt_sections" and isinstance(new_val, dict):
+            existing = current_plan.get("system_prompt_sections") or {}
+            sub = {}
+            for sk, sv in new_val.items():
+                sub[sk] = {"before": existing.get(sk), "after": sv}
+            diff[key] = sub
+        else:
+            diff[key] = {"before": current_plan.get(key), "after": new_val}
+    return diff
 
 
 # ── WorkflowDesigner ──────────────────────────────────────────────────────────
@@ -555,9 +597,9 @@ USER MESSAGE:
             plan_id = save_plan({"client_id": client_id, "plan": full_plan}, path=self._db)
             current_plan, plan_changed, version, mode = full_plan, True, 1, "plan"
         elif plan_action == "patch" and current_plan and isinstance(patch, dict) and patch:
-            new_plan = {**current_plan, **patch}
+            new_plan = _merge_plan_patch(current_plan, patch)
             update_plan(plan_id, new_plan, path=self._db)
-            diff = {k: {"before": current_plan.get(k), "after": v} for k, v in patch.items()}
+            diff = _build_patch_diff(current_plan, patch)
             save_patch({
                 "plan_id": plan_id,
                 "version": current_version + 1,
@@ -635,16 +677,11 @@ Return JSON with exactly these keys:
         patch     = result.get("patch", {})
         reasoning = result.get("reasoning", "")
 
-        # Apply patch to current plan
-        new_plan = {**current_plan, **patch}
+        # Apply patch to current plan (deep-merge sparse system_prompt_sections)
+        new_plan = _merge_plan_patch(current_plan, patch)
 
-        # Build human-readable diff
-        diff = {}
-        for key, new_val in patch.items():
-            diff[key] = {
-                "before": current_plan.get(key),
-                "after": new_val,
-            }
+        # Build human-readable diff (sub-key granularity for system_prompt_sections)
+        diff = _build_patch_diff(current_plan, patch)
 
         # Persist
         update_plan(plan_id, new_plan, path=self._db)
