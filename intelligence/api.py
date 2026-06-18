@@ -282,11 +282,20 @@ async def patch_plan(body: dict, _: None = Depends(auth)):
     section = body.get("section")   # optional snake_case key e.g. "closure"
     if not plan_id or not request:
         raise HTTPException(status_code=400, detail="plan_id and request are required.")
+    model_key = body.get("model", "gpt-5.4")
+    cfg = _INTEL_MODEL_MAP.get(model_key, _INTEL_MODEL_MAP["gpt-5.4"])
     try:
-        result = _designer().apply_patch(plan_id, request, section=section)
+        result = _designer().apply_patch(
+            plan_id, request, section=section,
+            provider=cfg["provider"], model=cfg["model"],
+        )
         return result
     except LLMCompletionError as exc:
         return JSONResponse(status_code=502, content=exc.to_dict())
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"code": "internal_error", "message": str(exc)})
 
 @app.post("/converse")
 async def converse(body: dict, _: None = Depends(auth)):

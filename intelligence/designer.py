@@ -625,7 +625,7 @@ USER MESSAGE:
 
     # ── patch-based refinement ────────────────────────────────────────────────
 
-    def apply_patch(self, plan_id: str, admin_request: str, section: str | None = None) -> dict:
+    def apply_patch(self, plan_id: str, admin_request: str, section: str | None = None, provider: str | None = None, model: str | None = None) -> dict:
         """Apply an LLM-generated patch to a plan. Never regenerates the full plan.
 
         Returns dict: {new_plan, patch, diff, reasoning, version}
@@ -673,7 +673,8 @@ Return JSON with exactly these keys:
   "reasoning": "One paragraph explaining what changed and what was deliberately left untouched."
 }}"""
 
-        result = self._llm.complete_json(system, user, max_tokens=16000, reasoning_effort="low")
+        _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
+        result = _llm.complete_json(system, user, max_tokens=16000, reasoning_effort="low")
         patch     = result.get("patch", {})
         reasoning = result.get("reasoning", "")
 

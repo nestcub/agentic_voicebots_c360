@@ -14,7 +14,7 @@ export default function BuildPage() {
   const [plan, setPlan] = useState<Record<string, unknown> | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
   const [version, setVersion] = useState<number | null>(null);
-  const [diff, setDiff] = useState<Record<string, { before: unknown; after: unknown }> | null>(null);
+  const [diff, setDiff] = useState<Record<string, unknown> | null>(null);
 
   // Hydrate plan from context
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function BuildPage() {
   function handlePlanUpdate(data: {
     plan: Record<string, unknown> | null;
     plan_id: string | null;
-    diff: Record<string, { before: unknown; after: unknown }> | null;
+    diff: Record<string, unknown> | null;
     version: number | null;
     plan_changed: boolean;
     mode: string;
@@ -72,7 +72,7 @@ export default function BuildPage() {
 
       <div className="grid lg:grid-cols-[1fr_1.2fr] gap-6 items-start">
         {/* Left: Chat */}
-        <ChatThread clientId={clientId} onPlanUpdate={handlePlanUpdate} />
+        <ChatThread clientId={clientId} planId={planId} onPlanUpdate={handlePlanUpdate} />
 
         {/* Right: Versioned plan output */}
         <PlanArtifact plan={plan} planId={planId} version={version} diff={diff} />

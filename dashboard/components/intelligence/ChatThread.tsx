@@ -102,21 +102,23 @@ function isMarkdown(text: string): boolean {
 
 export interface ChatThreadProps {
   clientId: string;
+  planId?: string | null;
   onPlanUpdate: (data: {
     plan: Record<string, unknown> | null;
     plan_id: string | null;
-    diff: Record<string, { before: unknown; after: unknown }> | null;
+    diff: Record<string, unknown> | null;
     version: number | null;
     plan_changed: boolean;
     mode: string;
   }) => void;
 }
 
-export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) {
+export default function ChatThread({ clientId, planId, onPlanUpdate }: ChatThreadProps) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState<"sonnet" | "gpt-4.1" | "gpt-5.4">("sonnet");
+  const [mode, setMode] = useState<"ask" | "patch">("ask");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -125,10 +127,58 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
 
   async function send() {
     if (!message.trim() || !clientId || loading) return;
+    if (mode === "patch" && !planId) {
+      const userMsg = message.trim();
+      setMessage("");
+      setTurns((t) => [
+        ...t,
+        { role: "user", content: userMsg },
+        { role: "assistant", content: "No plan to patch yet — switch to Ask and generate a plan first." },
+      ]);
+      return;
+    }
     const userMsg = message.trim();
     setMessage("");
     setTurns((t) => [...t, { role: "user", content: userMsg }]);
     setLoading(true);
+
+    // Patch mode → hit /patch directly (deterministic structured patch, always versions)
+    if (mode === "patch") {
+      try {
+        const res = await fetch("/api/intelligence/patch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan_id: planId, request: userMsg, model }),
+        });
+        const raw = await res.text();
+        const data = safeParseJson(raw);
+        if (!res.ok) {
+          const msg = extractErrorMessage(data ?? raw, "The patch service returned an error.");
+          setTurns((t) => [...t, { role: "assistant", content: formatAssistantError(res.status, msg) }]);
+          return;
+        }
+        const r = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+        setTurns((t) => [
+          ...t,
+          { role: "assistant", content: String(r.reasoning ?? "Patch applied.") },
+        ]);
+        onPlanUpdate({
+          plan: (r.new_plan as Record<string, unknown> | null | undefined) ?? null,
+          plan_id: (planId as string | null) ?? null,
+          diff: (r.diff as Record<string, unknown> | null | undefined) ?? null,
+          version: (r.version as number | null | undefined) ?? null,
+          plan_changed: true,
+          mode: "patch",
+        });
+      } catch (error) {
+        const msg = error instanceof Error && error.message ? error.message : "Unable to reach the patch service.";
+        setTurns((t) => [...t, { role: "assistant", content: formatAssistantError(null, msg) }]);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch("/api/intelligence/converse", {
         method: "POST",
@@ -285,7 +335,28 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-gray-100 px-4 py-2 flex items-center justify-end gap-4 text-xs text-gray-500">
+      <div className="border-t border-gray-100 px-4 py-2 flex items-center justify-between gap-4 text-xs text-gray-500">
+        {/* Ask / Patch mode toggle */}
+        <div className="flex items-center gap-1">
+          {(["ask", "patch"] as const).map((m) => {
+            const disabled = m === "patch" && !planId;
+            return (
+              <button
+                key={m}
+                onClick={() => !disabled && setMode(m)}
+                disabled={disabled}
+                title={disabled ? "Generate a plan first to enable Patch" : m === "patch" ? "Force a structured patch (always creates a new version)" : "Ask, advise, or create"}
+                className={`px-2.5 py-0.5 rounded text-xs border transition ${
+                  mode === m
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+                } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
+              >
+                {m === "ask" ? "Ask" : "Patch"}
+              </button>
+            );
+          })}
+        </div>
         {/* Model pills */}
         <div className="flex items-center gap-1">
           {(["sonnet", "gpt-4.1", "gpt-5.4"] as const).map(m => (
