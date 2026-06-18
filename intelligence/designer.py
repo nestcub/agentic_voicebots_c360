@@ -229,7 +229,7 @@ build_notes.canvas_instructions must be specific enough for an admin to build wi
 
     # ── conversational intent router ──────────────────────────────────────────
 
-    def converse(self, client_id: str, message: str) -> dict:
+    def converse(self, client_id: str, message: str, intent_aware: bool = True, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> dict:
         """One conversational turn: route intent, update remembered use case + plan, return a reply.
 
         Returns {reply, use_case, mode, plan, plan_id, plan_changed, diff, version}.
@@ -319,7 +319,8 @@ Return JSON with exactly these keys:
   "proposed_knowledge": []
 }}"""
 
-        result = self._llm.complete_json(system, user, max_tokens=16000)
+        _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
+        result = _llm.complete_json(system, user, max_tokens=16000, reasoning_effort=reasoning_effort)
 
         # teach / auto-propose: store durable platform facts before continuing
         _proposed = result.get("proposed_knowledge") or []
