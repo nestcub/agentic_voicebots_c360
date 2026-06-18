@@ -35,14 +35,24 @@ type HistoryEntry = {
 };
 
 const SECTION_TITLES: Record<string, string> = {
+  system_prompt_sections: "System Prompt",
   workflow_blueprint: "Workflow Blueprint",
+  bot_kb: "Bot Knowledge Base",
+  build_notes: "Build Notes",
+  // legacy keys
   system_prompt: "System Prompt",
   qualification_questions: "Qualification Questions",
   objection_handling: "Objection Handling",
   escalation_rules: "Escalation Rules",
   kb_scaffold: "KB Scaffold",
-  build_notes: "Build Notes",
 };
+
+// ── version label helper ───────────────────────────────────────────────────────
+
+function vLabel(v: number | null): string {
+  if (v == null || v <= 1) return "V1";
+  return `V1.${v - 1}`;
+}
 
 type WorkflowStage = {
   stage_id: string | number;
@@ -53,6 +63,51 @@ type WorkflowStage = {
 };
 
 // ── Section content renderers ──────────────────────────────────────────────────
+
+const SYSTEM_PROMPT_SECTION_ORDER = [
+  "critical_rules", "roles", "objectives", "personality",
+  "important_flow_rules", "guardrails", "instructions",
+  "conversational_flow", "closure", "objection_handling",
+  "conversation_example", "safety_guardrails",
+];
+
+function SystemPromptSectionsContent({ value }: { value: unknown }) {
+  const sections = (value as Record<string, string>) ?? {};
+  const toLabel = (k: string) =>
+    k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const ordered = SYSTEM_PROMPT_SECTION_ORDER
+    .filter((k) => sections[k] != null && String(sections[k]).trim() !== "")
+    .map((k) => [k, sections[k]] as [string, string]);
+  const knownKeys = new Set(SYSTEM_PROMPT_SECTION_ORDER);
+  const extra = Object.entries(sections).filter(
+    ([k, v]) => !knownKeys.has(k) && v != null && String(v).trim() !== ""
+  ) as [string, string][];
+  const all = [...ordered, ...extra];
+
+  return (
+    <div className="px-5 py-4 space-y-3 bg-white">
+      {all.map(([key, text]) => (
+        <div key={key} className="border border-gray-100 rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-gray-50 text-xs font-semibold text-gray-600">
+            {toLabel(key)}
+          </div>
+          <pre className="px-3 py-2 text-xs text-gray-600 whitespace-pre-wrap font-mono leading-relaxed bg-white">
+            {text}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BotKbContent({ value }: { value: unknown }) {
+  return (
+    <pre className="px-5 py-4 text-xs text-gray-600 bg-white overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-words">
+      {JSON.stringify(value, null, 2)}
+    </pre>
+  );
+}
 
 function WorkflowBlueprintContent({ value }: { value: unknown }) {
   const bp = value as { description?: string; stages?: WorkflowStage[] } | null;
@@ -299,9 +354,13 @@ function GenericContent({ value }: { value: unknown }) {
   );
 }
 
-// Dispatch a plan key to its purpose-built renderer (shared by Current + History).
+// Dispatch a plan key to its purpose-built renderer (shared by Recent + History).
 function sectionBody(sectionKey: string, value: unknown) {
   switch (sectionKey) {
+    case "system_prompt_sections":
+      return <SystemPromptSectionsContent value={value} />;
+    case "bot_kb":
+      return <BotKbContent value={value} />;
     case "workflow_blueprint":
       return <WorkflowBlueprintContent value={value} />;
     case "system_prompt":
@@ -395,7 +454,7 @@ function HistoryRow({
       >
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-gray-700">v{entry.version}</span>
+            <span className="text-sm font-semibold text-gray-700">{vLabel(entry.version)}</span>
             {entry.initial ? (
               <span className="text-[10px] font-medium px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded-full">
                 initial plan
@@ -443,7 +502,7 @@ function HistoryRow({
 // ── Main component ──────────────────────────────────────────────────────────────
 
 export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifactProps) {
-  const [tab, setTab] = useState<"current" | "history">("current");
+  const [tab, setTab] = useState<"recent" | "history">("recent");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [flashedKeys, setFlashedKeys] = useState<Set<string>>(new Set());
@@ -491,13 +550,16 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
   }, [planId, tab]);
 
   const SECTIONS: { key: string; title: string }[] = [
+    { key: "system_prompt_sections", title: "System Prompt" },
     { key: "workflow_blueprint", title: "Workflow Blueprint" },
-    { key: "system_prompt", title: "System Prompt" },
+    { key: "bot_kb", title: "Bot Knowledge Base" },
+    { key: "build_notes", title: "Build Notes" },
+    // legacy fallbacks shown only if present
+    { key: "system_prompt", title: "System Prompt (text)" },
     { key: "qualification_questions", title: "Qualification Questions" },
     { key: "objection_handling", title: "Objection Handling" },
     { key: "escalation_rules", title: "Escalation Rules" },
     { key: "kb_scaffold", title: "KB Scaffold" },
-    { key: "build_notes", title: "Build Notes" },
   ];
 
   return (
@@ -506,13 +568,13 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
       <div className="px-5 pt-4 pb-2 flex items-center justify-between border-b border-gray-100">
         <div>
           <p className="text-base font-semibold text-gray-800">
-            {version != null ? `Plan v${version}` : "No plan yet"}
+            {version != null ? `Plan ${vLabel(version)}` : "No plan yet"}
           </p>
           {planId && <p className="text-xs text-gray-400 mt-0.5 font-mono">{planId}</p>}
         </div>
         {/* Segmented toggle */}
         <div className="flex bg-gray-100 rounded-lg p-0.5 gap-0.5">
-          {(["current", "history"] as const).map((t) => (
+          {(["recent", "history"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -522,14 +584,14 @@ export default function PlanArtifact({ plan, planId, version, diff }: PlanArtifa
                   : "text-gray-500 hover:text-gray-700"
               }`}
             >
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+              {t === "recent" ? "Recent" : "History"}
             </button>
           ))}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {tab === "current" && (
+        {tab === "recent" && (
           <div className="p-5 space-y-2">
             {!plan && (
               <p className="text-sm text-gray-400 text-center pt-12">
