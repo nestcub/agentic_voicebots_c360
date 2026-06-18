@@ -9,6 +9,22 @@ import { useIntelligence, usePlanCache } from "@/context/IntelligenceContext";
 const toLabel = (key: string) =>
   key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
+// Canonical section ordering
+const SECTION_ORDER = [
+  "critical_rules",
+  "roles",
+  "objectives",
+  "personality",
+  "important_flow_rules",
+  "guardrails",
+  "instructions",
+  "conversational_flow",
+  "closure",
+  "objection_handling",
+  "conversation_example",
+  "safety_guardrails",
+];
+
 // ── Per-section card with patch box ──────────────────────────────────────────
 
 interface SectionCardProps {
@@ -144,15 +160,21 @@ function SystemPromptSectionsPanel({
   planId,
   onPatchSuccess,
 }: SystemPromptSectionsPanelProps) {
-  const entries = Object.entries(sections).filter(
-    ([, v]) => v != null && String(v).trim() !== ""
+  const entries = SECTION_ORDER
+    .filter(k => sections[k] != null && String(sections[k]).trim() !== "")
+    .map(k => [k, sections[k] as string] as [string, string]);
+  // append any keys not in SECTION_ORDER (future-proofing)
+  const knownKeys = new Set(SECTION_ORDER);
+  const extra = Object.entries(sections).filter(
+    ([k, v]) => !knownKeys.has(k) && v != null && String(v).trim() !== ""
   ) as [string, string][];
+  const allEntries = [...entries, ...extra];
 
-  if (entries.length === 0) return null;
+  if (allEntries.length === 0) return null;
 
   return (
     <div className="space-y-2">
-      {entries.map(([key, text]) => (
+      {allEntries.map(([key, text]) => (
         <SectionCard
           key={key}
           sectionKey={key}
@@ -258,6 +280,13 @@ export default function BuildPage() {
   const [plan, setPlan] = useState<Record<string, unknown> | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
 
+  // Chat bar state
+  const [chatModel, setChatModel] = useState("gpt-5.4");
+  const [chatMessage, setChatMessage] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatReply, setChatReply] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+
   // Hydrate plan from context
   useEffect(() => {
     if (latestPlan && !plan) {
@@ -277,6 +306,37 @@ export default function BuildPage() {
         system_prompt_sections: { ...existingSections, ...changedSections },
       };
     });
+  }
+
+  async function sendChat() {
+    if (!clientId || !chatMessage.trim()) return;
+    setChatLoading(true);
+    setChatError(null);
+    setChatReply(null);
+    try {
+      const res = await fetch("/api/intelligence/converse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          message: chatMessage.trim(),
+          model: chatModel,
+          intent_aware: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+      setChatReply(data.reply ?? "Done.");
+      setChatMessage("");
+      if (data.plan_changed && data.plan?.system_prompt_sections) {
+        handleSectionPatchSuccess(data.plan.system_prompt_sections as Record<string, string>);
+      }
+      if (data.plan_id) setPlanId(data.plan_id);
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : "Request failed.");
+    } finally {
+      setChatLoading(false);
+    }
   }
 
   // Derive plan fields
@@ -334,6 +394,58 @@ export default function BuildPage() {
 
       {/* Bot KB */}
       {plan && botKb != null && <BotKBPanel kb={botKb} />}
+
+      {/* Chat / Converse bar */}
+      <Card className="p-0 overflow-hidden">
+        <div className="px-5 pt-4 pb-2 border-b border-gray-100 flex items-center justify-between">
+          <p className="text-base font-semibold text-gray-800">Ask / Patch</p>
+          <select
+            value={chatModel}
+            onChange={e => setChatModel(e.target.value)}
+            className="text-xs border border-gray-200 rounded-lg px-2 py-1 text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          >
+            <option value="sonnet">Sonnet (Anthropic)</option>
+            <option value="gpt-4.1">GPT-4.1</option>
+            <option value="gpt-5.4">GPT-5.4 (Recommended)</option>
+          </select>
+        </div>
+        <div className="p-5 space-y-3">
+          {chatReply && (
+            <div className="p-3 bg-gray-50 border border-gray-100 rounded-lg text-sm text-gray-700 whitespace-pre-wrap">
+              {chatReply}
+            </div>
+          )}
+          {chatError && (
+            <p className="text-xs text-red-500">{chatError}</p>
+          )}
+          <textarea
+            className="w-full rounded-lg border border-gray-200 text-sm text-gray-800 placeholder-gray-400 p-3 resize-y focus:outline-none focus:ring-2 focus:ring-blue-400"
+            rows={5}
+            placeholder="Paste a call transcript, describe bot failures, or ask any question. The AI will patch the right sections."
+            value={chatMessage}
+            onChange={e => setChatMessage(e.target.value)}
+            disabled={chatLoading}
+          />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={sendChat}
+              disabled={chatLoading || !chatMessage.trim() || !clientId}
+              className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors flex items-center gap-2"
+            >
+              {chatLoading && (
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                </svg>
+              )}
+              {chatLoading ? "Thinking…" : "Send"}
+            </button>
+            {chatLoading && (
+              <span className="text-xs text-gray-400">This can take up to 60s…</span>
+            )}
+          </div>
+        </div>
+      </Card>
     </div>
   );
 }
