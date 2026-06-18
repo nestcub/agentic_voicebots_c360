@@ -116,8 +116,6 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [intentAware, setIntentAware] = useState(true);
-  const [showIntentInfo, setShowIntentInfo] = useState(false);
   const [model, setModel] = useState<"sonnet" | "gpt-4.1" | "gpt-5.4">("sonnet");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -138,7 +136,7 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
         body: JSON.stringify({
           client_id: clientId,
           message: userMsg,
-          intent_aware: intentAware,
+          intent_aware: true,
           model: model,
         }),
       });
@@ -287,32 +285,9 @@ export default function ChatThread({ clientId, onPlanUpdate }: ChatThreadProps) 
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-gray-100 px-4 py-2 flex items-center gap-4 text-xs text-gray-500">
-        {/* Intent-aware toggle */}
-        <label className="flex items-center gap-1.5 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={intentAware}
-            onChange={e => setIntentAware(e.target.checked)}
-            className="w-3.5 h-3.5 accent-blue-600"
-          />
-          <span>Smart context</span>
-          <span
-            className="relative cursor-help"
-            onClick={() => setShowIntentInfo(v => !v)}
-          >
-            <span className="text-gray-400 hover:text-gray-600 text-xs border border-gray-300 rounded-full w-4 h-4 inline-flex items-center justify-center">ⓘ</span>
-            {showIntentInfo && (
-              <div className="absolute bottom-6 left-0 z-50 w-64 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs text-gray-700 leading-relaxed">
-                <p className="font-semibold mb-1">Smart Context Loading</p>
-                <p>When enabled, advice and KB questions skip loading your full bot plan and examples — reducing API cost. Disable if the response seems to be missing plan context.</p>
-                <button onClick={() => setShowIntentInfo(false)} className="mt-2 text-blue-600 hover:underline">Close</button>
-              </div>
-            )}
-          </span>
-        </label>
+      <div className="border-t border-gray-100 px-4 py-2 flex items-center justify-end gap-4 text-xs text-gray-500">
         {/* Model pills */}
-        <div className="flex items-center gap-1 ml-auto">
+        <div className="flex items-center gap-1">
           {(["sonnet", "gpt-4.1", "gpt-5.4"] as const).map(m => (
             <button
               key={m}
