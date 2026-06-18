@@ -641,11 +641,22 @@ USER MESSAGE:
             {"text": _platform_knowledge_block(self._db), "cache": True},
         ]
 
+        _sections = current_plan.get("system_prompt_sections", {}) or {}
         _section_block = ""
-        if section and current_plan.get("system_prompt_sections", {}).get(section):
-            _section_block = f'\n<target_section name="{section}">{json.dumps(current_plan.get("system_prompt_sections", {}).get(section, ""), ensure_ascii=False, indent=2)}</target_section>'
+        if section and _sections.get(section):
+            _section_block = f'\nThe admin specifically wants to edit the "{section}" section — focus your change there.\n'
 
-        user = f"""You are patching an existing Chat360 voice bot workflow plan.
+        user = f"""You are patching an EXISTING Chat360 voice bot system prompt. Make the SMALLEST change
+that satisfies the admin request. Do NOT rebuild the prompt from scratch.
+
+The system prompt is stored as a dict called system_prompt_sections with these snake_case keys
+(12 standard sections, plus any extras already present):
+critical_rules, roles, objectives, personality, important_flow_rules, guardrails, instructions,
+conversational_flow, closure, objection_handling, conversation_example, safety_guardrails.
+
+<current_system_prompt_sections>
+{json.dumps(_sections, ensure_ascii=False, indent=2)}
+</current_system_prompt_sections>
 
 <workflow_blueprint>
 {json.dumps(current_plan.get("workflow_blueprint", {}), ensure_ascii=False, indent=2)}
@@ -660,17 +671,21 @@ USER MESSAGE:
 </admin_request>
 
 Rules:
-- ONLY modify the keys that need to change
-- Do NOT regenerate or touch keys that are unaffected
-- If you change any system_prompt_sections key, also re-render the full system_prompt field
-- Preserve all existing content in unchanged keys
+- Edit ONLY the system_prompt_sections sub-keys the request actually requires (usually 1-3 keys).
+- Return a SPARSE patch: patch.system_prompt_sections must contain ONLY the changed sub-keys, each with
+  its FULL new section text. Never resend unchanged sub-keys — the server deep-merges into the rest.
+- Preserve the existing structure and wording of each section you edit; change only what is asked.
+- Do NOT produce a flat "system_prompt" string. Do NOT invent new top-level keys.
+- Do NOT modify workflow_blueprint, build_notes, or bot_kb unless the admin_request explicitly asks to.
+  They are shown only as grounding context, not for editing.
+- Keep existing @bot_language enforcement and other rules intact unless the request changes them.
 
 Return JSON with exactly these keys:
 {{
   "patch": {{
-    "<top_level_key>": <new_value>
+    "system_prompt_sections": {{ "<changed_section_key>": "<full new section text>" }}
   }},
-  "reasoning": "One paragraph explaining what changed and what was deliberately left untouched."
+  "reasoning": "One short paragraph: which sections changed and what you deliberately left untouched."
 }}"""
 
         _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
