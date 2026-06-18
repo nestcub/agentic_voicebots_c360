@@ -247,8 +247,10 @@ class LLMClient:
                     system_param = system
                 # The Anthropic SDK refuses non-streaming requests when max_tokens is
                 # large enough to risk the ~10-minute connection timeout (raises ValueError
-                # above ~16k). Stream those to suppress the guard; small calls stay simple.
-                if max_tokens > 16000:
+                # above ~16k). Long non-streaming calls also risk idle-connection drops.
+                # Stream the heavy calls (generate 32k, converse/patch 16k); leave the
+                # small ones (clarify, validate) on the simpler non-streaming path.
+                if max_tokens >= 16000:
                     with self._client.messages.stream(
                         model=self.model,
                         max_tokens=max_tokens,

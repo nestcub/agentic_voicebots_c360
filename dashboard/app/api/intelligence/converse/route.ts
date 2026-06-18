@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BASE = process.env.INTEL_API_URL ?? "http://localhost:8001";
 const KEY = process.env.INTEL_API_KEY ?? "";
-const parsedTimeout = Number(process.env.INTEL_CONVERSE_TIMEOUT_MS ?? "180000");
+const parsedTimeout = Number(process.env.INTEL_CONVERSE_TIMEOUT_MS ?? "300000");
 const UPSTREAM_TIMEOUT_MS =
-  Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 180_000;
+  Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 300_000;
 
 function safeParseJson(value: string): unknown | null {
   if (!value) return null;
