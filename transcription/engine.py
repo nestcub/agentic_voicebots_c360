@@ -10,7 +10,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from shared.db import init_db, save_transcript, save_insight, update_transcript_text
+from shared.db import init_db, save_transcript, save_insight, update_transcript_text, add_transcript_chunk
+from shared.embeddings import embed
 from shared.llm_client import LLMClient
 
 load_dotenv()
@@ -291,10 +292,80 @@ class TranscriptionEngine:
         update_transcript_text(transcript_id, edited_text, path=self._db)
         return self._extract_insights(transcript_id, client_id, edited_text, insight_provider=insight_provider)
 
-    def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str, insight_provider: str = None) -> dict:
+    def ingest_text_transcript(
+        self,
+        client_id: str,
+        filename: str,
+        text: str,
+        reported_failures: str | None = None,
+        insight_provider: str | None = None,
+    ) -> dict:
+        """Store a pasted/uploaded transcript text, extract failure-seeded insights, chunk+embed for RAG.
+
+        No audio transcription — segments=[], duration=0.
+        Returns {"transcript_id": str, "insight_id": str}.
+        """
+        transcript_id = save_transcript(
+            {
+                "client_id": client_id,
+                "filename": filename,
+                "transcript_text": text,
+                "segments": [],
+                "duration": 0,
+            }
+        )
+
+        insight = self._extract_insights(
+            transcript_id, client_id, text,
+            insight_provider=insight_provider,
+            reported_failures=reported_failures,
+        )
+
+        # Chunk text and embed for RAG retrieval
+        lines = [l for l in text.splitlines() if l.strip()]
+        if lines:
+            # 15 lines per chunk, 3-line overlap
+            window, overlap = 15, 3
+            step = window - overlap
+            chunks = []
+            i = 0
+            while i < len(lines):
+                chunk_lines = lines[i: i + window]
+                chunks.append("\n".join(chunk_lines))
+                i += step
+                if len(chunk_lines) < window:
+                    break
+        else:
+            # Fallback: character windows for text with no newlines
+            window_chars, overlap_chars = 1200, 200
+            step_chars = window_chars - overlap_chars
+            chunks = []
+            i = 0
+            while i < len(text):
+                chunks.append(text[i: i + window_chars])
+                i += step_chars
+                if i + window_chars > len(text) and i < len(text):
+                    chunks.append(text[i:])
+                    break
+
+        for idx, chunk_text in enumerate(chunks):
+            try:
+                vec = embed(chunk_text)
+                add_transcript_chunk(
+                    transcript_id, client_id, idx,
+                    "", 0.0, 0.0, chunk_text, vec,
+                )
+            except Exception as e:
+                print(f"[ingest_text_transcript] chunk {idx} embed failed: {e}", flush=True)
+
+        return {"transcript_id": transcript_id, "insight_id": insight.get("insight_id")}
+
+    def _extract_insights(self, transcript_id: str, client_id: str, transcript_text: str, insight_provider: str = None, reported_failures: str | None = None) -> dict:
         """Run second LLM call to extract structured insights from transcript."""
         llm = LLMClient(provider=insight_provider) if insight_provider else self._llm
         user_prompt = f"Analyse this call transcript:\n\n{transcript_text}"
+        if reported_failures:
+            user_prompt += f"\n\nThe human reviewer reported these FAILURES observed in this call:\n<reported_failures>\n{reported_failures}\n</reported_failures>\nUse these as ground truth. Populate bot_failure_modes and suggested_fixes in your response accordingly."
         try:
             raw = llm.complete_json(INSIGHT_SYSTEM, user_prompt, max_tokens=1024)
         except Exception as e:
@@ -308,6 +379,8 @@ class TranscriptionEngine:
                 "summary": f"Insight extraction failed: {e}",
             }
 
+        if reported_failures:
+            raw["user_reported_failures"] = reported_failures
         insight_id = save_insight(
             {
                 "transcript_id": transcript_id,
