@@ -11,7 +11,7 @@ from shared.db import (
     save_plan, save_patch, update_plan, init_db,
     load_session, save_session, save_turn, get_turns,
     add_knowledge, get_knowledge, search_bot_examples,
-    search_transcript_chunks, get_kb,
+    search_transcript_chunks, get_kb, get_imported_bot,
 )
 from shared.auth import is_admin
 from shared.llm_client import LLMClient
@@ -720,6 +720,73 @@ Return JSON with exactly these keys:
             "version": current_version + 1,
             "patch_id": patch_id,
         }
+
+    # ── imported bot advisory chat ────────────────────────────────────────────
+
+    def chat_imported(
+        self,
+        client_id: str,
+        message: str,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict:
+        """Advisory chat grounded in an imported bot's system prompt, insights, and transcript RAG.
+
+        Never creates or modifies a plan. Returns {"reply": str}.
+        """
+        imported = get_imported_bot(client_id)
+        if imported is None:
+            raise ValueError(f"No imported bot found for client_id={client_id!r}")
+
+        system_prompt_text = imported.get("system_prompt") or ""
+        insights = _aggregate_insights(client_id, self._db)
+
+        recent = get_turns(client_id, limit=6, path=self._db)
+        recent_text = "\n".join(f"{t['role']}: {t['content']}" for t in recent) or "(none)"
+
+        evidence = _retrieve_call_evidence(client_id, message)
+
+        _IMPORTED_CHAT_INSTRUCTIONS = (
+            "You are reviewing an EXISTING production voice-bot's system prompt. "
+            "The user wants to know whether this prompt prevents the failures observed in real calls. "
+            "Ground every answer in the actual prompt text shown above and the reported failures/insights. "
+            "When asked, point to the exact section of the prompt that does (or fails to) handle a "
+            "behaviour, and suggest concrete edits as copyable text. "
+            "You are ADVISORY ONLY — never claim to have changed or saved anything. "
+            'Output JSON with exactly one key: {"reply": "..."}.'
+        )
+
+        system = [
+            {"text": _canvas_system(), "cache": True},
+            {"text": _platform_knowledge_block(self._db), "cache": True},
+            {"text": "## Bot system prompt under review\n\n" + system_prompt_text, "cache": True},
+            {"text": _IMPORTED_CHAT_INSTRUCTIONS, "cache": True},
+        ]
+
+        user = f"""Aggregated insights from call transcripts (includes reported failures and bot failure modes):
+<insights>
+{json.dumps(insights, ensure_ascii=False, indent=2)}
+</insights>
+
+<call_evidence>
+{evidence}
+</call_evidence>
+
+RECENT TURNS:
+{recent_text}
+
+USER MESSAGE:
+{message}"""
+
+        _llm = LLMClient(provider=provider, model=model) if (provider or model) else self._llm
+        result = _llm.complete_json(system, user, max_tokens=4000, reasoning_effort=reasoning_effort)
+
+        reply = result.get("reply", "")
+        save_turn(client_id, "user", message, path=self._db)
+        save_turn(client_id, "assistant", reply, mode="imported", path=self._db)
+
+        return {"reply": reply}
 
     # ── plan history ──────────────────────────────────────────────────────────
 
