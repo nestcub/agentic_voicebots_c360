@@ -1,11 +1,12 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { RiMicLine, RiHammerLine, RiArrowLeftLine } from "react-icons/ri";
 
 // Lazy-load the heavy tab contents via dynamic import to avoid bundle bloat
 import dynamic from "next/dynamic";
+import ImportedBuild from "@/components/intelligence/ImportedBuild";
 
 const TranscribePage = dynamic(
   () => import("../transcribe/page"),
@@ -15,6 +16,9 @@ const BuildPage = dynamic(
   () => import("../build/page"),
   { loading: () => <TabSkeleton />, ssr: false }
 );
+
+const INTEL_URL = process.env.NEXT_PUBLIC_INTEL_API_URL ?? "http://localhost:8001";
+const INTEL_KEY = process.env.NEXT_PUBLIC_INTEL_API_KEY ?? "";
 
 function TabSkeleton() {
   return (
@@ -40,12 +44,22 @@ function BotPageInner() {
   const [tab, setTab] = useState<TabKey>(
     initialTab && TABS.some(t => t.key === initialTab) ? initialTab : "transcribe"
   );
+  const [isImported, setIsImported] = useState<boolean | null>(null);
 
   // Sync client_id into localStorage so existing Transcribe/Build pages pick it up
   // (both pages read from localStorage("intel_client_id") / IntelligenceContext)
   if (clientId && typeof window !== "undefined") {
     localStorage.setItem("intel_client_id", clientId);
   }
+
+  useEffect(() => {
+    if (!clientId) { setIsImported(false); return; }
+    fetch(`${INTEL_URL}/bots/import/${encodeURIComponent(clientId)}/status`, {
+      headers: { "x-api-key": INTEL_KEY },
+    })
+      .then((r) => setIsImported(r.ok))
+      .catch(() => setIsImported(false));
+  }, [clientId]);
 
   if (!clientId) {
     return (
@@ -57,7 +71,7 @@ function BotPageInner() {
 
   return (
     <div className="space-y-4">
-      {/* Back + tab bar */}
+      {/* Back button */}
       <div className="flex items-center gap-4">
         <button
           onClick={() => router.push("/intelligence")}
@@ -69,36 +83,46 @@ function BotPageInner() {
         <p className="text-xs text-gray-300 font-mono truncate max-w-xs">{clientId}</p>
       </div>
 
-      <div className="flex gap-1 border-b border-gray-200">
-        {TABS.map(({ key, label, Icon }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
-              tab === key
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            <Icon className="w-4 h-4" />
-            {label}
-          </button>
-        ))}
-      </div>
+      {isImported === null && (
+        <div className="h-10 bg-gray-100 rounded animate-pulse w-48" />
+      )}
 
-      {/* Tab content — pass client_id via URL so existing pages work unchanged */}
-      <div>
-        {tab === "transcribe" && (
-          <Suspense fallback={<TabSkeleton />}>
-            <TranscribePage />
-          </Suspense>
-        )}
-        {tab === "build" && (
-          <Suspense fallback={<TabSkeleton />}>
-            <BuildPage />
-          </Suspense>
-        )}
-      </div>
+      {isImported === true && (
+        <ImportedBuild clientId={clientId} />
+      )}
+
+      {isImported === false && (
+        <>
+          <div className="flex gap-1 border-b border-gray-200">
+            {TABS.map(({ key, label, Icon }) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+                  tab === key
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </div>
+          <div>
+            {tab === "transcribe" && (
+              <Suspense fallback={<TabSkeleton />}>
+                <TranscribePage />
+              </Suspense>
+            )}
+            {tab === "build" && (
+              <Suspense fallback={<TabSkeleton />}>
+                <BuildPage />
+              </Suspense>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
