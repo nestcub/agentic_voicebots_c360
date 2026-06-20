@@ -173,6 +173,16 @@ def init_db(path: str = DB_PATH) -> None:
             content    TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         )""",
+        """CREATE TABLE IF NOT EXISTS imported_bots (
+            client_id          TEXT PRIMARY KEY,
+            bot_name           TEXT NOT NULL,
+            system_prompt      TEXT NOT NULL DEFAULT '',
+            status             TEXT NOT NULL DEFAULT 'processing',
+            transcripts_total  INTEGER NOT NULL DEFAULT 0,
+            transcripts_done   INTEGER NOT NULL DEFAULT 0,
+            created_at         TEXT NOT NULL,
+            updated_at         TEXT NOT NULL
+        )""",
     ]
     with _get_pool().connection() as conn:
         for stmt in ddl_statements:
@@ -605,6 +615,52 @@ def upsert_kb(client_id: str, content: str, path: str = DB_PATH) -> None:
         )
 
 
+# ── Imported bots ───────────────────────────────────────────────────────────
+
+def save_imported_bot(client_id: str, bot_name: str, system_prompt: str, transcripts_total: int) -> None:
+    now = _now()
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """INSERT INTO imported_bots (client_id, bot_name, system_prompt, status, transcripts_total, transcripts_done, created_at, updated_at)
+               VALUES (%s, %s, %s, 'processing', %s, 0, %s, %s)""",
+            (client_id, bot_name, system_prompt, transcripts_total, now, now),
+        )
+
+def get_imported_bot(client_id: str) -> dict | None:
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM imported_bots WHERE client_id=%s", (client_id,)
+        ).fetchone()
+    return row
+
+def is_imported_bot(client_id: str) -> bool:
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM imported_bots WHERE client_id=%s LIMIT 1", (client_id,)
+        ).fetchone()
+    return row is not None
+
+def update_imported_bot_progress(client_id: str, *, status: str | None = None, transcripts_done: int | None = None) -> None:
+    sets = []
+    vals = []
+    if status is not None:
+        sets.append("status=%s")
+        vals.append(status)
+    if transcripts_done is not None:
+        sets.append("transcripts_done=%s")
+        vals.append(transcripts_done)
+    if not sets:
+        return
+    sets.append("updated_at=%s")
+    vals.append(_now())
+    vals.append(client_id)
+    with _get_pool().connection() as conn:
+        conn.execute(
+            f"UPDATE imported_bots SET {', '.join(sets)} WHERE client_id=%s",
+            vals,
+        )
+
+
 # ── Transcription batches ─────────────────────────────────────────────────────
 
 def refresh_batch_counts(batch_id: str) -> None:
@@ -636,6 +692,8 @@ def list_bots(path: str = DB_PATH) -> list[dict]:
                    SELECT client_id FROM transcripts
                    UNION
                    SELECT client_id FROM workflow_sessions
+                   UNION
+                   SELECT client_id FROM imported_bots
                ),
                plan_clients AS (
                    SELECT client_id, MAX(updated_at) AS ts FROM plans GROUP BY client_id
@@ -647,40 +705,51 @@ def list_bots(path: str = DB_PATH) -> list[dict]:
                    SELECT client_id, MAX(updated_at) AS ts, MAX(use_case) AS use_case
                    FROM workflow_sessions GROUP BY client_id
                ),
+               imported_clients AS (
+                   SELECT client_id, bot_name, updated_at AS ts FROM imported_bots
+               ),
                latest_ts AS (
                    SELECT client_id,
                           GREATEST(
                               MAX(pc.ts),
                               MAX(tc.ts),
-                              MAX(sc.ts)
+                              MAX(sc.ts),
+                              MAX(imc.ts)
                           ) AS updated_at
                    FROM all_clients ac
-                   LEFT JOIN plan_clients       pc USING (client_id)
-                   LEFT JOIN transcript_clients tc USING (client_id)
-                   LEFT JOIN session_clients    sc USING (client_id)
+                   LEFT JOIN plan_clients       pc  USING (client_id)
+                   LEFT JOIN transcript_clients tc  USING (client_id)
+                   LEFT JOIN session_clients    sc  USING (client_id)
+                   LEFT JOIN imported_clients   imc USING (client_id)
                    GROUP BY ac.client_id
                )
                SELECT
                    ac.client_id,
                    CASE
-                       WHEN pc.client_id IS NOT NULL THEN 'built'
-                       WHEN tc.client_id IS NOT NULL THEN 'transcribed'
+                       WHEN imc.client_id IS NOT NULL THEN 'imported'
+                       WHEN pc.client_id  IS NOT NULL THEN 'built'
+                       WHEN tc.client_id  IS NOT NULL THEN 'transcribed'
                        ELSE 'draft'
                    END AS status,
                    lt.updated_at,
-                   sc.use_case
+                   sc.use_case,
+                   imc.bot_name AS imported_bot_name
                FROM all_clients ac
-               LEFT JOIN plan_clients       pc USING (client_id)
-               LEFT JOIN transcript_clients tc USING (client_id)
-               LEFT JOIN session_clients    sc USING (client_id)
-               LEFT JOIN latest_ts          lt USING (client_id)
+               LEFT JOIN plan_clients       pc  USING (client_id)
+               LEFT JOIN transcript_clients tc  USING (client_id)
+               LEFT JOIN session_clients    sc  USING (client_id)
+               LEFT JOIN imported_clients   imc USING (client_id)
+               LEFT JOIN latest_ts          lt  USING (client_id)
                ORDER BY lt.updated_at DESC NULLS LAST"""
         ).fetchall()
 
     result = []
     for row in rows:
-        use_case = row.get("use_case") or ""
-        bot_name = (use_case[:60] if use_case else "") or row["client_id"]
+        if row.get("status") == "imported":
+            bot_name = row.get("imported_bot_name") or row["client_id"]
+        else:
+            use_case = row.get("use_case") or ""
+            bot_name = (use_case[:60] if use_case else "") or row["client_id"]
         result.append({
             "client_id":  row["client_id"],
             "status":     row["status"],
