@@ -27,6 +27,7 @@ from shared.db import (
     create_batch, get_batch, create_batch_item,
     update_batch_item, get_batch_items, refresh_batch_counts,
     load_session, save_session, get_kb, upsert_kb,
+    save_imported_bot, get_imported_bot, update_imported_bot_progress,
 )
 
 app = FastAPI(title="Chat360 Intelligence API", version="1.0.0")
@@ -231,6 +232,93 @@ async def get_bots(_: None = Depends(auth)):
 async def create_bot(_: None = Depends(auth)):
     client_id = str(uuid.uuid4())
     return {"client_id": client_id}
+
+# ── Import existing bot ───────────────────────────────────────────────────────
+
+@app.post("/bots/import")
+async def import_existing_bot(
+    background_tasks: BackgroundTasks,
+    body: dict,
+    _: None = Depends(auth),
+):
+    """Accept an existing bot's system prompt + transcripts, ingest in background."""
+    bot_name      = (body.get("bot_name") or "").strip()
+    system_prompt = (body.get("system_prompt") or "").strip()
+    transcripts   = body.get("transcripts") or []   # [{filename, text, reported_failures}]
+    insight_model = body.get("insight_model", "sonnet")
+
+    if not bot_name:
+        raise HTTPException(status_code=400, detail="bot_name is required.")
+    if not system_prompt:
+        raise HTTPException(status_code=400, detail="system_prompt is required.")
+
+    client_id = str(uuid.uuid4())
+    insight_provider = _INSIGHT_PROVIDER_MAP.get(insight_model, "anthropic")
+    save_imported_bot(client_id, bot_name, system_prompt, len(transcripts))
+
+    def _run():
+        try:
+            for i, t in enumerate(transcripts):
+                filename          = (t.get("filename") or "pasted.txt").strip() or "pasted.txt"
+                text              = (t.get("text") or "").strip()
+                reported_failures = (t.get("reported_failures") or "").strip() or None
+                if not text:
+                    update_imported_bot_progress(client_id, transcripts_done=i + 1)
+                    continue
+                _engine().ingest_text_transcript(
+                    client_id, filename, text,
+                    reported_failures=reported_failures,
+                    insight_provider=insight_provider,
+                )
+                update_imported_bot_progress(client_id, transcripts_done=i + 1)
+            update_imported_bot_progress(client_id, status="ready")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            update_imported_bot_progress(client_id, status="failed")
+
+    background_tasks.add_task(_batch_pool.submit, _run)
+    return {"client_id": client_id}
+
+
+@app.get("/bots/import/{client_id}/status")
+async def import_status(client_id: str, _: None = Depends(auth)):
+    row = get_imported_bot(client_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Imported bot not found.")
+    return {
+        "status":        row["status"],
+        "total":         row["transcripts_total"],
+        "done":          row["transcripts_done"],
+        "bot_name":      row["bot_name"],
+        "system_prompt": row["system_prompt"],
+    }
+
+
+# ── Imported bot chat ─────────────────────────────────────────────────────────
+
+@app.post("/imported/chat")
+async def imported_chat(body: dict, _: None = Depends(auth)):
+    client_id = (body.get("client_id") or "").strip()
+    message   = (body.get("message") or "").strip()
+    if not client_id or not message:
+        raise HTTPException(status_code=400, detail="client_id and message are required.")
+    model_key = body.get("model", "sonnet")
+    cfg = _INTEL_MODEL_MAP.get(model_key, _INTEL_MODEL_MAP["sonnet"])
+    try:
+        return _designer().chat_imported(
+            client_id, message,
+            provider=cfg["provider"],
+            model=cfg["model"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except LLMCompletionError as exc:
+        return JSONResponse(status_code=502, content=exc.to_dict())
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"code": "internal_error", "message": str(exc)})
 
 # ── Clarify / Generate / Patch ────────────────────────────────────────────────
 @app.post("/clarify")
