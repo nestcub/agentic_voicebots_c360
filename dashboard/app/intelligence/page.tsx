@@ -10,7 +10,7 @@ const apiHeaders = () => ({ "x-api-key": INTEL_KEY });
 
 interface Bot {
   client_id: string;
-  status: "draft" | "transcribed" | "built";
+  status: "draft" | "transcribed" | "built" | "imported";
   bot_name: string;
   updated_at: string;
 }
@@ -36,6 +36,7 @@ const STATUS_CHIP: Record<string, string> = {
   draft: "bg-gray-100 text-gray-600",
   transcribed: "bg-amber-100 text-amber-700",
   built: "bg-green-100 text-green-700",
+  imported: "bg-purple-100 text-purple-700",
 };
 
 function SkeletonCard() {
@@ -95,18 +96,26 @@ export default function IntelligencePage() {
           <h1 className="text-lg font-semibold text-gray-800">Bots</h1>
           <p className="text-xs text-gray-400 mt-0.5">All your intelligence bots</p>
         </div>
-        <button
-          onClick={handleCreate}
-          disabled={creating}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60 transition-colors"
-        >
-          {creating ? (
-            <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <span className="text-base leading-none">+</span>
-          )}
-          Create new bot
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => router.push("/intelligence/import")}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
+          >
+            Add existing bot
+          </button>
+          <button
+            onClick={handleCreate}
+            disabled={creating}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60 transition-colors"
+          >
+            {creating ? (
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <span className="text-base leading-none">+</span>
+            )}
+            Create new bot
+          </button>
+        </div>
       </div>
 
       {/* Error banner */}
