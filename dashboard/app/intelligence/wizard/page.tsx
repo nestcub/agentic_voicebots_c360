@@ -93,7 +93,9 @@ export default function WizardPage() {
   const [useCase, setUseCase] = useState("");
   const [model, setModel] = useState<"sonnet" | "gpt-4.1" | "gpt-5.4">("gpt-5.4");
 
-  // Step 2 – copy from existing bot
+  // Step 2 – recordings status + copy from existing bot
+  const [transcriptCount, setTranscriptCount] = useState<number | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [sourceClientId, setSourceClientId] = useState<string>("");
   const [existingBots, setExistingBots] = useState<{ client_id: string; bot_name: string; status: string }[]>([]);
   const [loadingBots, setLoadingBots] = useState(false);
@@ -113,10 +115,26 @@ export default function WizardPage() {
   const [generating, setGenerating] = useState(false);
   const generateCalledRef = useRef(false);
 
-  // ── Step 2: fetch existing bots ──
+  // ── Step 2: fetch transcripts + existing bots; re-check on tab focus return ──
+
+  async function fetchTranscriptCount() {
+    if (!clientId) return;
+    setTranscriptLoading(true);
+    try {
+      const r = await fetch(`${INTEL_URL}/transcripts?client_id=${encodeURIComponent(clientId)}`, { headers: apiHeaders() });
+      if (r.ok) {
+        const data = await r.json();
+        setTranscriptCount(Array.isArray(data) ? data.length : 0);
+      }
+    } catch { /* non-fatal */ } finally {
+      setTranscriptLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (step !== 2) return;
+    // Initial fetch
+    fetchTranscriptCount();
     setLoadingBots(true);
     fetch(`${INTEL_URL}/bots`, { headers: apiHeaders() })
       .then(r => r.json())
@@ -126,6 +144,14 @@ export default function WizardPage() {
         );
       })
       .finally(() => setLoadingBots(false));
+
+    // Re-fetch transcript count whenever user returns to this tab
+    function onVisibility() {
+      if (document.visibilityState === "visible") fetchTranscriptCount();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, clientId]);
 
   // ── Step 3: call /clarify on enter ──
@@ -289,22 +315,52 @@ export default function WizardPage() {
           </div>
 
           <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
-            <p className="text-sm text-gray-600 font-medium">Transcribe recordings</p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-gray-600 font-medium">Transcribe recordings</p>
+              {/* Live recording status */}
+              {transcriptLoading && (
+                <span className="text-xs text-gray-400 flex items-center gap-1">
+                  <span className="w-3 h-3 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
+                  Checking…
+                </span>
+              )}
+              {!transcriptLoading && transcriptCount !== null && transcriptCount > 0 && (
+                <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                  {transcriptCount} recording{transcriptCount === 1 ? "" : "s"} ready
+                </span>
+              )}
+              {!transcriptLoading && transcriptCount === 0 && (
+                <span className="text-xs text-gray-400">No recordings yet</span>
+              )}
+            </div>
             <p className="text-sm text-gray-500">
-              Use the Transcribe page to upload WAV / MP3 / M4A files. The bot will automatically
-              pick up insights from uploaded recordings.
+              Use the Transcribe page to upload WAV / MP3 / M4A files. Come back here after — the
+              count above updates automatically when you return to this tab.
             </p>
-            <a
-              href={`/intelligence/transcribe${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors text-gray-700"
-            >
-              Go to Transcribe page
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-              </svg>
-            </a>
+            <div className="flex items-center gap-3">
+              <a
+                href={`/intelligence/transcribe${clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors text-gray-700"
+              >
+                Go to Transcribe page
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </a>
+              {transcriptCount !== null && transcriptCount > 0 && (
+                <button
+                  onClick={fetchTranscriptCount}
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  Refresh
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="mt-4 border-t border-gray-100 pt-4">
@@ -339,18 +395,21 @@ export default function WizardPage() {
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3 pt-2">
-            <button
-              onClick={() => setStep(3)}
-              className="flex-1 px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              I&apos;ve uploaded recordings, continue
-            </button>
-            <button
-              onClick={() => setStep(3)}
-              className="flex-1 px-5 py-2.5 text-gray-600 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              Skip — generate without recordings
-            </button>
+            {transcriptCount !== null && transcriptCount > 0 ? (
+              <button
+                onClick={() => setStep(3)}
+                className="flex-1 px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Continue with {transcriptCount} recording{transcriptCount === 1 ? "" : "s"}
+              </button>
+            ) : (
+              <button
+                onClick={() => setStep(3)}
+                className="flex-1 px-5 py-2.5 text-gray-600 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Skip — generate without recordings
+              </button>
+            )}
           </div>
 
           <div className="flex justify-start">
