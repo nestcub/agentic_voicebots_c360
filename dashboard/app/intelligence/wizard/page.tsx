@@ -27,7 +27,7 @@ type Answer = {
 
 // ── Step indicator ─────────────────────────────────────────────────────────────
 
-const STEPS = ["Use Case", "Recordings", "Questions", "Generating"];
+const STEPS = ["Use Case", "Recordings", "Questions", "Notes", "Generating"];
 
 function StepIndicator({ current }: { current: number }) {
   return (
@@ -105,7 +105,10 @@ export default function WizardPage() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const clarifyCalledRef = useRef(false);
 
-  // Step 4
+  // Step 4 – additional notes
+  const [notes, setNotes] = useState("");
+
+  // Step 5
   const [generateError, setGenerateError] = useState("");
   const [generating, setGenerating] = useState(false);
   const generateCalledRef = useRef(false);
@@ -160,10 +163,10 @@ export default function WizardPage() {
     clarifyCalledRef.current = true;
   }
 
-  // ── Step 4: call /generate on enter ──
+  // ── Step 5: call /generate on enter ──
 
   useEffect(() => {
-    if (step !== 4 || generateCalledRef.current) return;
+    if (step !== 5 || generateCalledRef.current) return;
     generateCalledRef.current = true;
     callGenerate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -186,6 +189,7 @@ export default function WizardPage() {
           answers: answerList,
           model,
           ...(sourceClientId ? { source_client_id: sourceClientId } : {}),
+          ...(notes.trim() ? { notes } : {}),
         }),
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -432,6 +436,34 @@ export default function WizardPage() {
                           </span>
                         </label>
                       ))}
+                      {/* Other / write a note */}
+                      <label className="flex items-start gap-2.5 cursor-pointer group">
+                        <input
+                          type="radio"
+                          name={`q-${q.id}`}
+                          value="__other__"
+                          checked={answers[q.id] !== undefined && !q.options.includes(answers[q.id])}
+                          onChange={() =>
+                            setAnswers((prev) => ({ ...prev, [q.id]: "" }))
+                          }
+                          className="w-4 h-4 accent-blue-600 mt-0.5"
+                        />
+                        <span className="text-sm text-gray-500 group-hover:text-gray-700">
+                          Other / write a note…
+                        </span>
+                      </label>
+                      {answers[q.id] !== undefined && !q.options.includes(answers[q.id]) && (
+                        <input
+                          type="text"
+                          value={answers[q.id] ?? ""}
+                          onChange={(e) =>
+                            setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
+                          }
+                          placeholder="Type your answer…"
+                          autoFocus
+                          className="w-full rounded-lg border border-gray-200 text-sm text-gray-800 placeholder-gray-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 ml-6"
+                        />
+                      )}
                     </div>
                   ) : (
                     <input
@@ -471,8 +503,41 @@ export default function WizardPage() {
         </div>
       )}
 
-      {/* ── Step 4: Generating ── */}
+      {/* ── Step 4: Additional Notes ── */}
       {step === 4 && (
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-5 shadow-sm">
+          <div>
+            <h2 className="text-base font-semibold text-gray-800">Anything else to add?</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Add any extra context, constraints, or instructions for the LLM before it generates
+              your bot. This is optional — leave blank to skip.
+            </p>
+          </div>
+          <textarea
+            className="w-full rounded-lg border border-gray-200 text-sm text-gray-800 placeholder-gray-400 p-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400 min-h-[140px]"
+            placeholder={`e.g. "The bot must never put callers on hold. Always use formal Hindi. The CRM variable for lead ID is @lead_id."`}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+          <div className="flex items-center justify-between pt-1">
+            <button
+              onClick={() => setStep(3)}
+              className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              Back
+            </button>
+            <button
+              onClick={() => setStep(5)}
+              className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              {notes.trim() ? "Generate Bot" : "Skip & Generate"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Step 5: Generating ── */}
+      {step === 5 && (
         <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
           {generating && !generateError && (
             <div className="flex flex-col items-center justify-center py-16 space-y-5 text-center">
