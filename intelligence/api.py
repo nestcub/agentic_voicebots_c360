@@ -346,6 +346,7 @@ async def generate(body: dict, _: None = Depends(auth)):
     client_id = body.get("client_id", "").strip()
     use_case  = body.get("use_case", "").strip()
     answers   = body.get("answers", [])   # list of {question, answer}
+    notes     = body.get("notes", "").strip() or None
     model_key = body.get("model", "gpt-5.4")
     if not client_id or not use_case:
         raise HTTPException(status_code=400, detail="client_id and use_case are required.")
@@ -358,6 +359,7 @@ async def generate(body: dict, _: None = Depends(auth)):
             provider=cfg["provider"],
             model=cfg["model"],
             reasoning_effort="low",
+            notes=notes,
         )
         return plan
     except LLMCompletionError as exc:
