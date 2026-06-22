@@ -321,6 +321,7 @@ Return JSON array:
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        notes: str | None = None,
     ) -> dict:
         """Generate a full workflow plan JSON from use case, insights, and QnA answers.
 
@@ -397,6 +398,7 @@ Return JSON array:
 <clarifying_answers>
 {qa_text}
 </clarifying_answers>
+{f'<additional_notes>{notes}</additional_notes>' if notes and notes.strip() else ''}
 
 <retrieved_examples>
 {_rag_examples}
