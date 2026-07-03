@@ -15,6 +15,14 @@ human (urgency, convincing instincts, empathy). The sheet is meant to be pasted 
 uploaded directly into Claude web to author/refine system prompts — Markdown is the
 primary artifact for that reason, JSON is the structured backing store.
 
+**Consumption model:** the sheet feeds a prompt-generating LLM (Claude/GPT + the bot's
+use case → voice-agent system prompt) for a STT → LLM → TTS voicebot. It therefore
+carries two parameter tracks: a **delivery track** (prosody → TTS control tags:
+`<speed>/<volume>/<emotion>/<break>`, fillers) and a **substance track** (behavioral
+tactics → LLM behavioral rules + few-shot exemplars). The substance track is the higher
+-leverage one — the voice-agent LLM's quality is dominated by *what* it says; TTS only
+renders delivery.
+
 This is a **new, fully separate package** — `humanvoice_engine/` — not a modification
 of the existing `transcription/` + `intelligence/` pipeline. That pipeline outputs a
 different thing (bot-plan generation from insight scoring) and must not be touched or
@@ -89,17 +97,41 @@ Run: `python -m humanvoice_engine.run --input data/av_sales_call_recos`
    objection/urgency/close boundaries — there is no clean acoustic signal for this) and
    reports aggregated prosody per phase alongside the behavioral/emotional extraction.
 
-   Full schema (nothing dropped from the goal doc):
+   The schema has two tracks, reflecting how the parameter sheet is consumed
+   downstream (STT -> LLM -> TTS voicebot): a **delivery track** (prosody -> TTS
+   control tags) and a **substance track** (behavior -> LLM behavioral rules +
+   few-shot exemplars). The substance track carries the most leverage for
+   human-like response generation, because the voice-agent LLM's job is choosing
+   *what to say* — TTS only renders it.
+
+   Full schema (nothing dropped from the goal doc; substance track expanded):
    ```
+   # --- delivery track (-> TTS control) ---
    filler_lexicon:      [{filler, count, position, function}]
-   urgency_tactics:     [{trigger_context, verbal_move, prosody_signature, verbatim}]
-   persuasion_moves:    [{technique, verbatim}]
-   empathy_markers:     [{cue, verbatim}]
-   objection_handling:  [{objection, agent_move, outcome, verbatim}]
-   turn_taking:         [{interruption_handled_how, backchannel_words}]
    phase_prosody:       {opening|qualification|interest|objection|urgency|close: {rate, f0_mean, f0_range, rms, pause_ms}}
-   opening_hook / closing_commitment / emotional_arc
+   emotional_arc
+
+   # --- substance track (-> LLM behavioral rules + exemplars) ---
+   urgency_tactics:     [{trigger_context, verbal_move, prosody_signature, verbatim, why_it_worked}]
+   persuasion_moves:    [{technique, verbatim, why_it_worked}]
+   objection_handling:  [{objection, agent_move, outcome, verbatim}]
+   empathy_markers:     [{cue, verbatim}]
+   guardrails_and_boundaries: [{boundary, how_expressed, verbatim}]   # what the agent won't do / how they deflect / stay honest
+   qualification_style: {approach, question_sequence, verbatim_probes}
+   rapport_building:    [{technique, verbatim}]
+   turn_taking:         [{interruption_handled_how, backchannel_words}]
+   opening_hook / closing_commitment
    ```
+
+   **`why_it_worked`** on the persuasion/urgency verbatims captures the *mechanism*
+   (e.g. "anchored high, then created weekend scarcity"), not just the line — the
+   prompt-gen LLM needs the mechanism to generalize, not copy.
+
+   **Guardrails scope note:** this field extracts the *human* agent's guardrail
+   behavior (not over-promising, deflecting out-of-scope, staying honest). The
+   bot-specific safety guardrails (don't hallucinate, don't answer outside KB,
+   handle silence/interruption) are NOT sourced here — they come from the existing
+   reference-bot-pitfalls platform knowledge + the bot's use case at prompt-gen time.
 
 4. Each call's combined result (`segments`, `raw_segments`, `prosody`, `gold_extract`) is
    cached to `data/av_sales_call_recos/_cache/<filename>.json` after each stage completes.
@@ -111,8 +143,9 @@ Run: `python -m humanvoice_engine.run --input data/av_sales_call_recos`
 
 5. **`aggregate.py`** — pure Python, no LLM call. Collapses all cached per-call JSONs:
    - Merges filler lexicons (word → total count, position distribution)
-   - Groups tactics/empathy/objection-handling patterns by type with verbatim examples
-     pooled across calls
+   - Groups substance-track patterns (persuasion, urgency, objection-handling, empathy,
+     guardrails, rapport, qualification) by type, pooling verbatim examples and
+     why_it_worked mechanisms across calls
    - Averages `phase_prosody` numbers across calls, per phase
    - Computes the Section E output-mapping table (speed/volume/emotion ratios per phase,
      relative to a computed cross-call baseline; allowed filler set + density; tactic +
