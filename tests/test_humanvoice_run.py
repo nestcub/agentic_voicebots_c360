@@ -58,3 +58,20 @@ def test_run_writes_parameter_sheet(tmp_path, monkeypatch):
     assert sheet["call_count"] == 1
     loaded = json.loads((outdir / "parameter_sheet.json").read_text())
     assert loaded["filler_lexicon"][0]["filler"] == "matlab"
+
+
+def test_run_custom_name_writes_named_sheet(tmp_path, monkeypatch):
+    _patch_stages(monkeypatch)
+    from humanvoice_engine import run as runmod
+    indir = tmp_path / "recos"
+    indir.mkdir()
+    (indir / "call.aac").write_bytes(b"x")
+    outdir = tmp_path / "out"
+    runmod.run(str(indir), output_dir=str(outdir), name="av_batch1")
+    assert (outdir / "av_batch1.json").exists()
+    assert (outdir / "av_batch1.md").exists()
+    assert not (outdir / "parameter_sheet.json").exists()
+    # a passed-in extension is tolerated (stem is used)
+    runmod.run(str(indir), output_dir=str(outdir), name="av_batch2.json")
+    assert (outdir / "av_batch2.json").exists()
+    assert (outdir / "av_batch2.md").exists()

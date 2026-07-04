@@ -55,8 +55,9 @@ def process_file(path: str, cache_dir: str, language: str = "hi") -> dict:
     return record
 
 
-def run(input_dir: str, output_dir: str = "data", language: str = "hi") -> dict:
-    """Process every recording in input_dir, aggregate, write parameter_sheet.{json,md}."""
+def run(input_dir: str, output_dir: str = "data", language: str = "hi",
+        name: str = "parameter_sheet") -> dict:
+    """Process every recording in input_dir, aggregate, write <name>.{json,md}."""
     in_path = Path(input_dir)
     files = sorted(p for p in in_path.iterdir()
                    if p.is_file() and p.suffix.lower() in _AUDIO_EXTS)
@@ -72,19 +73,22 @@ def run(input_dir: str, output_dir: str = "data", language: str = "hi") -> dict:
     sheet = aggregate(calls)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "parameter_sheet.json").write_text(json.dumps(sheet, ensure_ascii=False, indent=2))
-    (out / "parameter_sheet.md").write_text(render_markdown(sheet))
-    print(f"[done] {len(calls)} call(s) -> {out/'parameter_sheet.md'}", flush=True)
+    stem = Path(name).stem  # tolerate a passed-in ".json"/".md" suffix
+    (out / f"{stem}.json").write_text(json.dumps(sheet, ensure_ascii=False, indent=2))
+    (out / f"{stem}.md").write_text(render_markdown(sheet))
+    print(f"[done] {len(calls)} call(s) -> {out/(stem + '.md')}", flush=True)
     return sheet
 
 
 def main():
     ap = argparse.ArgumentParser(description="Extract a Human-Voice Parameter Sheet from call recordings.")
     ap.add_argument("--input", required=True, help="folder of recordings (e.g. data/av_sales_call_recos)")
-    ap.add_argument("--output-dir", default="data", help="where to write parameter_sheet.{json,md}")
+    ap.add_argument("--output-dir", default="data", help="directory to write the sheet into")
+    ap.add_argument("--name", default="parameter_sheet",
+                    help="output basename; writes <name>.json and <name>.md (default parameter_sheet)")
     ap.add_argument("--language", default="hi", help="STT language (default hi)")
     args = ap.parse_args()
-    run(args.input, output_dir=args.output_dir, language=args.language)
+    run(args.input, output_dir=args.output_dir, language=args.language, name=args.name)
 
 
 if __name__ == "__main__":
