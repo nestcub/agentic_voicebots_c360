@@ -207,6 +207,19 @@ class ExecutionSerializer(serializers.ModelSerializer):
         ]
 
 
+class CampaignLeadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Execution
+        fields = [
+            "id",
+            "lead_id",
+            "status",
+            "current_node",
+            "variables",
+            "created_at",
+        ]
+
+
 class QAResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = QAResult

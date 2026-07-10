@@ -23,6 +23,7 @@ from .models import (
     QAResult,
 )
 from .services.callback_time import parse_call_back_time
+from .services.campaign_launch import launch_campaign
 from .services.journey import JOURNEY_STEPS, generate_journey
 from .services.ngrok import get_public_base_url
 from .services.seed_node_templates import seed_node_templates
@@ -593,3 +594,196 @@ class WebhookPublicUrlSerializationTests(TestCase):
 
         webhook = response.data["webhooks"][0]
         self.assertTrue(webhook["public_url"].startswith("https://abc123.ngrok-free.app/api/telehub/webhooks/"))
+
+
+class CampaignLaunchServiceTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def _create_agent(self, name="Free Service 1"):
+        payload = _full_wizard_payload(self.department.id, name=name)
+        response = self.client.post(
+            "/api/telehub/process-agents/", payload, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return ProcessAgent.objects.get(id=response.data["id"])
+
+    def test_launch_campaign_creates_valid_leads_and_skips_missing_to_number(self):
+        agent = self._create_agent()
+
+        result = launch_campaign(
+            agent,
+            {
+                "campaign_id": "camp-1",
+                "leads": [
+                    {"to_number": "+911234567890", "params": {"name": "Alice"}, "lead_id": "lead-a"},
+                    {"to_number": "+919876543210", "params": {"name": "Bob"}, "dnd": "19:00-09:00"},
+                    {"params": {"name": "NoNumber"}, "lead_id": "lead-c"},
+                ],
+            },
+        )
+
+        self.assertEqual(result["campaign_id"], "camp-1")
+        self.assertEqual(result["created_count"], 2)
+        self.assertEqual(result["skipped"], ["lead-c"])
+
+        executions = Execution.objects.filter(process_agent=agent, campaign_id="camp-1")
+        self.assertEqual(executions.count(), 2)
+
+        alice = executions.get(lead_id="lead-a")
+        self.assertEqual(alice.status, "pending")
+        self.assertEqual(alice.current_node, "Lead Received")
+        self.assertEqual(alice.variables, {"name": "Alice", "to_number": "+911234567890"})
+
+        bob = executions.get(lead_id="camp-1-1")
+        self.assertEqual(bob.status, "pending")
+        self.assertEqual(bob.current_node, "Lead Received")
+        self.assertEqual(
+            bob.variables,
+            {"name": "Bob", "to_number": "+919876543210", "dnd": "19:00-09:00"},
+        )
+
+    def test_missing_to_number_without_lead_id_uses_row_index(self):
+        agent = self._create_agent()
+
+        result = launch_campaign(
+            agent,
+            {
+                "campaign_id": "camp-2",
+                "leads": [{"params": {}}],
+            },
+        )
+
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["skipped"], ["row-0"])
+
+
+class CampaignLaunchApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def _create_agent(self, name="Free Service 1"):
+        payload = _full_wizard_payload(self.department.id, name=name)
+        response = self.client.post(
+            "/api/telehub/process-agents/", payload, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return response.data["id"]
+
+    def test_launch_campaign_endpoint_returns_created_shape(self):
+        agent_id = self._create_agent()
+
+        response = self.client.post(
+            f"/api/telehub/process-agents/{agent_id}/launch-campaign/",
+            {
+                "campaign_id": "camp-x",
+                "leads": [
+                    {"to_number": "+911111111111", "params": {"@name": "Charlie"}},
+                    {"to_number": "+922222222222", "params": {"@name": "Dana"}},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["campaign_id"], "camp-x")
+        self.assertEqual(response.data["created_count"], 2)
+        self.assertEqual(response.data["skipped"], [])
+
+    def test_campaigns_endpoint_shows_campaign_with_correct_lead_count(self):
+        agent_id = self._create_agent()
+        self.client.post(
+            f"/api/telehub/process-agents/{agent_id}/launch-campaign/",
+            {
+                "campaign_id": "camp-y",
+                "leads": [
+                    {"to_number": "+911111111111", "params": {}},
+                    {"to_number": "+922222222222", "params": {}},
+                    {"to_number": "+933333333333", "params": {}},
+                ],
+            },
+            format="json",
+        )
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent_id}/campaigns/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["campaign_id"], "camp-y")
+        self.assertEqual(response.data[0]["lead_count"], 3)
+        self.assertIn("created_at", response.data[0])
+
+    def test_campaign_leads_endpoint_returns_executions_with_variables_intact(self):
+        agent_id = self._create_agent()
+        self.client.post(
+            f"/api/telehub/process-agents/{agent_id}/launch-campaign/",
+            {
+                "campaign_id": "camp-z",
+                "leads": [
+                    {"to_number": "+911111111111", "params": {"@name": "Eve"}, "lead_id": "lead-eve"},
+                ],
+            },
+            format="json",
+        )
+
+        response = self.client.get(
+            f"/api/telehub/process-agents/{agent_id}/campaigns/camp-z/leads/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        lead = response.data[0]
+        self.assertEqual(lead["lead_id"], "lead-eve")
+        self.assertEqual(lead["status"], "pending")
+        self.assertEqual(lead["current_node"], "Lead Received")
+        self.assertEqual(lead["variables"]["@name"], "Eve")
+        self.assertEqual(lead["variables"]["to_number"], "+911111111111")
+        self.assertIn("created_at", lead)
+        self.assertIn("id", lead)
+
+    def test_two_campaigns_under_same_agent_have_no_cross_contamination(self):
+        agent_id = self._create_agent()
+        self.client.post(
+            f"/api/telehub/process-agents/{agent_id}/launch-campaign/",
+            {
+                "campaign_id": "camp-alpha",
+                "leads": [
+                    {"to_number": "+911111111111", "params": {}},
+                    {"to_number": "+922222222222", "params": {}},
+                ],
+            },
+            format="json",
+        )
+        self.client.post(
+            f"/api/telehub/process-agents/{agent_id}/launch-campaign/",
+            {
+                "campaign_id": "camp-beta",
+                "leads": [
+                    {"to_number": "+933333333333", "params": {}},
+                ],
+            },
+            format="json",
+        )
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent_id}/campaigns/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+        by_id = {row["campaign_id"]: row for row in response.data}
+        self.assertEqual(by_id["camp-alpha"]["lead_count"], 2)
+        self.assertEqual(by_id["camp-beta"]["lead_count"], 1)
+
+        # Most recent campaign (camp-beta, launched second) should come first.
+        self.assertEqual(response.data[0]["campaign_id"], "camp-beta")
+
+        alpha_leads = self.client.get(
+            f"/api/telehub/process-agents/{agent_id}/campaigns/camp-alpha/leads/"
+        )
+        beta_leads = self.client.get(
+            f"/api/telehub/process-agents/{agent_id}/campaigns/camp-beta/leads/"
+        )
+        self.assertEqual(len(alpha_leads.data), 2)
+        self.assertEqual(len(beta_leads.data), 1)

@@ -151,6 +151,7 @@ class Execution(models.Model):
     duration = models.IntegerField(null=True, blank=True)
     current_node = models.CharField(max_length=128, blank=True, default="")
     variables = models.JSONField(default=dict)
+    campaign_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

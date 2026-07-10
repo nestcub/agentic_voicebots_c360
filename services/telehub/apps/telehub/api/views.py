@@ -1,3 +1,4 @@
+from django.db.models import Count, Min
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
@@ -12,8 +13,10 @@ from ..models import (
     QAResult,
     WebhookDefinition,
 )
+from ..services import campaign_launch
 from ..services.process_agent import create_process_agent_from_wizard
 from .serializers import (
+    CampaignLeadSerializer,
     DepartmentDetailSerializer,
     DepartmentSerializer,
     ExecutionSerializer,
@@ -94,6 +97,42 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         agent = self.get_object()
         qa_results = QAResult.objects.filter(execution__process_agent=agent)
         return Response(QAResultSerializer(qa_results, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="launch-campaign")
+    def launch_campaign(self, request, pk=None):
+        agent = self.get_object()
+        result = campaign_launch.launch_campaign(agent, request.data)
+        return Response(result, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"])
+    def campaigns(self, request, pk=None):
+        agent = self.get_object()
+        rows = (
+            agent.executions.exclude(campaign_id="")
+            .values("campaign_id")
+            .annotate(lead_count=Count("id"), created_at=Min("created_at"))
+            .order_by("-created_at")
+        )
+        return Response(
+            [
+                {
+                    "campaign_id": row["campaign_id"],
+                    "lead_count": row["lead_count"],
+                    "created_at": row["created_at"].isoformat(),
+                }
+                for row in rows
+            ]
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="campaigns/(?P<campaign_id>[^/]+)/leads",
+    )
+    def campaign_leads(self, request, pk=None, campaign_id=None):
+        agent = self.get_object()
+        executions = agent.executions.filter(campaign_id=campaign_id)
+        return Response(CampaignLeadSerializer(executions, many=True).data)
 
 
 @api_view(["POST"])
