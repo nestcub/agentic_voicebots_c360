@@ -1,3 +1,5 @@
+from django.utils import timezone
+
 from ..models import Execution
 
 NODE_NAME_LEAD_RECEIVED = "Lead Received"
@@ -10,10 +12,13 @@ def launch_campaign(process_agent, payload: dict) -> dict:
     Bulk-creates one Execution per lead: status="pending", current_node="Lead Received",
     campaign_id=payload["campaign_id"], variables = params merged with {"to_number": to_number}
     and {"dnd": dnd} if the lead dict has a "dnd" key. lead_id = lead.get("lead_id") or
-    f"{campaign_id}-{index}". Rows missing to_number are skipped (not created), their
-    lead_id (or "row-{index}" if absent) collected into the returned skipped list — never
-    silently dropped without being accounted for. Uses Execution.objects.bulk_create for
-    the actual insert. Returns {"campaign_id": str, "created_count": int, "skipped": list[str]}.
+    f"{campaign_id}-{index}". next_execution=now() so run_scheduler's tick() (which polls
+    next_execution__lte=now()) picks these up immediately — a NULL next_execution never
+    matches that filter, so leaving it unset would make launched leads invisible to the
+    scheduler forever. Rows missing to_number are skipped (not created), their lead_id
+    (or "row-{index}" if absent) collected into the returned skipped list — never silently
+    dropped without being accounted for. Uses Execution.objects.bulk_create for the actual
+    insert. Returns {"campaign_id": str, "created_count": int, "skipped": list[str]}.
     """
     campaign_id = payload.get("campaign_id", "")
     leads = payload.get("leads", []) or []
@@ -42,6 +47,7 @@ def launch_campaign(process_agent, payload: dict) -> dict:
                 current_node=NODE_NAME_LEAD_RECEIVED,
                 campaign_id=campaign_id,
                 variables=variables,
+                next_execution=timezone.now(),
             )
         )
 

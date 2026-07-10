@@ -669,6 +669,21 @@ class CampaignLaunchServiceTests(TestCase):
             {"name": "Bob", "to_number": "+919876543210", "dnd": "19:00-09:00"},
         )
 
+    def test_launched_leads_have_next_execution_set_so_scheduler_picks_them_up(self):
+        # Regression: a NULL next_execution never matches run_scheduler.tick()'s
+        # next_execution__lte=now() filter, so a launched lead with no
+        # next_execution would sit forever and never get dispatched.
+        agent = self._create_agent()
+
+        launch_campaign(
+            agent,
+            {"campaign_id": "camp-2", "leads": [{"to_number": "+911111111111"}]},
+        )
+
+        execution = Execution.objects.get(process_agent=agent, campaign_id="camp-2")
+        self.assertIsNotNone(execution.next_execution)
+        self.assertLessEqual(execution.next_execution, timezone.now())
+
     def test_missing_to_number_without_lead_id_uses_row_index(self):
         agent = self._create_agent()
 
