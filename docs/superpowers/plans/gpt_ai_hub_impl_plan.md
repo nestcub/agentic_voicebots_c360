@@ -365,6 +365,28 @@ The platform automatically generates
 
 This webhook is pasted into external voice platforms.
 
+## Local dev: getting a real public URL
+
+`WebhookDefinition.url` stores a stable relative path
+(`/api/telehub/webhooks/<secret>/`) — a real view is mounted there
+(`api/views.py:webhook_intake`), unlike the placeholder that existed before it.
+For an external voice platform to reach it, that path needs a public domain in
+front of it. Run `ngrok http 8000` locally alongside the TeleHub server;
+`services/telehub/apps/telehub/services/ngrok.py` auto-detects the running
+tunnel via ngrok's local inspection API (`http://127.0.0.1:4040/api/tunnels`,
+overridable via `NGROK_API_URL`) and `WebhookDefinitionSerializer.public_url`
+composes the full copy-pasteable URL **live, on every read** — nothing is
+stored, so it never goes stale when the tunnel restarts (the previous
+orchestrator's workflow required manually running
+`curl 127.0.0.1:4040/api/tunnels` and eyeballing it after every restart). When
+ngrok isn't running, `public_url` is `null` and the dashboard falls back to
+showing the relative path with a hint to start ngrok.
+
+`webhook_intake` today only correlates the payload to an `Execution` via a
+`dlr_id` field and logs an `ExecutionEvent` — outcome classification and
+journey routing (moving `current_node`, triggering QA/CRM Update/Retry/Callback)
+is not implemented yet; that's part of the dispatch/schedule engine's Phase D.
+
 ---
 
 # Callback
