@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -947,6 +948,22 @@ class DispatcherTests(TestCase):
         self.assertEqual(body["dlr_id"], str(execution.id))
         self.assertEqual(body["bot_id"], "bot-42")
         self.assertEqual(body["bot_name"], "Bot Forty Two")
+
+    def test_token_stored_with_bearer_prefix_is_not_doubled(self):
+        # Regression: an operator pasting the whole "Bearer <token>" header
+        # value into CHAT360_OUTBOUND_BEARER_TOKEN (an easy mistake) must not
+        # produce "Bearer Bearer <token>" on the wire.
+        execution = self._make_execution()
+
+        with patch.dict(
+            os.environ, {"CHAT360_OUTBOUND_BEARER_TOKEN": "Bearer abc123"}
+        ), patch("apps.telehub.services.dispatcher.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+            dispatch_execution(execution)
+
+        sent_request = mock_urlopen.call_args[0][0]
+        self.assertEqual(sent_request.get_header("Authorization"), "Bearer abc123")
 
 
 class RetryBackoffTests(TestCase):

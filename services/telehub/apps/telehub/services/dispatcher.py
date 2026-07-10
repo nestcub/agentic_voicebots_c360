@@ -100,8 +100,15 @@ def dispatch_execution(execution: "Execution") -> dict:
             "error": "no api_url configured on Communication node",
         }
 
+    # Tolerate the token being stored either as the raw token or as the full
+    # "Bearer <token>" header value (an easy copy-paste mistake) — either way
+    # we send exactly one "Bearer " prefix, never a double "Bearer Bearer ...".
+    raw_token = os.environ.get("CHAT360_OUTBOUND_BEARER_TOKEN", "").strip()
+    if raw_token.lower().startswith("bearer "):
+        raw_token = raw_token[len("bearer "):].strip()
+
     headers = {
-        "Authorization": f"Bearer {os.environ.get('CHAT360_OUTBOUND_BEARER_TOKEN', '')}",
+        "Authorization": f"Bearer {raw_token}",
         "Content-Type": "application/json",
         "Cookie": os.environ.get("CHAT360_AUTH_COOKIE", ""),
     }

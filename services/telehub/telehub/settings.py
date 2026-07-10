@@ -9,6 +9,8 @@ Departments, Process Agents, Workflows, Executions, QA, Analytics, etc.
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # BASE_DIR is the outer services/telehub/ directory (contains manage.py),
 # i.e. two levels up from this settings.py file.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -16,6 +18,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Make sure the "apps" package (apps/telehub/...) is importable given
 # this nested layout.
 sys.path.insert(0, str(BASE_DIR))
+
+# Repo root's .env (three levels up: telehub/ -> services/ -> repo root) —
+# shared with the rest of the monorepo (CHAT360_OUTBOUND_BEARER_TOKEN,
+# CHAT360_AUTH_COOKIE, etc., see services/dispatcher.py). Without this,
+# os.environ.get(...) in dispatcher.py silently returns "" for everything in
+# .env even when the file has real values — Django never reads dotenv files
+# on its own.
+load_dotenv(BASE_DIR.parent.parent / ".env")
 
 # SECURITY WARNING: dev-only secret key, fine for this throwaway/dev service.
 SECRET_KEY = "django-insecure-telehub-dev-only-secret-key-change-me"
