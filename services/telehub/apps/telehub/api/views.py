@@ -1,8 +1,17 @@
 from rest_framework import status, viewsets
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from ..models import Department, Integration, NodeTemplate, ProcessAgent, QAResult
+from ..models import (
+    Department,
+    Execution,
+    ExecutionEvent,
+    Integration,
+    NodeTemplate,
+    ProcessAgent,
+    QAResult,
+    WebhookDefinition,
+)
 from ..services.process_agent import create_process_agent_from_wizard
 from .serializers import (
     DepartmentDetailSerializer,
@@ -85,3 +94,35 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         agent = self.get_object()
         qa_results = QAResult.objects.filter(execution__process_agent=agent)
         return Response(QAResultSerializer(qa_results, many=True).data)
+
+
+@api_view(["POST"])
+def webhook_intake(request, secret):
+    """
+    Minimal webhook intake: the real, mounted endpoint that
+    WebhookDefinition.url (see services/process_agent.py) actually points to —
+    unlike the placeholder that existed before this, this one is live. Looks up
+    the WebhookDefinition by secret, correlates to an Execution via a `dlr_id`
+    in the payload if present, and records the raw payload as an
+    ExecutionEvent. Outcome classification / journey routing (moving
+    current_node, triggering QA/CRM Update/Retry/Callback) is NOT implemented
+    yet — that's the dispatch/schedule engine's Phase D, still to be built.
+    Always acks 200 regardless of whether the secret or dlr_id resolved to
+    anything real — external callers must never see a webhook failure from us,
+    and never raises.
+    """
+    webhook = WebhookDefinition.objects.filter(secret=secret).first()
+    if webhook is not None:
+        dlr_id = request.data.get("dlr_id") if hasattr(request.data, "get") else None
+        execution = None
+        if dlr_id:
+            execution = Execution.objects.filter(
+                pk=dlr_id, process_agent=webhook.process_agent
+            ).first()
+        if execution is not None:
+            ExecutionEvent.objects.create(
+                execution=execution,
+                event_type="webhook_received",
+                payload=dict(request.data) if hasattr(request.data, "items") else {"raw": str(request.data)},
+            )
+    return Response(status=status.HTTP_200_OK)

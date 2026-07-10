@@ -96,11 +96,17 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
     communication_type = voice.get("communication_type", "")
     webhook_schema = voice.get("webhook_schema")
     if communication_type.startswith("voice") and webhook_schema:
+        secret = secrets.token_hex(16)
         WebhookDefinition.objects.create(
             process_agent=agent,
             name=f"{agent.name} Callback",
-            url=f"/webhooks/telehub/{agent.id}/",
-            secret=secrets.token_hex(16),
+            # Stable relative path — a real view is mounted at this path (see
+            # api/views.py:webhook_intake). The full public URL (with a live ngrok
+            # domain prefixed) is computed on read, not stored here, so it never
+            # goes stale when the local ngrok tunnel restarts — see
+            # ProcessAgentDetailSerializer's webhooks field / services/ngrok.py.
+            url=f"/api/telehub/webhooks/{secret}/",
+            secret=secret,
             schema=webhook_schema,
             status="active",
         )

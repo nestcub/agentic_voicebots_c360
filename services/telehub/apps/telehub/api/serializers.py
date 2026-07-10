@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from ..services.ngrok import get_public_base_url
 from ..models import (
     Department,
     Execution,
@@ -104,9 +105,20 @@ class VariableSerializer(serializers.ModelSerializer):
 
 
 class WebhookDefinitionSerializer(serializers.ModelSerializer):
+    # Computed fresh on every read (never stored) so it reflects whatever ngrok
+    # tunnel is currently running, not whatever was running when the Process was
+    # created — ngrok URLs change on every tunnel restart. None when ngrok isn't
+    # running locally; `url` (the stable relative path) is always present as a
+    # fallback the frontend can show instead.
+    public_url = serializers.SerializerMethodField()
+
     class Meta:
         model = WebhookDefinition
-        fields = ["id", "name", "url", "secret", "schema", "status"]
+        fields = ["id", "name", "url", "public_url", "secret", "schema", "status"]
+
+    def get_public_url(self, obj):
+        base = get_public_base_url()
+        return f"{base}{obj.url}" if base else None
 
 
 class ProcessAgentIntegrationSerializer(serializers.ModelSerializer):

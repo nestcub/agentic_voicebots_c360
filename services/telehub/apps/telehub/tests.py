@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -9,6 +10,7 @@ from rest_framework.test import APIClient
 from .models import (
     Department,
     Execution,
+    ExecutionEvent,
     Integration,
     LeadSource,
     NodeConnection,
@@ -22,6 +24,7 @@ from .models import (
 )
 from .services.callback_time import parse_call_back_time
 from .services.journey import JOURNEY_STEPS, generate_journey
+from .services.ngrok import get_public_base_url
 from .services.seed_node_templates import seed_node_templates
 
 
@@ -491,3 +494,102 @@ class CallbackTimeParsingTests(TestCase):
         self.assertIsNone(parse_call_back_time("whenever, maybe tomorrow"))
         self.assertIsNone(parse_call_back_time(""))
         self.assertIsNone(parse_call_back_time(None))
+
+
+class NgrokPublicBaseUrlTests(TestCase):
+    def test_returns_https_tunnel_when_ngrok_running(self):
+        fake_response = {
+            "tunnels": [
+                {"proto": "http", "public_url": "http://abc123.ngrok-free.app"},
+                {"proto": "https", "public_url": "https://abc123.ngrok-free.app"},
+            ]
+        }
+        with patch("apps.telehub.services.ngrok.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+                __import__("json").dumps(fake_response).encode()
+            )
+            self.assertEqual(get_public_base_url(), "https://abc123.ngrok-free.app")
+
+    def test_returns_none_when_ngrok_not_running(self):
+        with patch("apps.telehub.services.ngrok.urllib.request.urlopen", side_effect=OSError):
+            self.assertIsNone(get_public_base_url())
+
+
+class WebhookIntakeTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def _create_agent_with_webhook(self):
+        payload = _full_wizard_payload(self.department.id)
+        response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+        agent_id = response.data["id"]
+        webhook = WebhookDefinition.objects.get(process_agent_id=agent_id)
+        return agent_id, webhook
+
+    def test_valid_secret_and_dlr_id_records_execution_event(self):
+        agent_id, webhook = self._create_agent_with_webhook()
+        execution = Execution.objects.create(process_agent_id=agent_id, lead_id="lead-1")
+
+        response = self.client.post(
+            f"/api/telehub/webhooks/{webhook.secret}/",
+            {"dlr_id": execution.id, "summary": "Call went well"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        event = ExecutionEvent.objects.get(execution=execution)
+        self.assertEqual(event.event_type, "webhook_received")
+        self.assertEqual(event.payload["summary"], "Call went well")
+
+    def test_unknown_secret_still_acks_200(self):
+        response = self.client.post(
+            "/api/telehub/webhooks/not-a-real-secret/", {"dlr_id": 1}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_missing_dlr_id_still_acks_200_and_records_nothing(self):
+        agent_id, webhook = self._create_agent_with_webhook()
+
+        response = self.client.post(
+            f"/api/telehub/webhooks/{webhook.secret}/", {"summary": "no dlr_id"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(ExecutionEvent.objects.exists())
+
+
+class WebhookPublicUrlSerializationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def test_public_url_none_when_ngrok_not_running(self):
+        payload = _full_wizard_payload(self.department.id)
+        create_response = self.client.post(
+            "/api/telehub/process-agents/", payload, format="json"
+        )
+        agent_id = create_response.data["id"]
+
+        with patch("apps.telehub.api.serializers.get_public_base_url", return_value=None):
+            response = self.client.get(f"/api/telehub/process-agents/{agent_id}/")
+
+        webhook = response.data["webhooks"][0]
+        self.assertIsNone(webhook["public_url"])
+        self.assertTrue(webhook["url"].startswith("/api/telehub/webhooks/"))
+
+    def test_public_url_composed_from_ngrok_base_when_running(self):
+        payload = _full_wizard_payload(self.department.id)
+        create_response = self.client.post(
+            "/api/telehub/process-agents/", payload, format="json"
+        )
+        agent_id = create_response.data["id"]
+
+        with patch(
+            "apps.telehub.api.serializers.get_public_base_url",
+            return_value="https://abc123.ngrok-free.app",
+        ):
+            response = self.client.get(f"/api/telehub/process-agents/{agent_id}/")
+
+        webhook = response.data["webhooks"][0]
+        self.assertTrue(webhook["public_url"].startswith("https://abc123.ngrok-free.app/api/telehub/webhooks/"))
