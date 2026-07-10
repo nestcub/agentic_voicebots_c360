@@ -371,22 +371,43 @@ This webhook is pasted into external voice platforms.
 
 Configuration
 
-- Variable
-- Operator
-- Value
-- Delay
+- Conditions — a list of (Variable, Operator, Value) rows. ANY condition matching
+  triggers the callback (not just a single Outcome == X check). Configured in the
+  wizard's Business Rules → Callback section, stored as
+  `business_rules.callback.conditions: [{variable, operator, value}, ...]` — same
+  repeatable-row pattern as the Variables editor.
+- Delay (minutes) — fallback delay used when the callback time isn't resolved from
+  a variable.
+- Time Variable — names the webhook variable (e.g. `call_back_time`) holding a
+  bot's free-text/STT capture of a requested callback time, in English, Hindi
+  (Devanagari), or Hinglish (e.g. "5 मिनट बाद", "5 minute baad", "08-07-2026 05:00
+  PM"). Stored as `business_rules.callback.time_variable`.
 
 Example
 
-Outcome == Callback Requested
+call_back == true, OR outcome == "callback_requested"
 
 ↓
 
-Delay 30 Minutes
+Resolve time: time_variable ("call_back_time") if parseable, else Delay (minutes)
 
 ↓
 
 Trigger Communication Node
+
+Resolution: `services/telehub/apps/telehub/services/callback_time.py` —
+`parse_call_back_time(raw: str) -> datetime | None`, ported from the proven
+implementation in the pre-rebuild orchestrator (`orchestrator_django`, branch
+`feat/orch-v2`). Tries relative Hindi/English/Hinglish phrases first (regex,
+resolved against `now()`, Devanagari digits normalized to ASCII), then falls back
+to Chat360's absolute `DD-MM-YYYY HH:MM AM/PM` format; returns `None` on
+unparseable input rather than guessing. Covered by `CallbackTimeParsingTests` in
+`services/telehub/apps/telehub/tests.py`. Not yet wired to a live call site — V1
+has no webhook-intake/execution engine; this is the utility function the future
+one will call per-Execution against whatever variable `callback.time_variable`
+names. No database schema change was needed for any of this — `business_rules`
+and `NodeInstance.config` are already free-form JSON specifically so new
+variables/config shapes never require a migration.
 
 ---
 
