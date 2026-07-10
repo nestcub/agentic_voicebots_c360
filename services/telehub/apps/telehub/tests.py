@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -23,11 +24,14 @@ from .models import (
     ProcessIntegration,
     QAResult,
 )
+from .services.callback_schedule import schedule_callback
 from .services.callback_time import parse_call_back_time
 from .services.campaign_launch import launch_campaign
 from .services.dispatcher import dispatch_execution
+from .services.gating import is_suppressed_dnc, is_within_business_hours
 from .services.journey import JOURNEY_STEPS, generate_journey
 from .services.ngrok import get_public_base_url
+from .services.retry_backoff import schedule_retry
 from .services.seed_node_templates import seed_node_templates
 
 
@@ -919,3 +923,313 @@ class DispatcherTests(TestCase):
         self.assertEqual(body["dlr_id"], execution.id)
         self.assertEqual(body["bot_id"], "bot-42")
         self.assertEqual(body["bot_name"], "Bot Forty Two")
+
+
+class RetryBackoffTests(TestCase):
+    def _make_execution(self, retry_config=None, attempt_count=0, set_retry_node=True):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(
+            department=department, name="Retry Test"
+        )
+        generate_journey(process_agent)
+
+        if set_retry_node:
+            retry_node = process_agent.nodes.get(name="Retry")
+            retry_node.config = retry_config if retry_config is not None else {}
+            retry_node.save()
+
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            status="dispatch_failed",
+            attempt_count=attempt_count,
+        )
+
+    def test_linear_backoff_schedules_next_execution(self):
+        execution = self._make_execution(
+            retry_config={"attempts": 3, "interval_minutes": 15, "strategy": "linear"},
+            attempt_count=1,
+        )
+
+        result = schedule_retry(execution)
+
+        execution.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "retry_scheduled")
+        self.assertIsNotNone(execution.next_execution)
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=14) < delta < timedelta(minutes=16))
+
+    def test_exponential_backoff_grows_with_attempt_count(self):
+        execution = self._make_execution(
+            retry_config={"attempts": 5, "interval_minutes": 10, "strategy": "exponential"},
+            attempt_count=2,
+        )
+
+        result = schedule_retry(execution)
+
+        execution.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "retry_scheduled")
+        # attempt_count=2 -> exponent = attempt_count-1 = 1 -> 10 * 2**1 = 20 minutes.
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=19) < delta < timedelta(minutes=21))
+
+    def test_exponential_backoff_first_attempt_is_one_intervals_worth(self):
+        execution = self._make_execution(
+            retry_config={"attempts": 5, "interval_minutes": 10, "strategy": "exponential"},
+            attempt_count=0,
+        )
+
+        schedule_retry(execution)
+
+        execution.refresh_from_db()
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=9) < delta < timedelta(minutes=11))
+
+    def test_exhausts_to_failed_after_max_attempts(self):
+        execution = self._make_execution(
+            retry_config={"attempts": 3, "interval_minutes": 15, "strategy": "linear"},
+            attempt_count=3,
+        )
+
+        result = schedule_retry(execution)
+
+        execution.refresh_from_db()
+        self.assertFalse(result)
+        self.assertEqual(execution.status, "failed")
+        self.assertIsNone(execution.next_execution)
+
+    def test_missing_retry_config_falls_back_to_defaults(self):
+        execution = self._make_execution(retry_config={}, attempt_count=0)
+
+        result = schedule_retry(execution)
+
+        execution.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "retry_scheduled")
+        # Defaults: attempts=3, interval_minutes=15, strategy=linear.
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=14) < delta < timedelta(minutes=16))
+
+    def test_missing_retry_node_never_raises_and_uses_defaults(self):
+        execution = self._make_execution(set_retry_node=False, attempt_count=0)
+        # Delete the Retry node entirely to simulate an even more degraded state.
+        execution.process_agent.nodes.filter(name="Retry").delete()
+
+        result = schedule_retry(execution)
+
+        execution.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "retry_scheduled")
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=14) < delta < timedelta(minutes=16))
+
+
+class CallbackScheduleTests(TestCase):
+    def _make_execution(self, callback_config=None, variables=None):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(
+            department=department, name="Callback Test"
+        )
+        generate_journey(process_agent)
+
+        callback_node = process_agent.nodes.get(name="Callback")
+        callback_node.config = callback_config if callback_config is not None else {}
+        callback_node.save()
+
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            status="dispatched",
+            variables=variables or {},
+        )
+
+    def test_matches_equality_condition_and_resolves_via_regex_parser(self):
+        execution = self._make_execution(
+            callback_config={
+                "conditions": [{"variable": "outcome", "operator": "==", "value": "callback_requested"}],
+                "delay_minutes": 30,
+                "time_variable": "call_back_time",
+            },
+            variables={"outcome": "callback_requested", "call_back_time": "5 minutes"},
+        )
+
+        result = schedule_callback(execution)
+
+        execution.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "callback_scheduled")
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=4) < delta < timedelta(minutes=6))
+
+    def test_falls_back_to_delay_minutes_when_time_unparseable(self):
+        execution = self._make_execution(
+            callback_config={
+                "conditions": [{"variable": "outcome", "operator": "==", "value": "callback_requested"}],
+                "delay_minutes": 45,
+                "time_variable": "call_back_time",
+            },
+            variables={"outcome": "callback_requested", "call_back_time": "whenever, maybe"},
+        )
+
+        result = schedule_callback(execution)
+
+        execution.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "callback_scheduled")
+        delta = execution.next_execution - timezone.now()
+        self.assertTrue(timedelta(minutes=44) < delta < timedelta(minutes=46))
+
+    def test_returns_false_when_no_condition_matches(self):
+        execution = self._make_execution(
+            callback_config={
+                "conditions": [{"variable": "outcome", "operator": "==", "value": "callback_requested"}],
+                "delay_minutes": 30,
+                "time_variable": "call_back_time",
+            },
+            variables={"outcome": "completed"},
+        )
+
+        result = schedule_callback(execution)
+
+        execution.refresh_from_db()
+        self.assertFalse(result)
+        self.assertEqual(execution.status, "dispatched")
+        self.assertIsNone(execution.next_execution)
+
+    def test_missing_callback_node_config_returns_false(self):
+        execution = self._make_execution(callback_config={}, variables={"outcome": "callback_requested"})
+
+        result = schedule_callback(execution)
+
+        self.assertFalse(result)
+
+    def test_any_condition_matching_triggers_with_numeric_and_contains_operators(self):
+        execution = self._make_execution(
+            callback_config={
+                "conditions": [
+                    {"variable": "score", "operator": ">", "value": "10"},
+                    {"variable": "notes", "operator": "contains", "value": "call me"},
+                ],
+                "delay_minutes": 20,
+                "time_variable": "call_back_time",
+            },
+            variables={"score": "not-a-number", "notes": "please call me back later"},
+        )
+
+        result = schedule_callback(execution)
+
+        execution.refresh_from_db()
+        # The numeric condition can't be compared (non-numeric score) and is
+        # skipped rather than raising; the contains condition matches.
+        self.assertTrue(result)
+        self.assertEqual(execution.status, "callback_scheduled")
+
+
+class GatingTests(TestCase):
+    def _make_process_agent(self, business_hours_config=None, dnd_config=None):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(
+            department=department, name="Gating Test"
+        )
+        generate_journey(process_agent)
+
+        if business_hours_config is not None:
+            node = process_agent.nodes.get(name="Business Hours")
+            node.config = business_hours_config
+            node.save()
+
+        if dnd_config is not None:
+            node = process_agent.nodes.get(name="DND Check")
+            node.config = dnd_config
+            node.save()
+
+        return process_agent
+
+    def test_within_configured_business_hours_returns_true(self):
+        process_agent = self._make_process_agent(
+            business_hours_config={
+                "timezone": "Asia/Kolkata",
+                "start": "09:00",
+                "end": "19:00",
+                "working_days": [1, 2, 3, 4, 5, 6],
+            }
+        )
+        # Monday 2026-07-06 12:00 IST (06:30 UTC) is within 09:00-19:00 IST.
+        at = datetime(2026, 7, 6, 6, 30, tzinfo=ZoneInfo("UTC"))
+
+        self.assertTrue(is_within_business_hours(process_agent, at=at))
+
+    def test_outside_configured_business_hours_returns_false(self):
+        process_agent = self._make_process_agent(
+            business_hours_config={
+                "timezone": "Asia/Kolkata",
+                "start": "09:00",
+                "end": "19:00",
+                "working_days": [1, 2, 3, 4, 5, 6],
+            }
+        )
+        # Monday 2026-07-06 22:00 IST (16:30 UTC) is after the 19:00 IST close.
+        at = datetime(2026, 7, 6, 16, 30, tzinfo=ZoneInfo("UTC"))
+
+        self.assertFalse(is_within_business_hours(process_agent, at=at))
+
+    def test_non_working_day_returns_false(self):
+        process_agent = self._make_process_agent(
+            business_hours_config={
+                "timezone": "Asia/Kolkata",
+                "start": "09:00",
+                "end": "19:00",
+                "working_days": [1, 2, 3, 4, 5, 6],
+            }
+        )
+        # Sunday 2026-07-12 12:00 IST — Sunday (7) is not a working day.
+        at = datetime(2026, 7, 12, 6, 30, tzinfo=ZoneInfo("UTC"))
+
+        self.assertFalse(is_within_business_hours(process_agent, at=at))
+
+    def test_missing_business_hours_config_fails_open(self):
+        process_agent = self._make_process_agent(business_hours_config={})
+
+        self.assertTrue(is_within_business_hours(process_agent))
+
+    def test_dnd_suppressed_only_when_node_enabled_and_execution_variable_truthy(self):
+        process_agent = self._make_process_agent(dnd_config={"enabled": True})
+        execution = Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            variables={"dnd": "true"},
+        )
+
+        self.assertTrue(is_suppressed_dnc(execution))
+
+    def test_dnd_not_suppressed_when_node_disabled(self):
+        process_agent = self._make_process_agent(dnd_config={"enabled": False})
+        execution = Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            variables={"dnd": "true"},
+        )
+
+        self.assertFalse(is_suppressed_dnc(execution))
+
+    def test_dnd_not_suppressed_when_execution_variable_falsy(self):
+        process_agent = self._make_process_agent(dnd_config={"enabled": True})
+        execution = Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            variables={"dnd": "no"},
+        )
+
+        self.assertFalse(is_suppressed_dnc(execution))
+
+    def test_missing_dnd_config_fails_open(self):
+        process_agent = self._make_process_agent(dnd_config={})
+        execution = Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            variables={"dnd": "true"},
+        )
+
+        self.assertFalse(is_suppressed_dnc(execution))
