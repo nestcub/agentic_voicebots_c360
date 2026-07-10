@@ -15,13 +15,12 @@ mutagen>=1.47.0
 # Environment
 python-dotenv>=1.0.0
 
-# Orchestrator + API servers
-apscheduler>=3.10.0
-httpx>=0.27.0
-fastapi>=0.110.0
-uvicorn>=0.29.0
-
 # Human-voice engine (acoustic prosody)
 librosa>=0.10.0
 praat-parselmouth>=0.4.3
 soundfile>=0.12.0
+
+# TeleHub (Django, standalone — services/telehub/)
+Django==6.0.7
+djangorestframework==3.17.1
+django-cors-headers==4.9.0
