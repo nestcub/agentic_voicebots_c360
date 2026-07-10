@@ -125,32 +125,60 @@ class JourneyGenerationTests(TestCase):
             department=department, name="Free Service Reminder"
         )
 
-    def test_generate_journey_creates_nine_nodes_and_eight_connections_in_order(self):
+    def test_generate_journey_creates_nine_nodes_and_ten_connections(self):
         process_agent = self._make_process_agent()
 
         generate_journey(process_agent)
 
         self.assertEqual(process_agent.nodes.count(), 9)
-        self.assertEqual(process_agent.connections.count(), 8)
+        self.assertEqual(process_agent.connections.count(), 10)
 
-        # Walk the chain from the node with no incoming connection (the head)
-        # and confirm the name sequence matches the fixed journey order.
+    def test_main_trunk_runs_lead_to_completed(self):
+        process_agent = self._make_process_agent()
+        generate_journey(process_agent)
         nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
-        head = next(
-            node
-            for node in nodes_by_name.values()
-            if not node.incoming_connections.exists()
+
+        def target_of(name):
+            edge = nodes_by_name[name].outgoing_connections.get()
+            return edge.target_node.name
+
+        self.assertEqual(target_of("Lead Received"), "Business Hours")
+        self.assertEqual(target_of("Business Hours"), "DND Check")
+        self.assertEqual(target_of("DND Check"), "Communication")
+        self.assertEqual(target_of("Communication"), "Completed")
+
+    def test_completed_branches_to_retry_callback_qa_crm_update(self):
+        process_agent = self._make_process_agent()
+        generate_journey(process_agent)
+        nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
+
+        targets = {
+            edge.target_node.name
+            for edge in nodes_by_name["Completed"].outgoing_connections.all()
+        }
+        self.assertEqual(targets, {"Retry", "Callback", "QA", "CRM Update"})
+
+    def test_retry_and_callback_loop_back_to_business_hours(self):
+        process_agent = self._make_process_agent()
+        generate_journey(process_agent)
+        nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
+
+        self.assertEqual(
+            nodes_by_name["Retry"].outgoing_connections.get().target_node.name,
+            "Business Hours",
+        )
+        self.assertEqual(
+            nodes_by_name["Callback"].outgoing_connections.get().target_node.name,
+            "Business Hours",
         )
 
-        ordered_names = []
-        current = head
-        while current is not None:
-            ordered_names.append(current.name)
-            outgoing = current.outgoing_connections.first()
-            current = outgoing.target_node if outgoing else None
+    def test_qa_and_crm_update_are_terminal(self):
+        process_agent = self._make_process_agent()
+        generate_journey(process_agent)
+        nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
 
-        expected_names = [name for name, _template_type in JOURNEY_STEPS]
-        self.assertEqual(ordered_names, expected_names)
+        self.assertFalse(nodes_by_name["QA"].outgoing_connections.exists())
+        self.assertFalse(nodes_by_name["CRM Update"].outgoing_connections.exists())
 
     def test_generate_journey_is_idempotent(self):
         process_agent = self._make_process_agent()
@@ -159,7 +187,7 @@ class JourneyGenerationTests(TestCase):
         generate_journey(process_agent)
 
         self.assertEqual(process_agent.nodes.count(), 9)
-        self.assertEqual(process_agent.connections.count(), 8)
+        self.assertEqual(process_agent.connections.count(), 10)
 
     def test_each_node_instance_uses_expected_node_template_type(self):
         process_agent = self._make_process_agent()
@@ -167,7 +195,7 @@ class JourneyGenerationTests(TestCase):
         generate_journey(process_agent)
 
         nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
-        for name, expected_template_type in JOURNEY_STEPS:
+        for name, expected_template_type, _x, _y in JOURNEY_STEPS:
             self.assertEqual(
                 nodes_by_name[name].node_template.type, expected_template_type
             )
@@ -291,7 +319,7 @@ class ProcessAgentJourneyEndpointTests(TestCase):
         self.client = APIClient()
         self.department = Department.objects.create(name="Automobile")
 
-    def test_journey_endpoint_returns_nine_nodes_and_eight_edges_in_order(self):
+    def test_journey_endpoint_returns_nine_nodes_and_ten_edges(self):
         payload = _full_wizard_payload(self.department.id)
         create_response = self.client.post(
             "/api/telehub/process-agents/", payload, format="json"
@@ -304,26 +332,31 @@ class ProcessAgentJourneyEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["nodes"]), 9)
-        self.assertEqual(len(response.data["edges"]), 8)
+        self.assertEqual(len(response.data["edges"]), 10)
 
-        nodes_by_id = {node["id"]: node for node in response.data["nodes"]}
-        expected_names = [name for name, _template_type in JOURNEY_STEPS]
+        node_names = {node["id"]: node["name"] for node in response.data["nodes"]}
+        expected_names = {name for name, _template_type, _x, _y in JOURNEY_STEPS}
+        self.assertEqual(set(node_names.values()), expected_names)
 
-        # Walk edges from the node with no incoming edge to reconstruct order.
-        incoming_targets = {edge["target_node"] for edge in response.data["edges"]}
-        head_id = next(
-            node["id"] for node in response.data["nodes"] if node["id"] not in incoming_targets
-        )
-        edges_by_source = {edge["source_node"]: edge for edge in response.data["edges"]}
+        # Main trunk: Lead Received -> Business Hours -> DND Check -> Communication -> Completed.
+        edges_by_source_name = {}
+        for edge in response.data["edges"]:
+            source_name = node_names[edge["source_node"]]
+            edges_by_source_name.setdefault(source_name, set()).add(node_names[edge["target_node"]])
 
-        ordered_names = []
-        current_id = head_id
-        while current_id is not None:
-            ordered_names.append(nodes_by_id[current_id]["name"])
-            edge = edges_by_source.get(current_id)
-            current_id = edge["target_node"] if edge else None
+        self.assertEqual(edges_by_source_name["Lead Received"], {"Business Hours"})
+        self.assertEqual(edges_by_source_name["Business Hours"], {"DND Check"})
+        self.assertEqual(edges_by_source_name["DND Check"], {"Communication"})
+        self.assertEqual(edges_by_source_name["Communication"], {"Completed"})
 
-        self.assertEqual(ordered_names, expected_names)
+        # Completed fans out to the 4 outcome branches.
+        self.assertEqual(edges_by_source_name["Completed"], {"Retry", "Callback", "QA", "CRM Update"})
+
+        # Retry and Callback loop back to Business Hours; QA/CRM Update are terminal.
+        self.assertEqual(edges_by_source_name["Retry"], {"Business Hours"})
+        self.assertEqual(edges_by_source_name["Callback"], {"Business Hours"})
+        self.assertNotIn("QA", edges_by_source_name)
+        self.assertNotIn("CRM Update", edges_by_source_name)
 
 
 class DepartmentApiTests(TestCase):
