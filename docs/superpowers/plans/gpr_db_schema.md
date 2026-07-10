@@ -347,6 +347,13 @@ current_node
 
 variables (JSON)
 
+campaign_id — added for the Leads page's CSV/XLSX bulk-upload flow. Groups every
+Execution created by one campaign launch (services/telehub/apps/telehub/services/
+campaign_launch.py). Blank/"" for Executions not created via a campaign launch.
+Indexed, not a foreign key — no separate Campaign table; mirrors the old
+orchestrator's CampaignLead.campaign_id design (a plain grouping label, proven
+sufficient, deliberately not over-modeled into a heavier Campaign entity).
+
 created_at
 
 Relationship

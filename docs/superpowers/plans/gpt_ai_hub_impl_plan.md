@@ -682,6 +682,51 @@ No manual editing in V1.
 
 ---
 
+# Campaign Launch (Leads Page)
+
+Not in the original V1 sidebar list, added afterward. The Leads page
+(`dashboard/app/leads/page.tsx`) is a bulk lead-upload flow, not a lead
+inventory browser — it lets a user pick a Department, then a Process Agent,
+then upload a `.csv`/`.xlsx` of leads and launch them against that process.
+
+Flow (`dashboard/components/leads/UploadCampaignModal.tsx`, a 3-step modal):
+
+Process (pick Department, then Process Agent)
+
+↓
+
+Upload (campaign name + file, parsed client-side via `xlsx`)
+
+↓
+
+Mapping (map each column to Phone / DND flag / a Variable / ignore — columns
+whose slugified name matches one of the Process Agent's declared `Variable`
+rows default to that variable instead of a raw slug)
+
+↓
+
+Launch → `POST /process-agents/{id}/launch-campaign/`
+
+**No Campaign table.** `launch_campaign()`
+(`services/telehub/apps/telehub/services/campaign_launch.py`) bulk-creates one
+`Execution` per row (`status="pending"`, `current_node="Lead Received"`,
+`variables` = the mapped `@column_name` values plus `to_number`), tagged with
+a plain `campaign_id` string (see `gpr_db_schema.md` §9) — grouping via a
+label field, not a foreign key, mirroring the old orchestrator's
+`CampaignLead.campaign_id` design. Rows missing a phone number are skipped and
+reported back, never silently dropped.
+
+**Important:** launching only creates `pending` Execution rows — nothing
+dispatches a real call yet. That's the dispatch engine (see the "Dispatch
+Engine" phases below), a separate, later piece of work.
+
+Leads page also exposes `GET /process-agents/{id}/campaigns/` (aggregated
+list, grouped by `campaign_id`) and
+`GET /process-agents/{id}/campaigns/{campaign_id}/leads/` (the raw Execution
+rows for one campaign) for viewing what was uploaded.
+
+---
+
 # Add Process Wizard
 
 This is the most important page.
