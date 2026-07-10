@@ -1,7 +1,17 @@
-"""API URL routes for the telehub app.
+"""API URL routes for the telehub app."""
+from rest_framework.routers import DefaultRouter
 
-Placeholder — a later wave will populate this with real endpoints
-(Departments, Process Agents, Workflows, Executions, QA, Analytics, ...).
-"""
+from .views import (
+    DepartmentViewSet,
+    IntegrationViewSet,
+    NodeTemplateViewSet,
+    ProcessAgentViewSet,
+)
 
-urlpatterns = []
+router = DefaultRouter()
+router.register(r"departments", DepartmentViewSet, basename="department")
+router.register(r"process-agents", ProcessAgentViewSet, basename="process-agent")
+router.register(r"integrations", IntegrationViewSet, basename="integration")
+router.register(r"node-templates", NodeTemplateViewSet, basename="node-template")
+
+urlpatterns = router.urls
