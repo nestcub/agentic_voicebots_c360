@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -24,6 +25,7 @@ from .models import (
 )
 from .services.callback_time import parse_call_back_time
 from .services.campaign_launch import launch_campaign
+from .services.dispatcher import dispatch_execution
 from .services.journey import JOURNEY_STEPS, generate_journey
 from .services.ngrok import get_public_base_url
 from .services.seed_node_templates import seed_node_templates
@@ -799,3 +801,121 @@ class CampaignLaunchApiTests(TestCase):
         )
         self.assertEqual(len(alpha_leads.data), 2)
         self.assertEqual(len(beta_leads.data), 1)
+
+
+class DispatcherTests(TestCase):
+    def _make_execution(
+        self,
+        api_url="https://example.com/outbound",
+        bot_id="bot-1",
+        bot_name="Bot One",
+        variables=None,
+    ):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(
+            department=department, name="Dispatch Test"
+        )
+        generate_journey(process_agent)
+        communication_node = process_agent.nodes.get(name="Communication")
+        communication_node.config = {
+            "api_url": api_url,
+            "bot_id": bot_id,
+            "bot_name": bot_name,
+        }
+        communication_node.save()
+
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            status="pending",
+            variables=(
+                variables
+                if variables is not None
+                else {"to_number": "+911234567890", "@name": "Alice"}
+            ),
+        )
+
+    def test_successful_dispatch_marks_dispatched_and_records_event(self):
+        execution = self._make_execution()
+
+        with patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen"
+        ) as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+                b'{"ok": true}'
+            )
+            result = dispatch_execution(execution)
+
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "dispatched")
+        self.assertEqual(execution.attempt_count, 1)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status_code"], 200)
+        event = ExecutionEvent.objects.get(
+            execution=execution, event_type="dispatch_attempted"
+        )
+        self.assertEqual(event.payload["status_code"], 200)
+
+    def test_failed_dispatch_network_error_marks_dispatch_failed(self):
+        execution = self._make_execution()
+
+        with patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen",
+            side_effect=OSError("connection refused"),
+        ):
+            result = dispatch_execution(execution)
+
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "dispatch_failed")
+        self.assertEqual(execution.attempt_count, 1)
+        self.assertFalse(result["success"])
+        self.assertTrue(
+            ExecutionEvent.objects.filter(
+                execution=execution, event_type="dispatch_failed"
+            ).exists()
+        )
+
+    def test_missing_api_url_skips_http_call(self):
+        execution = self._make_execution(api_url="")
+
+        with patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen"
+        ) as mock_urlopen:
+            result = dispatch_execution(execution)
+
+        mock_urlopen.assert_not_called()
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "dispatch_failed")
+        self.assertFalse(result["success"])
+        event = ExecutionEvent.objects.get(
+            execution=execution, event_type="dispatch_skipped"
+        )
+        self.assertIn("api_url", event.payload["error"])
+
+    def test_request_headers_and_body_shape(self):
+        execution = self._make_execution(
+            api_url="https://example.com/outbound",
+            bot_id="bot-42",
+            bot_name="Bot Forty Two",
+            variables={"to_number": "+911234567890", "@name": "Charlie"},
+        )
+
+        with patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen"
+        ) as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+            dispatch_execution(execution)
+
+        sent_request = mock_urlopen.call_args[0][0]
+        self.assertTrue(sent_request.get_header("Authorization").startswith("Bearer"))
+        self.assertEqual(sent_request.get_header("Content-type"), "application/json")
+        self.assertIsNotNone(sent_request.get_header("Cookie"))
+
+        body = json.loads(sent_request.data.decode())
+        self.assertEqual(body["@name"], "Charlie")
+        self.assertEqual(body["To"], "+911234567890")
+        self.assertEqual(body["dlr_id"], execution.id)
+        self.assertEqual(body["bot_id"], "bot-42")
+        self.assertEqual(body["bot_name"], "Bot Forty Two")
