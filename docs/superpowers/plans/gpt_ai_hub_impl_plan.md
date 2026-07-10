@@ -772,9 +772,13 @@ Generate Process
 
 After Process creation
 
-The platform automatically generates
+The platform automatically generates a graph, not a single chain — the call
+attempt is a trunk, and Retry/Callback/QA/CRM Update are outcome branches
+evaluated after it, not steps on the way to it.
 
-Lead
+Main trunk:
+
+Lead Received
 
 ↓
 
@@ -782,7 +786,7 @@ Business Hours
 
 ↓
 
-DND
+DND Check
 
 ↓
 
@@ -790,25 +794,27 @@ Communication
 
 ↓
 
-Retry
-
-↓
-
-Callback
-
-↓
-
-QA
-
-↓
-
-CRM Update
-
-↓
-
 Completed
 
-Users can only view this in V1.
+From Completed, four branches:
+
+Completed → Retry → (loops back to) Business Hours
+
+Completed → Callback → (loops back to) Business Hours
+
+Completed → QA (terminal)
+
+Completed → CRM Update (terminal)
+
+Retry and Callback re-enter the flow at Business Hours to re-attempt the
+process; QA and CRM Update are terminal side effects with no further edge.
+9 nodes, 10 edges total. Implemented in
+`services/telehub/apps/telehub/services/journey.py`
+(`JOURNEY_STEPS`/`JOURNEY_EDGES`, `generate_journey()`), covered by
+`JourneyGenerationTests` in `services/telehub/apps/telehub/tests.py`.
+
+Users can only view this in V1 — rendered as columns of node cards with each
+node's outgoing edges shown as chips (forward vs. ↩ loop-back), not a canvas.
 
 Advanced editing comes later.
 
