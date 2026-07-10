@@ -15,6 +15,10 @@ import type {
   NodeTemplate,
   Execution,
   QaResult,
+  LaunchCampaignPayload,
+  LaunchCampaignResult,
+  CampaignSummary,
+  CampaignLead,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_TELEHUB_API_URL || "http://localhost:8000";
@@ -152,4 +156,23 @@ export function deleteIntegration(id: number): Promise<void> {
 
 export function listNodeTemplates(): Promise<NodeTemplate[]> {
   return get<NodeTemplate[]>("/node-templates/");
+}
+
+// ── Campaigns ────────────────────────────────────────────────────────────
+
+export function launchCampaign(
+  processAgentId: number,
+  payload: LaunchCampaignPayload,
+): Promise<LaunchCampaignResult> {
+  return post<LaunchCampaignResult>(`/process-agents/${processAgentId}/launch-campaign/`, payload);
+}
+
+export function listCampaigns(processAgentId: number): Promise<CampaignSummary[]> {
+  return get<CampaignSummary[]>(`/process-agents/${processAgentId}/campaigns/`);
+}
+
+export function listCampaignLeads(processAgentId: number, campaignId: string): Promise<CampaignLead[]> {
+  return get<CampaignLead[]>(
+    `/process-agents/${processAgentId}/campaigns/${encodeURIComponent(campaignId)}/leads/`,
+  );
 }

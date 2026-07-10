@@ -381,3 +381,38 @@ export interface QaResult {
   hot_lead: boolean;
   recommendation: string;
 }
+
+// ── Campaign launch types ────────────────────────────────────────────────
+
+export interface LaunchCampaignLead {
+  to_number: string;
+  params?: Record<string, string>;
+  dnd?: string;
+  lead_id?: string;
+}
+
+export interface LaunchCampaignPayload {
+  campaign_id: string;
+  leads: LaunchCampaignLead[];
+}
+
+export interface LaunchCampaignResult {
+  campaign_id: string;
+  created_count: number;
+  skipped: string[];
+}
+
+export interface CampaignSummary {
+  campaign_id: string;
+  lead_count: number;
+  created_at: string;
+}
+
+export interface CampaignLead {
+  id: number;
+  lead_id: string;
+  status: string;
+  current_node: string;
+  variables: Record<string, unknown>;
+  created_at: string;
+}
