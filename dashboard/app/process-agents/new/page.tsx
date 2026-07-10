@@ -44,7 +44,7 @@ const COMMUNICATION_TYPES = [
   { value: "email", label: "Email" },
 ];
 
-const WEBHOOK_SCHEMA_FIELDS = ["summary", "transcript", "sentiment", "outcome"] as const;
+const DEFAULT_OUTBOUND_API_URL = "https://app.chat360.io/api/voicebot/outbound";
 
 const LEAD_SOURCE_TYPES = [
   { value: "webhook", label: "Webhook" },
@@ -235,6 +235,86 @@ function VariableRowsEditor({
   );
 }
 
+// ── Repeatable callback condition rows (variable/operator/value — any of them can fire the callback) ──
+
+interface CallbackCondition {
+  variable: string;
+  operator: string;
+  value: string;
+}
+
+function getCallbackConditions(callback: Record<string, unknown> | undefined): CallbackCondition[] {
+  const raw = callback?.conditions;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is CallbackCondition => typeof r === "object" && r !== null);
+}
+
+function CallbackConditionRows({
+  rows,
+  onChange,
+}: {
+  rows: CallbackCondition[];
+  onChange: (rows: CallbackCondition[]) => void;
+}) {
+  function updateRow(idx: number, patch: Partial<CallbackCondition>) {
+    onChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+  function removeRow(idx: number) {
+    onChange(rows.filter((_, i) => i !== idx));
+  }
+  function addRow() {
+    onChange([...rows, { variable: "", operator: "==", value: "" }]);
+  }
+
+  return (
+    <div className="space-y-2">
+      {rows.map((row, idx) => (
+        <div key={idx} className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-surface-container">
+          <input
+            type="text"
+            value={row.variable}
+            onChange={(e) => updateRow(idx, { variable: e.target.value })}
+            placeholder="variable (e.g. call_back)"
+            className="flex-1 min-w-[110px] px-2.5 py-1.5 rounded-md border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <select
+            value={row.operator}
+            onChange={(e) => updateRow(idx, { operator: e.target.value })}
+            className="px-2.5 py-1.5 rounded-md border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+          >
+            {CALLBACK_OPERATORS.map((op) => (
+              <option key={op} value={op}>
+                {op}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={row.value}
+            onChange={(e) => updateRow(idx, { value: e.target.value })}
+            placeholder="value (e.g. true)"
+            className="flex-1 min-w-[110px] px-2.5 py-1.5 rounded-md border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <button
+            type="button"
+            onClick={() => removeRow(idx)}
+            className="text-xs text-bad hover:underline whitespace-nowrap"
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={addRow}
+        className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-on-surface hover:bg-surface-container transition-colors"
+      >
+        + Add condition
+      </button>
+    </div>
+  );
+}
+
 // ── Field wrapper ────────────────────────────────────────────────────────
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -283,6 +363,9 @@ function NewProcessAgentWizard() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const [webhookSchemaText, setWebhookSchemaText] = useState("");
+  const [webhookSchemaError, setWebhookSchemaError] = useState<string | null>(null);
+
   useEffect(() => {
     listDepartments()
       .then((data) => setDepartments(data))
@@ -302,11 +385,27 @@ function NewProcessAgentWizard() {
   function updateVoice(patch: Record<string, unknown>) {
     setPayload((p) => ({ ...p, voice: { ...p.voice, ...patch } }));
   }
-  function updateWebhookSchema(key: string, value: string) {
-    setPayload((p) => ({
-      ...p,
-      voice: { ...p.voice, webhook_schema: { ...(p.voice?.webhook_schema ?? {}), [key]: value } },
-    }));
+  function updateCommunicationType(value: string) {
+    // API URL is fixed per channel, not user-editable — outbound voice always posts
+    // to Chat360's outbound endpoint.
+    const patch: Record<string, unknown> = { communication_type: value };
+    if (value === "voice_outbound") patch.api_url = DEFAULT_OUTBOUND_API_URL;
+    updateVoice(patch);
+  }
+  function updateWebhookSchemaText(text: string) {
+    setWebhookSchemaText(text);
+    if (text.trim() === "") {
+      setWebhookSchemaError(null);
+      updateVoice({ webhook_schema: undefined });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      setWebhookSchemaError(null);
+      updateVoice({ webhook_schema: parsed });
+    } catch {
+      setWebhookSchemaError("Invalid JSON — fix it before continuing.");
+    }
   }
   function updateLeadSource(patch: ProcessAgentWizardPayload["lead_source"]) {
     setPayload((p) => ({ ...p, lead_source: { ...p.lead_source, ...patch } }));
@@ -331,6 +430,9 @@ function NewProcessAgentWizard() {
       ...p,
       business_rules: { ...p.business_rules, callback: { ...(p.business_rules?.callback ?? {}), ...patch } },
     }));
+  }
+  function setCallbackConditions(rows: CallbackCondition[]) {
+    updateCallback({ conditions: rows });
   }
   function updateDnd(patch: Record<string, unknown>) {
     setPayload((p) => ({
@@ -465,7 +567,7 @@ function NewProcessAgentWizard() {
             <Field label="Communication Type">
               <select
                 value={payload.voice?.communication_type ?? ""}
-                onChange={(e) => updateVoice({ communication_type: e.target.value })}
+                onChange={(e) => updateCommunicationType(e.target.value)}
                 className={inputCls}
               >
                 <option value="">— select —</option>
@@ -494,34 +596,22 @@ function NewProcessAgentWizard() {
                 />
               </Field>
             </div>
-            <Field label="API URL">
-              <input
-                type="text"
-                value={getStr(payload.voice, "api_url")}
-                onChange={(e) => updateVoice({ api_url: e.target.value })}
-                placeholder="https://…"
-                className={inputCls}
+            {payload.voice?.communication_type === "voice_outbound" && (
+              <p className="text-xs text-text-muted">
+                API URL is fixed to <code className="text-on-surface">{DEFAULT_OUTBOUND_API_URL}</code> for outbound voice.
+              </p>
+            )}
+            <Field label="Webhook Schema" hint="Paste the outcome JSON the voice platform will post back after each call.">
+              <textarea
+                value={webhookSchemaText}
+                onChange={(e) => updateWebhookSchemaText(e.target.value)}
+                rows={8}
+                placeholder={'{\n  "summary": "",\n  "transcript": "",\n  "sentiment": "",\n  "outcome": ""\n}'}
+                spellCheck={false}
+                className={`${inputCls} font-mono`}
               />
             </Field>
-            <div>
-              <p className="text-xs font-medium text-text-muted mb-1.5">
-                Webhook Schema <span className="font-normal">— fields the platform expects back from the voice platform</span>
-              </p>
-              <div className="grid sm:grid-cols-2 gap-3">
-                {WEBHOOK_SCHEMA_FIELDS.map((key) => (
-                  <label key={key} className="flex flex-col gap-1">
-                    <span className="text-xs text-text-muted capitalize">{key}</span>
-                    <input
-                      type="text"
-                      value={getStr(payload.voice?.webhook_schema as Record<string, unknown> | undefined, key)}
-                      onChange={(e) => updateWebhookSchema(key, e.target.value)}
-                      placeholder={key}
-                      className={inputCls}
-                    />
-                  </label>
-                ))}
-              </div>
-            </div>
+            {webhookSchemaError && <p className="text-xs text-bad -mt-2">{webhookSchemaError}</p>}
           </div>
         )}
 
@@ -628,45 +718,28 @@ function NewProcessAgentWizard() {
             </div>
 
             <div>
-              <p className="text-sm font-semibold text-on-surface mb-2">Callback</p>
-              <div className="grid sm:grid-cols-4 gap-3">
-                <Field label="Variable">
-                  <input
-                    type="text"
-                    value={getStr(payload.business_rules?.callback, "variable")}
-                    onChange={(e) => updateCallback({ variable: e.target.value })}
-                    placeholder="outcome"
-                    className={inputCls}
-                  />
-                </Field>
-                <Field label="Operator">
-                  <select
-                    value={getStr(payload.business_rules?.callback, "operator")}
-                    onChange={(e) => updateCallback({ operator: e.target.value })}
-                    className={inputCls}
-                  >
-                    <option value="">— select —</option>
-                    {CALLBACK_OPERATORS.map((op) => (
-                      <option key={op} value={op}>
-                        {op}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Value">
-                  <input
-                    type="text"
-                    value={getStr(payload.business_rules?.callback, "value")}
-                    onChange={(e) => updateCallback({ value: e.target.value })}
-                    placeholder="Callback Requested"
-                    className={inputCls}
-                  />
-                </Field>
-                <Field label="Delay (minutes)">
+              <p className="text-sm font-semibold text-on-surface mb-2">
+                Callback <span className="font-normal text-text-muted">— any condition below triggers a callback</span>
+              </p>
+              <CallbackConditionRows
+                rows={getCallbackConditions(payload.business_rules?.callback)}
+                onChange={setCallbackConditions}
+              />
+              <div className="grid sm:grid-cols-3 gap-3 mt-3">
+                <Field label="Delay (minutes)" hint="Used when the callback time isn't resolved from a variable (e.g. call_back_time).">
                   <input
                     type="number"
                     value={getNum(payload.business_rules?.callback, "delay_minutes")}
                     onChange={(e) => updateCallback({ delay_minutes: toNumOrUndefined(e.target.value) })}
+                    className={inputCls}
+                  />
+                </Field>
+                <Field label="Callback time variable" hint="STT-captured time, e.g. call_back_time — resolved via the same regex parser as feat/orch-v2.">
+                  <input
+                    type="text"
+                    value={getStr(payload.business_rules?.callback, "time_variable")}
+                    onChange={(e) => updateCallback({ time_variable: e.target.value })}
+                    placeholder="call_back_time"
                     className={inputCls}
                   />
                 </Field>
@@ -813,16 +886,20 @@ function NewProcessAgentWizard() {
                 }
               />
               <ReviewRow
-                label="Callback"
+                label="Callback conditions"
                 value={
-                  payload.business_rules?.callback
-                    ? `${getStr(payload.business_rules.callback, "variable") || "—"} ${
-                        getStr(payload.business_rules.callback, "operator") || "—"
-                      } ${getStr(payload.business_rules.callback, "value") || "—"}, delay ${
-                        getStr(payload.business_rules.callback, "delay_minutes") || "—"
-                      }m`
+                  getCallbackConditions(payload.business_rules?.callback).length > 0
+                    ? getCallbackConditions(payload.business_rules?.callback)
+                        .map((c) => `${c.variable || "—"} ${c.operator} ${c.value || "—"}`)
+                        .join("; ")
                     : "—"
                 }
+              />
+              <ReviewRow
+                label="Callback timing"
+                value={`delay ${getStr(payload.business_rules?.callback, "delay_minutes") || "—"}m, time variable: ${
+                  getStr(payload.business_rules?.callback, "time_variable") || "—"
+                }`}
               />
               <ReviewRow label="DND" value={getBool(payload.business_rules?.dnd, "enabled") ? "Enabled" : "Disabled"} />
               <ReviewRow
