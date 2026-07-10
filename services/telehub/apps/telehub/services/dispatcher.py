@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from ..models import Execution, ExecutionEvent, NodeInstance
@@ -22,6 +23,15 @@ NODE_NAME_COMMUNICATION = "Communication"
 RESPONSE_BODY_TRUNCATE_LEN = 500
 
 DISPATCH_TIMEOUT_SEC = 5
+
+# Python's urllib deliberately does NOT auto-follow 307/308 redirects for POST
+# requests (it only auto-follows those for GET/HEAD — resending a POST body
+# without the caller's say-so is a correctness/side-effect risk the stdlib
+# won't take on its own). Chat360's outbound endpoint 307-redirects
+# non-trailing-slash paths to the trailing-slash form, so we follow it
+# ourselves — we control the body and know it's safe to resend unchanged.
+# Capped so a redirect loop can't hang a dispatch forever.
+MAX_REDIRECTS = 3
 
 
 def _get_communication_config(execution: "Execution") -> dict:
@@ -37,6 +47,30 @@ def _get_communication_config(execution: "Execution") -> dict:
         return {}
     except Exception:
         return {}
+
+
+def _send_once(url: str, body_bytes: bytes, headers: dict):
+    """
+    One raw POST attempt. Returns (status_code, response_body, location) —
+    urllib raises HTTPError instead of returning non-2xx responses normally,
+    so both paths are unified into the same return shape here rather than
+    handled separately by every caller.
+    """
+    request = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=DISPATCH_TIMEOUT_SEC) as response:
+            return (
+                response.getcode(),
+                response.read().decode(errors="replace"),
+                response.headers.get("Location"),
+            )
+    except urllib.error.HTTPError as exc:
+        try:
+            response_body = exc.read().decode(errors="replace")
+        except Exception:
+            response_body = ""
+        location = exc.headers.get("Location") if exc.headers else None
+        return exc.code, response_body, location
 
 
 def dispatch_execution(execution: "Execution") -> dict:
@@ -79,6 +113,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         "bot_id": communication_config.get("bot_id", ""),
         "bot_name": communication_config.get("bot_name", ""),
     }
+    body_bytes = json.dumps(body).encode()
 
     execution.attempt_count += 1
 
@@ -92,42 +127,18 @@ def dispatch_execution(execution: "Execution") -> dict:
         sorted(body.keys()),
     )
 
+    current_url = api_url
     try:
-        request = urllib.request.Request(
-            api_url,
-            data=json.dumps(body).encode(),
-            headers=headers,
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=DISPATCH_TIMEOUT_SEC) as response:
-            status_code = response.getcode()
-            response_body = response.read().decode(errors="replace")
-            location = response.headers.get("Location")
-    except urllib.error.HTTPError as exc:
-        # urlopen raises HTTPError (a URLError subclass) for non-2xx status
-        # codes instead of returning them normally — handle it first so the
-        # real status code/body reach the ExecutionEvent, not just str(exc).
-        status_code = exc.code
-        location = exc.headers.get("Location") if exc.headers else None
-        try:
-            response_body = exc.read().decode(errors="replace")
-        except Exception:
-            response_body = ""
-        error = f"non-2xx status: {status_code}" + (f" (redirects to {location})" if location else "")
-        logger.error("dispatch failed: execution=%s status=%s location=%s body=%s", execution.id, status_code, location, response_body[:RESPONSE_BODY_TRUNCATE_LEN])
-        execution.status = "dispatch_failed"
-        execution.save()
-        ExecutionEvent.objects.create(
-            execution=execution,
-            event_type="dispatch_failed",
-            payload={
-                "status_code": status_code,
-                "location": location,
-                "response_body": response_body[:RESPONSE_BODY_TRUNCATE_LEN],
-                "error": error,
-            },
-        )
-        return {"success": False, "status_code": status_code, "error": error}
+        for hop in range(MAX_REDIRECTS + 1):
+            status_code, response_body, location = _send_once(current_url, body_bytes, headers)
+            if status_code in (307, 308) and location and hop < MAX_REDIRECTS:
+                current_url = urllib.parse.urljoin(current_url, location)
+                logger.info(
+                    "dispatch redirect: execution=%s %s -> %s (hop %d/%d)",
+                    execution.id, status_code, current_url, hop + 1, MAX_REDIRECTS,
+                )
+                continue
+            break
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         logger.error("dispatch failed: execution=%s network error: %s", execution.id, exc)
         execution.status = "dispatch_failed"
@@ -150,7 +161,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         return {"success": False, "status_code": None, "error": str(exc)}
 
     if 200 <= status_code < 300:
-        logger.info("dispatch succeeded: execution=%s status=%s", execution.id, status_code)
+        logger.info("dispatch succeeded: execution=%s status=%s url=%s", execution.id, status_code, current_url)
         execution.status = "dispatched"
         execution.save()
         ExecutionEvent.objects.create(
@@ -158,13 +169,17 @@ def dispatch_execution(execution: "Execution") -> dict:
             event_type="dispatch_attempted",
             payload={
                 "status_code": status_code,
+                "final_url": current_url,
                 "response_body": response_body[:RESPONSE_BODY_TRUNCATE_LEN],
             },
         )
         return {"success": True, "status_code": status_code, "error": None}
 
     error = f"non-2xx status: {status_code}" + (f" (redirects to {location})" if location else "")
-    logger.error("dispatch failed: execution=%s status=%s location=%s body=%s", execution.id, status_code, location, response_body[:RESPONSE_BODY_TRUNCATE_LEN])
+    logger.error(
+        "dispatch failed: execution=%s status=%s location=%s body=%s",
+        execution.id, status_code, location, response_body[:RESPONSE_BODY_TRUNCATE_LEN],
+    )
     execution.status = "dispatch_failed"
     execution.save()
     ExecutionEvent.objects.create(
@@ -173,6 +188,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         payload={
             "status_code": status_code,
             "location": location,
+            "final_url": current_url,
             "response_body": response_body[:RESPONSE_BODY_TRUNCATE_LEN],
             "error": error,
         },

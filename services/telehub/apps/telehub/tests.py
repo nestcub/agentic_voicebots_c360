@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, transaction
@@ -1147,6 +1147,70 @@ class CallbackScheduleTests(TestCase):
         # skipped rather than raising; the contains condition matches.
         self.assertTrue(result)
         self.assertEqual(execution.status, "callback_scheduled")
+
+
+class DispatcherRedirectTests(TestCase):
+    def _make_execution(self, api_url="https://example.com/outbound"):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(department=department, name="Redirect Test")
+        generate_journey(process_agent)
+        communication_node = process_agent.nodes.get(name="Communication")
+        communication_node.config = {"api_url": api_url, "bot_id": "bot-1", "bot_name": "Bot One"}
+        communication_node.save()
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            status="pending",
+            variables={"to_number": "+911234567890"},
+        )
+
+    def test_follows_307_redirect_for_post_and_succeeds(self):
+        # Regression: urllib does NOT auto-follow 307/308 for POST requests —
+        # a real Chat360 trailing-slash redirect surfaced this (status_code=307,
+        # dispatch_failed, even though the retried URL would have succeeded).
+        execution = self._make_execution(api_url="https://example.com/outbound")
+
+        redirect_response = MagicMock()
+        redirect_response.getcode.return_value = 307
+        redirect_response.read.return_value = b""
+        redirect_response.headers.get.return_value = "/outbound/"
+
+        success_response = MagicMock()
+        success_response.getcode.return_value = 200
+        success_response.read.return_value = b'{"ok": true}'
+        success_response.headers.get.return_value = None
+
+        with patch("apps.telehub.services.dispatcher.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.side_effect = [redirect_response, success_response]
+            result = dispatch_execution(execution)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(mock_urlopen.call_count, 2)
+        second_call_request = mock_urlopen.call_args_list[1][0][0]
+        self.assertEqual(second_call_request.full_url, "https://example.com/outbound/")
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "dispatched")
+        self.assertEqual(execution.attempt_count, 1)
+
+    def test_gives_up_after_max_redirects_and_marks_dispatch_failed(self):
+        execution = self._make_execution()
+
+        looping_response = MagicMock()
+        looping_response.getcode.return_value = 307
+        looping_response.read.return_value = b""
+        looping_response.headers.get.return_value = "/outbound/"
+
+        with patch("apps.telehub.services.dispatcher.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value = looping_response
+            result = dispatch_execution(execution)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status_code"], 307)
+        # MAX_REDIRECTS=3 hops beyond the initial attempt = 4 total requests.
+        self.assertEqual(mock_urlopen.call_count, 4)
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "dispatch_failed")
 
 
 class GatingTests(TestCase):
