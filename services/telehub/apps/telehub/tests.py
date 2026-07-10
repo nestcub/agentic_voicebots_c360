@@ -13,6 +13,7 @@ from .models import (
     QAResult,
     Variable,
 )
+from .services.journey import JOURNEY_STEPS, generate_journey
 
 
 class DepartmentProcessAgentNodeInstanceChainTests(TestCase):
@@ -106,3 +107,58 @@ class QAResultOneToOneTests(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 QAResult.objects.create(execution=execution)
+
+
+class JourneyGenerationTests(TestCase):
+    def _make_process_agent(self):
+        department = Department.objects.create(name="Automobile")
+        return ProcessAgent.objects.create(
+            department=department, name="Free Service Reminder"
+        )
+
+    def test_generate_journey_creates_nine_nodes_and_eight_connections_in_order(self):
+        process_agent = self._make_process_agent()
+
+        generate_journey(process_agent)
+
+        self.assertEqual(process_agent.nodes.count(), 9)
+        self.assertEqual(process_agent.connections.count(), 8)
+
+        # Walk the chain from the node with no incoming connection (the head)
+        # and confirm the name sequence matches the fixed journey order.
+        nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
+        head = next(
+            node
+            for node in nodes_by_name.values()
+            if not node.incoming_connections.exists()
+        )
+
+        ordered_names = []
+        current = head
+        while current is not None:
+            ordered_names.append(current.name)
+            outgoing = current.outgoing_connections.first()
+            current = outgoing.target_node if outgoing else None
+
+        expected_names = [name for name, _template_type in JOURNEY_STEPS]
+        self.assertEqual(ordered_names, expected_names)
+
+    def test_generate_journey_is_idempotent(self):
+        process_agent = self._make_process_agent()
+
+        generate_journey(process_agent)
+        generate_journey(process_agent)
+
+        self.assertEqual(process_agent.nodes.count(), 9)
+        self.assertEqual(process_agent.connections.count(), 8)
+
+    def test_each_node_instance_uses_expected_node_template_type(self):
+        process_agent = self._make_process_agent()
+
+        generate_journey(process_agent)
+
+        nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
+        for name, expected_template_type in JOURNEY_STEPS:
+            self.assertEqual(
+                nodes_by_name[name].node_template.type, expected_template_type
+            )
