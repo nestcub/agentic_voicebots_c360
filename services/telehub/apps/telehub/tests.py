@@ -31,6 +31,7 @@ from .services.dispatcher import dispatch_execution
 from .services.gating import is_suppressed_dnc, is_within_business_hours
 from .services.journey import JOURNEY_STEPS, generate_journey
 from .services.ngrok import get_public_base_url
+from .services.outcome_routing import route_webhook_outcome
 from .services.retry_backoff import schedule_retry
 from .services.seed_node_templates import seed_node_templates
 from .management.commands.run_scheduler import tick
@@ -547,7 +548,7 @@ class WebhookIntakeTests(TestCase):
         webhook = WebhookDefinition.objects.get(process_agent_id=agent_id)
         return agent_id, webhook
 
-    def test_valid_secret_and_dlr_id_records_execution_event(self):
+    def test_valid_secret_and_dlr_id_routes_outcome(self):
         agent_id, webhook = self._create_agent_with_webhook()
         execution = Execution.objects.create(process_agent_id=agent_id, lead_id="lead-1")
 
@@ -558,9 +559,14 @@ class WebhookIntakeTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        event = ExecutionEvent.objects.get(execution=execution)
-        self.assertEqual(event.event_type, "webhook_received")
-        self.assertEqual(event.payload["summary"], "Call went well")
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "completed")
+        self.assertEqual(execution.current_node, "Completed")
+        completed_event = ExecutionEvent.objects.get(
+            execution=execution, event_type="call_completed"
+        )
+        self.assertEqual(completed_event.payload["summary"], "Call went well")
+        self.assertEqual(execution.qa_result.summary, "Call went well")
 
     def test_unknown_secret_still_acks_200(self):
         response = self.client.post(
@@ -1352,3 +1358,106 @@ class SchedulerTickTests(TestCase):
 
         mock_dispatch.assert_not_called()
         self.assertEqual(count, 0)
+
+
+class OutcomeRoutingTests(TestCase):
+    def _make_execution(self, callback_config=None, retry_config=None, variables=None):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(
+            department=department, name="Outcome Routing Test"
+        )
+        generate_journey(process_agent)
+
+        callback_node = process_agent.nodes.get(name="Callback")
+        callback_node.config = callback_config if callback_config is not None else {}
+        callback_node.save()
+
+        retry_node = process_agent.nodes.get(name="Retry")
+        retry_node.config = retry_config if retry_config is not None else {}
+        retry_node.save()
+
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            status="dispatched",
+            variables=variables or {},
+        )
+
+    def test_successful_call_completes_runs_qa_and_crm_no_retry_or_callback(self):
+        execution = self._make_execution()
+
+        route_webhook_outcome(execution, {"summary": "Great call", "sentiment": "positive"})
+
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "completed")
+        self.assertEqual(QAResult.objects.filter(execution=execution).count(), 1)
+        self.assertTrue(
+            ExecutionEvent.objects.filter(
+                execution=execution, event_type="crm_update_triggered"
+            ).exists()
+        )
+
+    def test_failure_outcome_triggers_retry_qa_and_crm_still_run(self):
+        execution = self._make_execution(
+            retry_config={"attempts": 3, "interval_minutes": 15, "strategy": "linear"}
+        )
+
+        route_webhook_outcome(execution, {"outcome": "no_answer"})
+
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "retry_scheduled")
+        self.assertIsNotNone(execution.next_execution)
+        self.assertEqual(QAResult.objects.filter(execution=execution).count(), 1)
+        self.assertTrue(
+            ExecutionEvent.objects.filter(
+                execution=execution, event_type="crm_update_triggered"
+            ).exists()
+        )
+
+    def test_matching_callback_condition_takes_priority_over_retry(self):
+        execution = self._make_execution(
+            callback_config={
+                "conditions": [{"variable": "outcome", "operator": "==", "value": "callback_requested"}],
+                "delay_minutes": 30,
+            },
+            retry_config={"attempts": 3, "interval_minutes": 15, "strategy": "linear"},
+            variables={},
+        )
+
+        with patch(
+            "apps.telehub.services.outcome_routing.retry_backoff.schedule_retry"
+        ) as mock_retry:
+            route_webhook_outcome(execution, {"outcome": "callback_requested"})
+
+        mock_retry.assert_not_called()
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "callback_scheduled")
+        self.assertIsNotNone(execution.next_execution)
+
+    def test_duplicate_webhook_delivery_does_not_raise_or_duplicate_qa_result(self):
+        execution = self._make_execution()
+
+        route_webhook_outcome(execution, {"summary": "first delivery"})
+        route_webhook_outcome(execution, {"summary": "duplicate delivery"})
+
+        self.assertEqual(QAResult.objects.filter(execution=execution).count(), 1)
+
+    def test_full_http_round_trip_creates_qa_result(self):
+        department = Department.objects.create(name="Automobile")
+        payload = _full_wizard_payload(department.id)
+        client = APIClient()
+        create_response = client.post("/api/telehub/process-agents/", payload, format="json")
+        agent_id = create_response.data["id"]
+        webhook = WebhookDefinition.objects.get(process_agent_id=agent_id)
+        execution = Execution.objects.create(process_agent_id=agent_id, lead_id="lead-http")
+
+        response = client.post(
+            f"/api/telehub/webhooks/{webhook.secret}/",
+            {"dlr_id": execution.id, "summary": "HTTP round trip", "sentiment": "neutral"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        execution.refresh_from_db()
+        self.assertEqual(execution.qa_result.summary, "HTTP round trip")
+        self.assertEqual(execution.qa_result.sentiment, "neutral")

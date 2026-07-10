@@ -6,14 +6,13 @@ from rest_framework.response import Response
 from ..models import (
     Department,
     Execution,
-    ExecutionEvent,
     Integration,
     NodeTemplate,
     ProcessAgent,
     QAResult,
     WebhookDefinition,
 )
-from ..services import campaign_launch
+from ..services import campaign_launch, outcome_routing
 from ..services.process_agent import create_process_agent_from_wizard
 from .serializers import (
     CampaignLeadSerializer,
@@ -142,10 +141,9 @@ def webhook_intake(request, secret):
     WebhookDefinition.url (see services/process_agent.py) actually points to —
     unlike the placeholder that existed before this, this one is live. Looks up
     the WebhookDefinition by secret, correlates to an Execution via a `dlr_id`
-    in the payload if present, and records the raw payload as an
-    ExecutionEvent. Outcome classification / journey routing (moving
-    current_node, triggering QA/CRM Update/Retry/Callback) is NOT implemented
-    yet — that's the dispatch/schedule engine's Phase D, still to be built.
+    in the payload if present, and routes the resolved Execution's outcome via
+    outcome_routing.route_webhook_outcome (Phase D: moves current_node to
+    Completed, fires QA/CRM Update always, Callback/Retry conditionally).
     Always acks 200 regardless of whether the secret or dlr_id resolved to
     anything real — external callers must never see a webhook failure from us,
     and never raises.
@@ -159,9 +157,8 @@ def webhook_intake(request, secret):
                 pk=dlr_id, process_agent=webhook.process_agent
             ).first()
         if execution is not None:
-            ExecutionEvent.objects.create(
-                execution=execution,
-                event_type="webhook_received",
-                payload=dict(request.data) if hasattr(request.data, "items") else {"raw": str(request.data)},
+            outcome_routing.route_webhook_outcome(
+                execution,
+                dict(request.data) if hasattr(request.data, "items") else {},
             )
     return Response(status=status.HTTP_200_OK)
