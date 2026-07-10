@@ -245,6 +245,9 @@ export interface WebhookDefinition {
   id: number;
   name: string;
   url: string;
+  // Computed live from the currently running ngrok tunnel — null when ngrok
+  // isn't running locally (not stored; never goes stale on tunnel restart).
+  public_url: string | null;
   secret: string;
   schema: Record<string, unknown>;
   status: string;

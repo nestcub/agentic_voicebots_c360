@@ -712,7 +712,17 @@ function SettingsTab({
               <p className="text-sm font-medium text-on-surface">{wh.name}</p>
               <span className="text-xs text-text-muted">{wh.status}</span>
             </div>
-            <p className="text-xs text-text-muted mt-0.5 break-all">{wh.url}</p>
+            {wh.public_url ? (
+              <p className="text-xs text-on-surface mt-0.5 break-all font-mono">{wh.public_url}</p>
+            ) : (
+              <>
+                <p className="text-xs text-text-muted mt-0.5 break-all font-mono">{wh.url}</p>
+                <p className="text-[11px] text-text-muted mt-1">
+                  No public URL — run <code className="font-mono">ngrok http 8000</code> locally to
+                  get one for pasting into the voice platform.
+                </p>
+              </>
+            )}
           </div>
         ))}
       </SettingsSection>
