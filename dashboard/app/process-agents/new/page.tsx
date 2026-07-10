@@ -44,7 +44,11 @@ const COMMUNICATION_TYPES = [
   { value: "email", label: "Email" },
 ];
 
-const DEFAULT_OUTBOUND_API_URL = "https://app.chat360.io/api/voicebot/outbound";
+// Trailing slash required — without it Chat360 307-redirects here, and POST
+// redirects aren't auto-followed by plain HTTP clients (see
+// services/telehub/apps/telehub/services/dispatcher.py, which now follows it
+// anyway as a safety net, but there's no reason to rely on that for new processes).
+const DEFAULT_OUTBOUND_API_URL = "https://app.chat360.io/api/voicebot/outbound/";
 
 const LEAD_SOURCE_TYPES = [
   { value: "webhook", label: "Webhook" },
