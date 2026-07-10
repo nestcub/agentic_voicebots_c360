@@ -123,3 +123,22 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+
+# Without this, apps.telehub's loggers (e.g. services/dispatcher.py) are silent
+# on console — Django's unconfigured-logger default only surfaces WARNING+.
+# This surfaces dispatch attempts/results (URL, status, redirect Location) in
+# whatever terminal is running runserver/run_scheduler.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {"class": "logging.StreamHandler"},
+    },
+    "loggers": {
+        "apps.telehub": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}

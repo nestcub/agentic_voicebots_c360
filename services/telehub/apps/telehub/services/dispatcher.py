@@ -7,11 +7,14 @@ result dict so a caller (a later scheduler, not built yet) can decide what to
 do next.
 """
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 
 from ..models import Execution, ExecutionEvent, NodeInstance
+
+logger = logging.getLogger(__name__)
 
 NODE_NAME_COMMUNICATION = "Communication"
 
@@ -79,6 +82,16 @@ def dispatch_execution(execution: "Execution") -> dict:
 
     execution.attempt_count += 1
 
+    logger.info(
+        "dispatch attempt: execution=%s POST %s bot_id=%s auth_header_set=%s cookie_set=%s body_keys=%s",
+        execution.id,
+        api_url,
+        body.get("bot_id") or "(none)",
+        bool(os.environ.get("CHAT360_OUTBOUND_BEARER_TOKEN")),
+        bool(os.environ.get("CHAT360_AUTH_COOKIE")),
+        sorted(body.keys()),
+    )
+
     try:
         request = urllib.request.Request(
             api_url,
@@ -89,16 +102,19 @@ def dispatch_execution(execution: "Execution") -> dict:
         with urllib.request.urlopen(request, timeout=DISPATCH_TIMEOUT_SEC) as response:
             status_code = response.getcode()
             response_body = response.read().decode(errors="replace")
+            location = response.headers.get("Location")
     except urllib.error.HTTPError as exc:
         # urlopen raises HTTPError (a URLError subclass) for non-2xx status
         # codes instead of returning them normally — handle it first so the
         # real status code/body reach the ExecutionEvent, not just str(exc).
         status_code = exc.code
+        location = exc.headers.get("Location") if exc.headers else None
         try:
             response_body = exc.read().decode(errors="replace")
         except Exception:
             response_body = ""
-        error = f"non-2xx status: {status_code}"
+        error = f"non-2xx status: {status_code}" + (f" (redirects to {location})" if location else "")
+        logger.error("dispatch failed: execution=%s status=%s location=%s body=%s", execution.id, status_code, location, response_body[:RESPONSE_BODY_TRUNCATE_LEN])
         execution.status = "dispatch_failed"
         execution.save()
         ExecutionEvent.objects.create(
@@ -106,12 +122,14 @@ def dispatch_execution(execution: "Execution") -> dict:
             event_type="dispatch_failed",
             payload={
                 "status_code": status_code,
+                "location": location,
                 "response_body": response_body[:RESPONSE_BODY_TRUNCATE_LEN],
                 "error": error,
             },
         )
         return {"success": False, "status_code": status_code, "error": error}
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.error("dispatch failed: execution=%s network error: %s", execution.id, exc)
         execution.status = "dispatch_failed"
         execution.save()
         ExecutionEvent.objects.create(
@@ -121,6 +139,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         )
         return {"success": False, "status_code": None, "error": str(exc)}
     except Exception as exc:
+        logger.error("dispatch failed: execution=%s unexpected error: %s", execution.id, exc)
         execution.status = "dispatch_failed"
         execution.save()
         ExecutionEvent.objects.create(
@@ -131,6 +150,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         return {"success": False, "status_code": None, "error": str(exc)}
 
     if 200 <= status_code < 300:
+        logger.info("dispatch succeeded: execution=%s status=%s", execution.id, status_code)
         execution.status = "dispatched"
         execution.save()
         ExecutionEvent.objects.create(
@@ -143,7 +163,8 @@ def dispatch_execution(execution: "Execution") -> dict:
         )
         return {"success": True, "status_code": status_code, "error": None}
 
-    error = f"non-2xx status: {status_code}"
+    error = f"non-2xx status: {status_code}" + (f" (redirects to {location})" if location else "")
+    logger.error("dispatch failed: execution=%s status=%s location=%s body=%s", execution.id, status_code, location, response_body[:RESPONSE_BODY_TRUNCATE_LEN])
     execution.status = "dispatch_failed"
     execution.save()
     ExecutionEvent.objects.create(
@@ -151,6 +172,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         event_type="dispatch_failed",
         payload={
             "status_code": status_code,
+            "location": location,
             "response_body": response_body[:RESPONSE_BODY_TRUNCATE_LEN],
             "error": error,
         },
