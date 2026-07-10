@@ -156,11 +156,15 @@ class JourneyGenerationTests(TestCase):
         generate_journey(process_agent)
         nodes_by_name = {node.name: node for node in process_agent.nodes.all()}
 
-        targets = {
-            edge.target_node.name
-            for edge in nodes_by_name["Completed"].outgoing_connections.all()
-        }
+        edges = nodes_by_name["Completed"].outgoing_connections.all()
+        targets = {edge.target_node.name for edge in edges}
         self.assertEqual(targets, {"Retry", "Callback", "QA", "CRM Update"})
+
+        condition_by_target = {edge.target_node.name: edge.condition for edge in edges}
+        self.assertEqual(condition_by_target["Retry"], "failed")
+        self.assertEqual(condition_by_target["Callback"], "callback_requested")
+        self.assertEqual(condition_by_target["QA"], "")
+        self.assertEqual(condition_by_target["CRM Update"], "")
 
     def test_retry_and_callback_loop_back_to_business_hours(self):
         process_agent = self._make_process_agent()
@@ -344,17 +348,25 @@ class ProcessAgentJourneyEndpointTests(TestCase):
 
         # Main trunk: Lead Received -> Business Hours -> DND Check -> Communication -> Completed.
         edges_by_source_name = {}
+        condition_by_source_target = {}
         for edge in response.data["edges"]:
             source_name = node_names[edge["source_node"]]
-            edges_by_source_name.setdefault(source_name, set()).add(node_names[edge["target_node"]])
+            target_name = node_names[edge["target_node"]]
+            edges_by_source_name.setdefault(source_name, set()).add(target_name)
+            condition_by_source_target[(source_name, target_name)] = edge["condition"]
 
         self.assertEqual(edges_by_source_name["Lead Received"], {"Business Hours"})
         self.assertEqual(edges_by_source_name["Business Hours"], {"DND Check"})
         self.assertEqual(edges_by_source_name["DND Check"], {"Communication"})
         self.assertEqual(edges_by_source_name["Communication"], {"Completed"})
 
-        # Completed fans out to the 4 outcome branches.
+        # Completed fans out to the 4 outcome branches. Retry and Callback are
+        # conditioned on the call outcome; QA and CRM Update always fire.
         self.assertEqual(edges_by_source_name["Completed"], {"Retry", "Callback", "QA", "CRM Update"})
+        self.assertEqual(condition_by_source_target[("Completed", "Retry")], "failed")
+        self.assertEqual(condition_by_source_target[("Completed", "Callback")], "callback_requested")
+        self.assertEqual(condition_by_source_target[("Completed", "QA")], "")
+        self.assertEqual(condition_by_source_target[("Completed", "CRM Update")], "")
 
         # Retry and Callback loop back to Business Hours; QA/CRM Update are terminal.
         self.assertEqual(edges_by_source_name["Retry"], {"Business Hours"})

@@ -7,6 +7,11 @@ from .seed_node_templates import seed_node_templates
 # are outcome branches evaluated AFTER a call completes (see JOURNEY_EDGES below):
 # Retry and Callback loop back to Business Hours to re-attempt the process; QA and
 # CRM Update are terminal side effects with no further outgoing edge.
+#
+# Completed's 4 outgoing edges are not all equal: Completed->Retry only fires on
+# condition "failed" and Completed->Callback only fires on condition
+# "callback_requested"; Completed->QA and Completed->CRM Update always fire
+# (condition ""). A later phase's outcome router reads these condition strings.
 # Each entry: (name, node_template type, position_x, position_y).
 JOURNEY_STEPS = [
     ("Lead Received", "trigger", 60, 140),
@@ -20,20 +25,22 @@ JOURNEY_STEPS = [
     ("CRM Update", "integration", 960, 260),
 ]
 
-# (source name, target name) — explicit, since the graph branches (Completed fans
-# out to 4 nodes) and loops (Retry/Callback back to Business Hours), which a
-# simple zip(nodes, nodes[1:]) linear chain can no longer express.
+# (source name, target name, condition) — explicit, since the graph branches
+# (Completed fans out to 4 nodes) and loops (Retry/Callback back to Business
+# Hours), which a simple zip(nodes, nodes[1:]) linear chain can no longer
+# express. condition="" means "always fires"; Completed->Retry and
+# Completed->Callback are gated on the call outcome (see comment above).
 JOURNEY_EDGES = [
-    ("Lead Received", "Business Hours"),
-    ("Business Hours", "DND Check"),
-    ("DND Check", "Communication"),
-    ("Communication", "Completed"),
-    ("Completed", "Retry"),
-    ("Completed", "Callback"),
-    ("Completed", "QA"),
-    ("Completed", "CRM Update"),
-    ("Retry", "Business Hours"),
-    ("Callback", "Business Hours"),
+    ("Lead Received", "Business Hours", ""),
+    ("Business Hours", "DND Check", ""),
+    ("DND Check", "Communication", ""),
+    ("Communication", "Completed", ""),
+    ("Completed", "Retry", "failed"),
+    ("Completed", "Callback", "callback_requested"),
+    ("Completed", "QA", ""),
+    ("Completed", "CRM Update", ""),
+    ("Retry", "Business Hours", ""),
+    ("Callback", "Business Hours", ""),
 ]
 
 
@@ -63,11 +70,11 @@ def generate_journey(process_agent: "ProcessAgent") -> None:
             position_y=y,
         )
 
-    for source_name, target_name in JOURNEY_EDGES:
+    for source_name, target_name, condition in JOURNEY_EDGES:
         NodeConnection.objects.create(
             process_agent=process_agent,
             source_node=nodes_by_name[source_name],
             target_node=nodes_by_name[target_name],
-            condition="",
+            condition=condition,
             priority=0,
         )
