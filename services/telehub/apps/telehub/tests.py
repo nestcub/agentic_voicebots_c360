@@ -1,5 +1,8 @@
+from datetime import datetime, timedelta
+
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -17,6 +20,7 @@ from .models import (
     ProcessIntegration,
     QAResult,
 )
+from .services.callback_time import parse_call_back_time
 from .services.journey import JOURNEY_STEPS, generate_journey
 from .services.seed_node_templates import seed_node_templates
 
@@ -418,3 +422,39 @@ class NodeTemplateApiTests(TestCase):
         }
         actual_types = {item["type"] for item in response.data}
         self.assertEqual(actual_types, expected_types)
+
+
+class CallbackTimeParsingTests(TestCase):
+    def test_relative_hindi_minutes(self):
+        result = parse_call_back_time("5 मिनट बाद")
+        self.assertIsNotNone(result)
+        delta = result - timezone.now()
+        self.assertTrue(timedelta(minutes=4) < delta < timedelta(minutes=6))
+
+    def test_relative_hinglish_minutes(self):
+        result = parse_call_back_time("5 minute baad")
+        self.assertIsNotNone(result)
+        delta = result - timezone.now()
+        self.assertTrue(timedelta(minutes=4) < delta < timedelta(minutes=6))
+
+    def test_relative_hours_english(self):
+        result = parse_call_back_time("2 hours")
+        self.assertIsNotNone(result)
+        delta = result - timezone.now()
+        self.assertTrue(timedelta(hours=1, minutes=59) < delta < timedelta(hours=2, minutes=1))
+
+    def test_devanagari_digits_normalized(self):
+        result = parse_call_back_time("५ मिनट बाद")
+        self.assertIsNotNone(result)
+        delta = result - timezone.now()
+        self.assertTrue(timedelta(minutes=4) < delta < timedelta(minutes=6))
+
+    def test_absolute_chat360_format(self):
+        result = parse_call_back_time("08-07-2026 05:00 PM")
+        self.assertIsNotNone(result)
+        self.assertEqual((result.day, result.month, result.year, result.hour), (8, 7, 2026, 17))
+
+    def test_unparseable_returns_none(self):
+        self.assertIsNone(parse_call_back_time("whenever, maybe tomorrow"))
+        self.assertIsNone(parse_call_back_time(""))
+        self.assertIsNone(parse_call_back_time(None))
