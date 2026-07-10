@@ -411,60 +411,89 @@ function JourneyTab({
     return <p className="text-sm text-text-muted">No journey generated for this process yet.</p>;
   }
 
-  const nodes = [...data.nodes].sort((a, b) => a.position_x - b.position_x);
-  const edgesBySourceTarget = new Map<string, JourneyEdge>();
+  // The graph branches (e.g. Completed fans out to 4 outcome nodes) and loops
+  // (Retry/Callback back to Business Hours) — it's no longer a single chain, so
+  // rendering can't just connect position-adjacent nodes 1:1. Instead: group nodes
+  // into columns by position_x (stacking same-x nodes vertically by position_y),
+  // and list each node's actual outgoing edges as chips underneath its card —
+  // forward chips (target is in a later column) vs loop-back chips (target is in
+  // the same or an earlier column, shown with a ↩ and dashed style).
+  const nodesById = new Map(data.nodes.map((n) => [n.id, n]));
+  const outgoingByNode = new Map<number, JourneyEdge[]>();
   for (const edge of data.edges) {
-    edgesBySourceTarget.set(`${edge.source_node}->${edge.target_node}`, edge);
+    const list = outgoingByNode.get(edge.source_node) ?? [];
+    list.push(edge);
+    outgoingByNode.set(edge.source_node, list);
   }
+
+  const columnXs = [...new Set(data.nodes.map((n) => n.position_x))].sort((a, b) => a - b);
+  const columns = columnXs.map((x) =>
+    data.nodes.filter((n) => n.position_x === x).sort((a, b) => a.position_y - b.position_y)
+  );
 
   return (
     <div className="space-y-2">
       <p className="text-xs text-text-muted">
-        Read-only view — journeys are generated automatically. Editing is not available in V1.
+        Read-only view — journeys are generated automatically. Editing is not available in V1. Dashed
+        chips (↩) are loop-backs — e.g. Retry/Callback re-enter the flow at Business Hours.
       </p>
       <Card className="p-4 overflow-x-auto">
-        <div className="flex items-stretch gap-2 min-w-max">
-          {nodes.map((node, i) => {
-            const style = nodeStyle(node.node_template_type);
-            const nextNode = nodes[i + 1];
-            const edge = nextNode ? edgesBySourceTarget.get(`${node.id}->${nextNode.id}`) : undefined;
-            return (
-              <div key={node.id} className="flex items-center gap-2">
-                <div className="w-44 shrink-0 rounded-lg border border-border bg-surface p-3">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${style.dot}`} />
-                    <span className={`text-[11px] font-medium uppercase tracking-wide ${style.text}`}>
-                      {node.node_template_type}
-                    </span>
-                  </div>
-                  <p className="text-sm font-semibold text-on-surface mt-1 truncate" title={node.name}>
-                    {node.name}
-                  </p>
-                  {!node.enabled && (
-                    <span className="text-[10px] text-text-muted">disabled</span>
-                  )}
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-[11px] text-primary select-none">
-                      config
-                    </summary>
-                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-background rounded p-2 text-[10px] text-text-muted">
-                      {JSON.stringify(node.config, null, 2)}
-                    </pre>
-                  </details>
-                </div>
-                {nextNode && (
-                  <div className="flex flex-col items-center shrink-0 text-text-muted px-1">
-                    <span className="text-lg leading-none">→</span>
-                    {edge?.condition && (
-                      <span className="text-[10px] max-w-16 truncate" title={edge.condition}>
-                        {edge.condition}
+        <div className="flex items-start gap-6 min-w-max">
+          {columns.map((column, colIdx) => (
+            <div key={colIdx} className="flex flex-col gap-3">
+              {column.map((node) => {
+                const style = nodeStyle(node.node_template_type);
+                const outgoing = outgoingByNode.get(node.id) ?? [];
+                return (
+                  <div key={node.id} className="w-48 shrink-0 rounded-lg border border-border bg-surface p-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${style.dot}`} />
+                      <span className={`text-[11px] font-medium uppercase tracking-wide ${style.text}`}>
+                        {node.node_template_type}
                       </span>
+                    </div>
+                    <p className="text-sm font-semibold text-on-surface mt-1 truncate" title={node.name}>
+                      {node.name}
+                    </p>
+                    {!node.enabled && <span className="text-[10px] text-text-muted">disabled</span>}
+
+                    {outgoing.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {outgoing.map((edge) => {
+                          const target = nodesById.get(edge.target_node);
+                          const isLoop = target ? target.position_x <= node.position_x : false;
+                          return (
+                            <span
+                              key={edge.id}
+                              title={edge.condition || undefined}
+                              className={`text-[10px] px-1.5 py-0.5 rounded-full border whitespace-nowrap ${
+                                isLoop
+                                  ? "border-dashed border-accent text-accent"
+                                  : "border-border text-text-muted"
+                              }`}
+                            >
+                              {isLoop ? "↩ " : "→ "}
+                              {target?.name ?? "?"}
+                              {edge.condition ? ` (${edge.condition})` : ""}
+                            </span>
+                          );
+                        })}
+                      </div>
                     )}
+
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-[11px] text-primary select-none">
+                        config
+                      </summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-background rounded p-2 text-[10px] text-text-muted">
+                        {JSON.stringify(node.config, null, 2)}
+                      </pre>
+                    </details>
                   </div>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
         </div>
       </Card>
     </div>
