@@ -942,7 +942,9 @@ class DispatcherTests(TestCase):
         body = json.loads(sent_request.data.decode())
         self.assertEqual(body["@name"], "Charlie")
         self.assertEqual(body["To"], "+911234567890")
-        self.assertEqual(body["dlr_id"], execution.id)
+        # dlr_id must be a string — Chat360's OutboundRequest.dlr_id is a Go
+        # string field, sending an int 400s ("cannot unmarshal number into ...").
+        self.assertEqual(body["dlr_id"], str(execution.id))
         self.assertEqual(body["bot_id"], "bot-42")
         self.assertEqual(body["bot_name"], "Bot Forty Two")
 

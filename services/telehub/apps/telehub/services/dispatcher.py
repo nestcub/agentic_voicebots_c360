@@ -109,7 +109,9 @@ def dispatch_execution(execution: "Execution") -> dict:
     body = {
         **execution.variables,
         "To": execution.variables.get("to_number", ""),
-        "dlr_id": execution.id,
+        # Chat360's OutboundRequest.dlr_id is a Go string field — an int here
+        # 400s with "cannot unmarshal number into ... dlr_id of type string".
+        "dlr_id": str(execution.id),
         "bot_id": communication_config.get("bot_id", ""),
         "bot_name": communication_config.get("bot_name", ""),
     }
