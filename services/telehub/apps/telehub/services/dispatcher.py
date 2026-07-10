@@ -34,6 +34,24 @@ DISPATCH_TIMEOUT_SEC = 5
 MAX_REDIRECTS = 3
 
 
+def _normalize_indian_number(raw: str) -> str:
+    """
+    Chat360's outbound API needs E.164-formatted numbers ("+91XXXXXXXXXX") —
+    a bare 10-digit number is silently accepted (200 OK) but never actually
+    dialed. CSV-uploaded leads commonly have no country code, so normalize a
+    plain 10-digit Indian mobile number to +91-prefixed; anything already
+    starting with "+", or not a clean 10-digit number, is left untouched
+    (India-only assumption for now — revisit if other countries are needed).
+    """
+    digits = raw.strip()
+    if digits.startswith("+"):
+        return digits
+    stripped = digits.replace(" ", "").replace("-", "")
+    if len(stripped) == 10 and stripped.isdigit():
+        return f"+91{stripped}"
+    return raw
+
+
 def _get_communication_config(execution: "Execution") -> dict:
     """
     Defensively reads the Communication NodeInstance's config for this
@@ -113,27 +131,42 @@ def dispatch_execution(execution: "Execution") -> dict:
         "Cookie": os.environ.get("CHAT360_AUTH_COOKIE", ""),
     }
 
+    # Confirmed shape (verified against a real successful Postman call to the
+    # same endpoint): {"from": "<DID>", "to": "<lead number>", "params":
+    # {"@key": "value", ...}, "dlr_id": "<string>"} — flat top-level custom
+    # variables and a bot_id/bot_name field (both my own unconfirmed earlier
+    # guesses) are NOT part of the real API and have been removed.
+    #
+    # "from" = the registered DID/caller-ID to dial out from. Reuses DID_POOL
+    # (already in .env.example from the old orchestrator setup) rather than a
+    # new env var — takes the first entry if it's a comma-separated pool.
+    did_pool = os.environ.get("DID_POOL", "")
+    from_number = did_pool.split(",")[0].strip() if did_pool else ""
+
+    params = {
+        k: v for k, v in execution.variables.items() if k not in ("to_number", "dnd")
+    }
     body = {
-        **execution.variables,
-        "To": execution.variables.get("to_number", ""),
+        "from": from_number,
+        "to": _normalize_indian_number(execution.variables.get("to_number", "")),
+        "params": params,
         # Chat360's OutboundRequest.dlr_id is a Go string field — an int here
         # 400s with "cannot unmarshal number into ... dlr_id of type string".
         "dlr_id": str(execution.id),
-        "bot_id": communication_config.get("bot_id", ""),
-        "bot_name": communication_config.get("bot_name", ""),
     }
     body_bytes = json.dumps(body).encode()
 
     execution.attempt_count += 1
 
     logger.info(
-        "dispatch attempt: execution=%s POST %s bot_id=%s auth_header_set=%s cookie_set=%s body_keys=%s",
+        "dispatch attempt: execution=%s POST %s from=%s to=%s auth_header_set=%s cookie_set=%s param_keys=%s",
         execution.id,
         api_url,
-        body.get("bot_id") or "(none)",
+        from_number or "(DID_POOL not set)",
+        body["to"],
         bool(os.environ.get("CHAT360_OUTBOUND_BEARER_TOKEN")),
         bool(os.environ.get("CHAT360_AUTH_COOKIE")),
-        sorted(body.keys()),
+        sorted(params.keys()),
     )
 
     current_url = api_url

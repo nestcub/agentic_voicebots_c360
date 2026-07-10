@@ -921,14 +921,16 @@ class DispatcherTests(TestCase):
         self.assertIn("api_url", event.payload["error"])
 
     def test_request_headers_and_body_shape(self):
+        # Shape confirmed against a real successful Postman call: custom
+        # variables nest under "params", "from"/"to"/"dlr_id" are top-level
+        # lowercase keys. bot_id/bot_name are NOT part of the real body (an
+        # earlier, unconfirmed guess) and are correctly absent here.
         execution = self._make_execution(
             api_url="https://example.com/outbound",
-            bot_id="bot-42",
-            bot_name="Bot Forty Two",
-            variables={"to_number": "+911234567890", "@name": "Charlie"},
+            variables={"to_number": "+911234567890", "dnd": "false", "@name": "Charlie"},
         )
 
-        with patch(
+        with patch.dict(os.environ, {"DID_POOL": "+917965314425,+919999999999"}), patch(
             "apps.telehub.services.dispatcher.urllib.request.urlopen"
         ) as mock_urlopen:
             mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
@@ -941,13 +943,45 @@ class DispatcherTests(TestCase):
         self.assertIsNotNone(sent_request.get_header("Cookie"))
 
         body = json.loads(sent_request.data.decode())
-        self.assertEqual(body["@name"], "Charlie")
-        self.assertEqual(body["To"], "+911234567890")
+        self.assertEqual(body["from"], "+917965314425")
+        self.assertEqual(body["to"], "+911234567890")
         # dlr_id must be a string — Chat360's OutboundRequest.dlr_id is a Go
         # string field, sending an int 400s ("cannot unmarshal number into ...").
         self.assertEqual(body["dlr_id"], str(execution.id))
-        self.assertEqual(body["bot_id"], "bot-42")
-        self.assertEqual(body["bot_name"], "Bot Forty Two")
+        self.assertEqual(body["params"], {"@name": "Charlie"})
+        self.assertNotIn("bot_id", body)
+        self.assertNotIn("bot_name", body)
+        self.assertNotIn("to_number", body["params"])
+        self.assertNotIn("dnd", body["params"])
+
+    def test_bare_ten_digit_number_gets_plus91_prefix(self):
+        # Regression: a real dispatch sent "to": "8104130877" (no country
+        # code) and Chat360 200'd but never placed the call — bare 10-digit
+        # numbers must be normalized before dispatch.
+        execution = self._make_execution(variables={"to_number": "8104130877"})
+
+        with patch.dict(os.environ, {"DID_POOL": "+917965314425"}), patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen"
+        ) as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+            dispatch_execution(execution)
+
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        self.assertEqual(body["to"], "+918104130877")
+
+    def test_number_already_prefixed_is_left_untouched(self):
+        execution = self._make_execution(variables={"to_number": "+919892802815"})
+
+        with patch.dict(os.environ, {"DID_POOL": "+917965314425"}), patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen"
+        ) as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+            dispatch_execution(execution)
+
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        self.assertEqual(body["to"], "+919892802815")
 
     def test_token_stored_with_bearer_prefix_is_not_doubled(self):
         # Regression: an operator pasting the whole "Bearer <token>" header
