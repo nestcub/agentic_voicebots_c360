@@ -8,12 +8,10 @@ import { useSidebar } from "@/context/SidebarContext";
 import {
   RiHome5Line,
   RiUserLine,
-  RiRefreshLine,
-  RiBarChart2Line,
+  RiBuildingLine,
   RiBrainLine,
-  RiRocketLine,
   RiPlugLine,
-  RiCrosshair2Line,
+  RiSettings4Line,
   RiMenuFoldLine,
   RiMenuUnfoldLine,
   RiBookOpenLine,
@@ -24,15 +22,13 @@ import {
 
 const NAV_BEFORE_INTELLIGENCE = [
   { href: "/",            label: "Dashboard",    Icon: RiHome5Line },
+  { href: "/departments", label: "Departments",  Icon: RiBuildingLine },
   { href: "/leads",       label: "Leads",         Icon: RiUserLine },
-  { href: "/follow-ups",  label: "Follow-ups",    Icon: RiRefreshLine },
-  { href: "/analytics",   label: "Analytics",     Icon: RiBarChart2Line },
 ];
 
 const NAV_AFTER_INTELLIGENCE = [
-  { href: "/orchestrator",           label: "Orchestrator", Icon: RiRocketLine },
-  { href: "/settings/integrations",  label: "Integrations", Icon: RiPlugLine },
-  { href: "/goal-target",            label: "Goal & Target", Icon: RiCrosshair2Line },
+  { href: "/integrations", label: "Integrations", Icon: RiPlugLine },
+  { href: "/settings",     label: "Settings",     Icon: RiSettings4Line },
 ];
 
 const INTELLIGENCE_SUB = [
@@ -56,20 +52,20 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`fixed top-0 left-0 h-full bg-white border-r border-gray-200 text-gray-700 flex flex-col z-20 transition-all duration-300 ${
+      className={`fixed top-0 left-0 h-full bg-sidebar-bg border-r border-sidebar-border text-sidebar-text-muted flex flex-col z-20 transition-all duration-300 ${
         isOpen ? "w-56" : "w-16"
       }`}
     >
       {/* Logo + toggle */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200 shrink-0">
+      <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border shrink-0">
         {isOpen && (
-          <span className="font-bold text-lg tracking-tight text-gray-900 whitespace-nowrap">
-            Chat<span className="text-blue-600">360</span>
+          <span className="font-bold text-lg tracking-tight text-sidebar-text whitespace-nowrap">
+            Chat<span className="text-primary">360</span>
           </span>
         )}
         <button
           onClick={toggle}
-          className={`p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition-colors ${
+          className={`p-1.5 rounded-lg hover:bg-sidebar-active text-sidebar-text-muted hover:text-sidebar-text transition-colors ${
             isOpen ? "" : "mx-auto"
           }`}
         >
@@ -95,8 +91,8 @@ export function Sidebar() {
                 isOpen ? "" : "justify-center px-2"
               } ${
                 active
-                  ? "bg-blue-600 text-white rounded-lg font-semibold"
-                  : "text-gray-600 hover:bg-gray-100 rounded-lg"
+                  ? "bg-primary text-on-primary rounded-lg font-semibold"
+                  : "text-sidebar-text-muted hover:bg-sidebar-active hover:text-sidebar-text rounded-lg"
               }`}
             >
               <Icon className="w-5 h-5 shrink-0" />
@@ -114,8 +110,8 @@ export function Sidebar() {
               isOpen ? "" : "justify-center px-2"
             } ${
               intelligenceActive
-                ? "bg-blue-600 text-white rounded-lg font-semibold"
-                : "text-gray-600 hover:bg-gray-100 rounded-lg"
+                ? "bg-primary text-on-primary rounded-lg font-semibold"
+                : "text-sidebar-text-muted hover:bg-sidebar-active hover:text-sidebar-text rounded-lg"
             }`}
           >
             <RiBrainLine className="w-5 h-5 shrink-0" />
@@ -142,8 +138,8 @@ export function Sidebar() {
                     href={href}
                     className={`flex items-center gap-3 pl-9 pr-3 py-2 text-sm transition-colors rounded-lg ${
                       active
-                        ? "bg-blue-50 text-blue-600 font-medium"
-                        : "text-gray-500 hover:bg-gray-100"
+                        ? "bg-primary/15 text-sidebar-text font-medium"
+                        : "text-sidebar-text-muted hover:bg-sidebar-active"
                     }`}
                   >
                     <Icon className="w-4 h-4 shrink-0" />
@@ -167,8 +163,8 @@ export function Sidebar() {
                 isOpen ? "" : "justify-center px-2"
               } ${
                 active
-                  ? "bg-blue-600 text-white rounded-lg font-semibold"
-                  : "text-gray-600 hover:bg-gray-100 rounded-lg"
+                  ? "bg-primary text-on-primary rounded-lg font-semibold"
+                  : "text-sidebar-text-muted hover:bg-sidebar-active hover:text-sidebar-text rounded-lg"
               }`}
             >
               <Icon className="w-5 h-5 shrink-0" />
@@ -180,8 +176,8 @@ export function Sidebar() {
 
       {/* Footer */}
       {isOpen && (
-        <div className="px-5 py-4 text-xs text-gray-400 border-t border-gray-200 whitespace-nowrap">
-          AI Orchestrator · live
+        <div className="px-5 py-4 text-xs text-sidebar-text-muted border-t border-sidebar-border whitespace-nowrap">
+          AI Tele-calling Hub · live
         </div>
       )}
     </aside>

@@ -1,31 +1,39 @@
 @import "tailwindcss";
 
 @theme {
-  /* Chat360 palette */
-  --color-primary: #2563eb;
-  --color-primary-container: #1d4ed8;
+  /* Chat360 palette — derived from the app.chat360.io dashboard */
+  --color-primary: #3366f0;
+  --color-primary-container: #2450c7;
   --color-on-primary: #ffffff;
-  --color-on-primary-container: #bfdbfe;
-  --color-sidebar-bg: #1e2a3a;
-  --color-sidebar-active: #2d3e52;
-  --color-accent: #2563eb;
-  --color-surface: #f9fafb;
-  --color-surface-container: #f3f4f6;
+  --color-on-primary-container: #dce5fe;
+
+  /* Secondary teal accent — distinct from --color-ok, e.g. "Sales Hub" ring segment */
+  --color-accent: #2fb6a8;
+
+  /* Sidebar chrome: near-black navy, not pure black */
+  --color-sidebar-bg: #0f1b2e;
+  --color-sidebar-active: #1b2c47;
+  --color-sidebar-border: #1c2a40;
+  --color-sidebar-text: #e7ebf3;
+  --color-sidebar-text-muted: #8b97ac;
+
+  --color-surface: #ffffff;
+  --color-surface-container: #eef1f6;
   --color-on-surface: #111827;
   --color-on-background: #111827;
-  --color-background: #f9fafb;
-  --color-border: #e5e7eb;
-  --color-text-muted: #6b7280;
+  --color-background: #f4f6f9;
+  --color-border: #e6e9f0;
+  --color-text-muted: #64748b;
 
-  --color-ok: #16a34a;
-  --color-warn: #f59e0b;
-  --color-bad: #e11d48;
+  --color-ok: #1ca674;
+  --color-warn: #f0883e;
+  --color-bad: #e2574c;
 
   --font-family-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {
-  --background: #f9fafb;
+  --background: #f4f6f9;
   --foreground: #111827;
 }
 
