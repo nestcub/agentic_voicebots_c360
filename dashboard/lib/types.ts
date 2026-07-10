@@ -183,3 +183,198 @@ export interface UploadResult {
   preview_leads: Lead[];
   errors: string[];
 }
+
+// ── Telehub types ────────────────────────────────────────────────────────
+// Mirror services/telehub/apps/telehub/api/serializers.py exactly — read that
+// file before changing any of these.
+
+export interface Department {
+  id: number;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  process_agent_count: number;
+}
+
+export interface ProcessAgentSummary {
+  id: number;
+  department: number;
+  department_name: string;
+  name: string;
+  description: string;
+  status: string;
+  version: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// DepartmentDetailSerializer nests process agents via
+// DepartmentNestedProcessAgentSerializer, which only exposes this subset of
+// ProcessAgentSummary's fields — not the full shape listProcessAgents() returns.
+export type DepartmentNestedProcessAgent = Pick<
+  ProcessAgentSummary,
+  "id" | "name" | "status" | "is_active" | "version"
+>;
+
+export interface DepartmentDetail extends Department {
+  process_agents: DepartmentNestedProcessAgent[];
+}
+
+export interface LeadSource {
+  id: number;
+  type: string;
+  configuration: Record<string, unknown>;
+  field_mapping: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ProcessAgentVariable {
+  id: number;
+  key: string;
+  type: string;
+  default_value: string;
+  required: boolean;
+}
+
+export interface WebhookDefinition {
+  id: number;
+  name: string;
+  url: string;
+  secret: string;
+  schema: Record<string, unknown>;
+  status: string;
+}
+
+export interface ProcessAgentIntegration {
+  id: number;
+  integration: number;
+  integration_name: string;
+  integration_type: string;
+}
+
+export interface ProcessAgentDetail {
+  id: number;
+  department: number;
+  department_name: string;
+  name: string;
+  description: string;
+  status: string;
+  version: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  lead_sources: LeadSource[];
+  variables: ProcessAgentVariable[];
+  webhooks: WebhookDefinition[];
+  integrations: ProcessAgentIntegration[];
+}
+
+// A single wizard-supplied runtime variable (business_rules.variables and
+// analytics.custom_variables both use this shape — see
+// services/telehub/apps/telehub/services/process_agent.py).
+export interface ProcessAgentWizardVariable {
+  key: string;
+  type?: string;
+  default_value?: string;
+  required?: boolean;
+}
+
+// POST /process-agents/ body. Every nested section is optional — the backend
+// defensively `.get()`s each one and a minimal {department, name} payload
+// must succeed. Voice/qa config is dumped as-is onto node config, so both
+// allow arbitrary extra keys beyond the ones the backend specifically reads.
+export interface ProcessAgentWizardPayload {
+  department: number;
+  name: string;
+  description?: string;
+  voice?: {
+    communication_type?: string;
+    webhook_schema?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  lead_source?: {
+    type?: string;
+    configuration?: Record<string, unknown>;
+    field_mapping?: Record<string, unknown>;
+  };
+  business_rules?: {
+    retry?: Record<string, unknown>;
+    business_hours?: Record<string, unknown>;
+    dnd?: Record<string, unknown>;
+    callback?: Record<string, unknown>;
+    variables?: ProcessAgentWizardVariable[];
+  };
+  integrations?: number[];
+  qa?: Record<string, unknown>;
+  analytics?: {
+    custom_variables?: ProcessAgentWizardVariable[];
+    [key: string]: unknown;
+  };
+}
+
+export interface JourneyNode {
+  id: number;
+  node_template_type: string;
+  name: string;
+  config: Record<string, unknown>;
+  position_x: number;
+  position_y: number;
+  enabled: boolean;
+}
+
+export interface JourneyEdge {
+  id: number;
+  source_node: number;
+  target_node: number;
+  condition: string;
+  priority: number;
+}
+
+export interface Integration {
+  id: number;
+  name: string;
+  type: string;
+  configuration: Record<string, unknown>;
+  status: string;
+  created_at: string;
+}
+
+export interface NodeTemplate {
+  id: number;
+  type: string;
+  category: string;
+  display_name: string;
+  description: string;
+  icon: string;
+  color: string;
+  default_config: Record<string, unknown>;
+  schema: Record<string, unknown>;
+}
+
+export interface Execution {
+  id: number;
+  lead_id: string;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  duration: number | null;
+  current_node: string;
+}
+
+export interface QaResult {
+  id: number;
+  execution: number;
+  summary: string;
+  sentiment: string;
+  hallucination_score: number | null;
+  lead_score: number | null;
+  compliance_score: number | null;
+  bot_failure: boolean;
+  hot_lead: boolean;
+  recommendation: string;
+}
