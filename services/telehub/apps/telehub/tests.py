@@ -33,6 +33,7 @@ from .services.journey import JOURNEY_STEPS, generate_journey
 from .services.ngrok import get_public_base_url
 from .services.retry_backoff import schedule_retry
 from .services.seed_node_templates import seed_node_templates
+from .management.commands.run_scheduler import tick
 
 
 class DepartmentProcessAgentNodeInstanceChainTests(TestCase):
@@ -1233,3 +1234,121 @@ class GatingTests(TestCase):
         )
 
         self.assertFalse(is_suppressed_dnc(execution))
+
+
+class SchedulerTickTests(TestCase):
+    def _make_execution(
+        self,
+        status="pending",
+        next_execution=None,
+        api_url="https://example.com/outbound",
+    ):
+        department = Department.objects.create(name="Automobile")
+        process_agent = ProcessAgent.objects.create(
+            department=department, name="Scheduler Test"
+        )
+        generate_journey(process_agent)
+        communication_node = process_agent.nodes.get(name="Communication")
+        communication_node.config = {
+            "api_url": api_url,
+            "bot_id": "bot-1",
+            "bot_name": "Bot One",
+        }
+        communication_node.save()
+
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-1",
+            status=status,
+            variables={"to_number": "+911234567890", "@name": "Alice"},
+            next_execution=(
+                timezone.now() - timedelta(minutes=5)
+                if next_execution is None
+                else next_execution
+            ),
+        )
+
+    def test_due_execution_within_hours_not_suppressed_is_dispatched(self):
+        execution = self._make_execution()
+
+        with patch(
+            "apps.telehub.services.gating.is_within_business_hours",
+            return_value=True,
+        ), patch(
+            "apps.telehub.services.gating.is_suppressed_dnc", return_value=False
+        ), patch(
+            "apps.telehub.services.dispatcher.urllib.request.urlopen"
+        ) as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+                b'{"ok": true}'
+            )
+            count = tick()
+
+        execution.refresh_from_db()
+        self.assertEqual(count, 1)
+        self.assertEqual(execution.status, "dispatched")
+
+    def test_outside_business_hours_is_skipped_not_rescheduled(self):
+        execution = self._make_execution()
+        original_next_execution = execution.next_execution
+
+        with patch(
+            "apps.telehub.services.gating.is_within_business_hours",
+            return_value=False,
+        ), patch(
+            "apps.telehub.services.dispatcher.dispatch_execution"
+        ) as mock_dispatch:
+            count = tick()
+
+        mock_dispatch.assert_not_called()
+        execution.refresh_from_db()
+        self.assertEqual(count, 0)
+        self.assertEqual(execution.next_execution, original_next_execution)
+
+    def test_dnd_suppressed_execution_is_terminated_without_dispatch(self):
+        execution = self._make_execution()
+
+        with patch(
+            "apps.telehub.services.gating.is_within_business_hours",
+            return_value=True,
+        ), patch(
+            "apps.telehub.services.gating.is_suppressed_dnc", return_value=True
+        ), patch(
+            "apps.telehub.services.dispatcher.dispatch_execution"
+        ) as mock_dispatch:
+            count = tick()
+
+        mock_dispatch.assert_not_called()
+        execution.refresh_from_db()
+        self.assertEqual(count, 0)
+        self.assertEqual(execution.status, "suppressed_dnc")
+        self.assertIsNone(execution.next_execution)
+
+    def test_future_next_execution_is_not_picked_up(self):
+        self._make_execution(next_execution=timezone.now() + timedelta(hours=1))
+
+        with patch(
+            "apps.telehub.services.gating.is_within_business_hours",
+            return_value=True,
+        ), patch(
+            "apps.telehub.services.dispatcher.dispatch_execution"
+        ) as mock_dispatch:
+            count = tick()
+
+        mock_dispatch.assert_not_called()
+        self.assertEqual(count, 0)
+
+    def test_non_pollable_status_is_not_picked_up(self):
+        self._make_execution(status="dispatched")
+
+        with patch(
+            "apps.telehub.services.gating.is_within_business_hours",
+            return_value=True,
+        ), patch(
+            "apps.telehub.services.dispatcher.dispatch_execution"
+        ) as mock_dispatch:
+            count = tick()
+
+        mock_dispatch.assert_not_called()
+        self.assertEqual(count, 0)
