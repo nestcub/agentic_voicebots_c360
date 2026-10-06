@@ -3,12 +3,13 @@
 // — these are display labels for config stored on the Communication/QA
 // NodeInstances and ProcessAgent.analytics_stats, not schema.
 
-export type TabKey = "overview" | "journey" | "runs" | "qa" | "analytics" | "settings";
+export type TabKey = "overview" | "journey" | "runs" | "calls" | "qa" | "analytics" | "settings";
 
 export const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "journey", label: "Journey" },
   { key: "runs", label: "Runs" },
+  { key: "calls", label: "Calls" },
   { key: "qa", label: "QA" },
   { key: "analytics", label: "Analytics" },
   { key: "settings", label: "Settings" },

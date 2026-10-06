@@ -17,6 +17,9 @@ import type {
   Integration,
   NodeTemplate,
   Execution,
+  CallRow,
+  WhatsAppPreview,
+  WhatsAppSendResult,
   QaResult,
   ProcessAgentStats,
   ProcessAgentAnalytics,
@@ -166,6 +169,22 @@ export function getProcessAgentJourney(id: number): Promise<{ nodes: JourneyNode
 
 export function getProcessAgentExecutions(id: number): Promise<Execution[]> {
   return get<Execution[]>(`/process-agents/${id}/executions/`);
+}
+
+// Calls tab — see the calls / whatsapp-preview / send-whatsapp actions in
+// services/telehub/apps/telehub/api/views.py.
+export function getProcessAgentCalls(id: number): Promise<CallRow[]> {
+  return get<CallRow[]>(`/process-agents/${id}/calls/`);
+}
+
+export function previewWhatsApp(id: number, executionIds: number[]): Promise<WhatsAppPreview[]> {
+  return post<WhatsAppPreview[]>(`/process-agents/${id}/whatsapp-preview/`, { execution_ids: executionIds });
+}
+
+export function sendWhatsApp(id: number, executionIds: number[]): Promise<{ results: WhatsAppSendResult[] }> {
+  return post<{ results: WhatsAppSendResult[] }>(`/process-agents/${id}/send-whatsapp/`, {
+    execution_ids: executionIds,
+  });
 }
 
 export function getProcessAgentQaResults(id: number): Promise<QaResult[]> {

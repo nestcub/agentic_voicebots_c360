@@ -248,6 +248,41 @@ class ExecutionSerializer(serializers.ModelSerializer):
         ]
 
 
+class CallRowSerializer(serializers.ModelSerializer):
+    """
+    Calls tab row. Expects the queryset to prefetch WhatsApp events into
+    `whatsapp_events` (newest first) — see ProcessAgentViewSet.calls.
+    """
+
+    whatsapp = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Execution
+        fields = [
+            "id",
+            "lead_id",
+            "status",
+            "campaign_id",
+            "duration",
+            "current_node",
+            "variables",
+            "created_at",
+            "whatsapp",
+        ]
+
+    def get_whatsapp(self, obj):
+        events = getattr(obj, "whatsapp_events", None) or []
+        if not events:
+            return None
+        latest = events[0]
+        return {
+            "status": "sent" if latest.event_type == "whatsapp_sent" else "failed",
+            "error": (latest.payload or {}).get("error"),
+            "at": latest.created_at.isoformat(),
+            "count": len(events),
+        }
+
+
 class CampaignLeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Execution

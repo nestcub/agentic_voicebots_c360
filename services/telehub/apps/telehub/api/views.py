@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError
-from django.db.models import Count, Min
+from django.db.models import Count, Min, Prefetch
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from ..models import (
     Department,
+    ExecutionEvent,
     Integration,
     LeadSource,
     NodeTemplate,
@@ -19,7 +20,7 @@ from ..models import (
     VoiceBot,
     WebhookDefinition,
 )
-from ..services import analytics_stats, campaign_launch, outcome_routing
+from ..services import analytics_stats, campaign_launch, inbound, outcome_routing, whatsapp
 from ..services.dispatcher import dispatch_execution
 from ..services.process_agent import (
     create_process_agent_from_wizard,
@@ -27,6 +28,7 @@ from ..services.process_agent import (
 )
 from .serializers import (
     BotJourneySerializer,
+    CallRowSerializer,
     CampaignLeadSerializer,
     DepartmentDetailSerializer,
     DepartmentSerializer,
@@ -81,6 +83,9 @@ ANALYTICS_STAT_KEYS = {
 VARIABLE_WRITABLE_FIELDS = ("key", "type", "default_value", "label", "required", "source")
 WEBHOOK_WRITABLE_FIELDS = ("name", "schema", "status")
 OMNICHANNEL_WRITABLE_FIELDS = ("channel", "variables", "whatsapp_template", "whatsapp_curl")
+
+# Synchronous sends — cap a single click so the request can't run for minutes.
+MAX_WHATSAPP_BATCH = 50
 
 
 class VoiceBotViewSet(viewsets.ModelViewSet):
@@ -563,6 +568,62 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         )
 
     @action(detail=True, methods=["get"])
+    def calls(self, request, pk=None):
+        """
+        The Calls tab: every Execution with its full variables (for inbound
+        agents, the Chat360 post-call payload) and its latest WhatsApp send
+        status, newest first.
+        """
+        agent = self.get_object()
+        executions = agent.executions.order_by("-created_at").prefetch_related(
+            Prefetch(
+                "events",
+                queryset=ExecutionEvent.objects.filter(
+                    event_type__in=(whatsapp.EVENT_SENT, whatsapp.EVENT_FAILED)
+                ).order_by("-created_at"),
+                to_attr="whatsapp_events",
+            )
+        )
+        return Response(CallRowSerializer(executions, many=True).data)
+
+    def _whatsapp_executions(self, agent, request):
+        """Resolves body "execution_ids" to this agent's Executions, or returns a 400 Response."""
+        ids = request.data.get("execution_ids")
+        if not isinstance(ids, list) or not ids:
+            return None, Response(
+                {"error": "execution_ids must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if len(ids) > MAX_WHATSAPP_BATCH:
+            return None, Response(
+                {"error": f"at most {MAX_WHATSAPP_BATCH} executions per request"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return list(agent.executions.filter(pk__in=ids).order_by("-created_at")), None
+
+    @action(detail=True, methods=["post"], url_path="whatsapp-preview")
+    def whatsapp_preview(self, request, pk=None):
+        """What "Send WhatsApp" would deliver to each execution — nothing is sent."""
+        agent = self.get_object()
+        executions, error_response = self._whatsapp_executions(agent, request)
+        if error_response:
+            return error_response
+        return Response([whatsapp.preview(e) for e in executions])
+
+    @action(detail=True, methods=["post"], url_path="send-whatsapp")
+    def send_whatsapp(self, request, pk=None):
+        """
+        The Calls tab's "Send WhatsApp": sends the agent's configured WhatsApp
+        template (OmnichannelConfig.whatsapp_curl) to each execution's lead,
+        synchronously, one request per lead. Per-lead failures (missing
+        values, non-2xx) are reported in the results, not as an HTTP error.
+        """
+        agent = self.get_object()
+        executions, error_response = self._whatsapp_executions(agent, request)
+        if error_response:
+            return error_response
+        return Response({"results": [whatsapp.send_whatsapp(e) for e in executions]})
+
+    @action(detail=True, methods=["get"])
     def campaigns(self, request, pk=None):
         agent = self.get_object()
         rows = (
@@ -613,9 +674,14 @@ def webhook_intake(request, secret):
     webhook = WebhookDefinition.objects.filter(secret=secret).first()
     if webhook is not None:
         payload = dict(request.data) if hasattr(request.data, "items") else {}
-        execution = outcome_routing.find_execution_for_payload(
-            webhook.process_agent, payload
-        )
-        if execution is not None:
-            outcome_routing.route_webhook_outcome(execution, payload)
+        if inbound.is_inbound_agent(webhook.process_agent):
+            # Customer-initiated call: no Execution exists to correlate to —
+            # the webhook creates it (see services/inbound.py).
+            inbound.record_inbound_call(webhook.process_agent, payload)
+        else:
+            execution = outcome_routing.find_execution_for_payload(
+                webhook.process_agent, payload
+            )
+            if execution is not None:
+                outcome_routing.route_webhook_outcome(execution, payload)
     return Response(status=status.HTTP_200_OK)

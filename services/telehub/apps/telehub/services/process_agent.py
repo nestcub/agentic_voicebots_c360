@@ -170,7 +170,9 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
 
     communication_type = voice_bot.communication_type if voice_bot else ""
     webhook_schema = voice_bot.webhook_schema if voice_bot else None
-    if communication_type.startswith("voice") and webhook_schema:
+    # An inbound bot always needs the webhook: it's the only way its calls
+    # reach telehub at all (see services/inbound.py).
+    if communication_type == "voice_inbound" or (communication_type.startswith("voice") and webhook_schema):
         secret = secrets.token_hex(16)
         WebhookDefinition.objects.create(
             process_agent=agent,
@@ -182,7 +184,7 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
             # ProcessAgentDetailSerializer's webhooks field / services/ngrok.py.
             url=f"/api/telehub/webhooks/{secret}/",
             secret=secret,
-            schema=webhook_schema,
+            schema=webhook_schema or {},
             status="active",
         )
 

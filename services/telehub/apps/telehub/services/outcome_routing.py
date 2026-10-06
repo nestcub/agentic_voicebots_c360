@@ -171,7 +171,8 @@ def _run_qa(execution: "Execution", payload: dict) -> None:
         QAResult.objects.create(
             execution=execution,
             summary=str(payload.get("summary", "")),
-            sentiment=str(payload.get("sentiment", "")),
+            # Inbound bots report it as call_sentiment.
+            sentiment=str(payload.get("sentiment") or payload.get("call_sentiment") or ""),
             missing_variables=missing_variables,
             raw_result=payload,
         )
@@ -205,6 +206,25 @@ def _run_crm_update(execution: "Execution") -> None:
         )
     except Exception:
         return
+
+
+def record_completion(execution: "Execution", payload: dict) -> None:
+    """
+    Completed's unconditional edges: logs call_completed, then QA and CRM
+    Update. Shared with inbound.record_inbound_call, which creates its
+    Execution already-completed and skips the Callback/Retry branches.
+    """
+    try:
+        ExecutionEvent.objects.create(
+            execution=execution,
+            node_instance=_get_node(execution, NODE_NAME_COMPLETED),
+            event_type="call_completed",
+            payload=payload,
+        )
+    except Exception:
+        pass
+    _run_qa(execution, payload)
+    _run_crm_update(execution)
 
 
 def route_webhook_outcome(execution: "Execution", payload: dict) -> None:
@@ -243,15 +263,7 @@ def route_webhook_outcome(execution: "Execution", payload: dict) -> None:
         execution.status = "completed"
         execution.save()
 
-        ExecutionEvent.objects.create(
-            execution=execution,
-            node_instance=_get_node(execution, NODE_NAME_COMPLETED),
-            event_type="call_completed",
-            payload=payload,
-        )
-
-        _run_qa(execution, payload)
-        _run_crm_update(execution)
+        record_completion(execution, payload)
 
         callback_fired = False
         try:

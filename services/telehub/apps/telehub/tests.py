@@ -2230,3 +2230,160 @@ class OutcomeRoutingTests(TestCase):
         execution.refresh_from_db()
         self.assertEqual(execution.qa_result.summary, "HTTP round trip")
         self.assertEqual(execution.qa_result.sentiment, "neutral")
+
+
+INBOUND_WHATSAPP_CURL = """curl --location --request POST 'https://app.chat360.io/service/v2/task' \\
+--header 'Authorization: Api-Key test-key' \\
+--header 'Content-Type: application/json' \\
+--data-raw '{"task_name":"whatsapp_push_notification","extra":"","task_body":[{"client_number":"918799952622","receiver_number":"9718066817","country_code":"+91","template_data":{"param_data":{"link":"https://example.com/kb.pdf","customer_name":"customer_name","model_name":"model_name","appointment_place":"appointment_place","appointment_date":"appointment_date","appointment_time":"appointment_time"},"template_title":"hyundai_agentic_temp","template_code":"en","button_param_data":{},"file_name":""}}]}'"""
+
+INBOUND_PAYLOAD = {
+    "@caller_number": "+919876543210",
+    "@callee_number": "918799952622",
+    "@call_start_time": "2026-10-06 10:42:00",
+    "@call_duration": "95",
+    "@call_sentiment": "positive",
+    "@customer_name": "Ravi",
+    "@model_name": "Brezza",
+    "@appointment_place": "Andheri",
+    "@appointment_date": "2026-10-08",
+    "@appointment_time": "11:00",
+}
+
+
+class InboundCallTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        voice_bot = VoiceBot.objects.create(communication_type="voice_inbound")
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": self.department.id, "name": "Inbound", "voice": {"voice_bot_id": voice_bot.id}},
+            format="json",
+        )
+        self.agent = ProcessAgent.objects.get(pk=response.data["id"])
+        self.webhook = WebhookDefinition.objects.get(process_agent=self.agent)
+
+    def _post_call(self, payload=INBOUND_PAYLOAD):
+        return self.client.post(f"/api/telehub/webhooks/{self.webhook.secret}/", payload, format="json")
+
+    def test_inbound_bot_gets_webhook_without_schema(self):
+        self.assertEqual(self.webhook.schema, {})
+
+    def test_webhook_creates_completed_execution_with_stripped_keys(self):
+        response = self._post_call()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        execution = Execution.objects.get(process_agent=self.agent)
+        self.assertEqual(execution.status, "completed")
+        self.assertEqual(execution.campaign_id, "inbound")
+        self.assertIsNone(execution.next_execution)
+        self.assertEqual(execution.duration, 95)
+        self.assertEqual(execution.variables["customer_name"], "Ravi")
+        self.assertEqual(execution.variables["to_number"], "+919876543210")
+        self.assertNotIn("@customer_name", execution.variables)
+        self.assertEqual(execution.qa_result.sentiment, "positive")
+        self.assertTrue(ExecutionEvent.objects.filter(execution=execution, event_type="call_completed").exists())
+
+    def test_resend_of_same_call_is_ignored(self):
+        self._post_call()
+        self._post_call()
+        self.assertEqual(Execution.objects.filter(process_agent=self.agent).count(), 1)
+
+    def test_each_inbound_call_from_same_number_gets_its_own_row(self):
+        self._post_call()
+        self._post_call({**INBOUND_PAYLOAD, "@call_start_time": "2026-10-06 12:00:00"})
+        self.assertEqual(Execution.objects.filter(process_agent=self.agent).count(), 2)
+
+    def test_calls_endpoint_lists_variables_and_whatsapp_status(self):
+        self._post_call()
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/calls/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["variables"]["model_name"], "Brezza")
+        self.assertIsNone(response.data[0]["whatsapp"])
+
+
+class WhatsAppSendTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+        OmnichannelConfig.objects.create(
+            process_agent=self.agent, channel="whatsapp", whatsapp_curl=INBOUND_WHATSAPP_CURL
+        )
+        variables = {k.lstrip("@"): v for k, v in INBOUND_PAYLOAD.items()}
+        self.execution = Execution.objects.create(
+            process_agent=self.agent, lead_id="x", status="completed", variables=variables
+        )
+
+    def _send(self):
+        return self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/send-whatsapp/",
+            {"execution_ids": [self.execution.id]},
+            format="json",
+        )
+
+    def test_send_fills_receiver_and_params_from_variables(self):
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
+            response = self._send()
+
+        self.assertTrue(response.data["results"][0]["success"])
+        url, body_bytes, headers = mock_send.call_args.args
+        self.assertEqual(url, "https://app.chat360.io/service/v2/task")
+        self.assertEqual(headers["Authorization"], "Api-Key test-key")
+        task = json.loads(body_bytes)["task_body"][0]
+        self.assertEqual(task["receiver_number"], "9876543210")
+        self.assertEqual(task["client_number"], "918799952622")
+        params = task["template_data"]["param_data"]
+        self.assertEqual(params["customer_name"], "Ravi")
+        self.assertEqual(params["appointment_time"], "11:00")
+        self.assertEqual(params["link"], "https://example.com/kb.pdf")
+        self.assertTrue(ExecutionEvent.objects.filter(execution=self.execution, event_type="whatsapp_sent").exists())
+
+        calls = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/calls/").data
+        self.assertEqual(calls[0]["whatsapp"]["status"], "sent")
+
+    def test_missing_variable_blocks_send(self):
+        self.execution.variables = {**self.execution.variables, "appointment_date": ""}
+        self.execution.save()
+
+        with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
+            response = self._send()
+
+        mock_send.assert_not_called()
+        result = response.data["results"][0]
+        self.assertFalse(result["success"])
+        self.assertIn("appointment_date", result["error"])
+        self.assertTrue(ExecutionEvent.objects.filter(execution=self.execution, event_type="whatsapp_failed").exists())
+
+    def test_template_override_and_preview(self):
+        self.agent.omnichannel.whatsapp_template = "other_template"
+        self.agent.omnichannel.save()
+
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/whatsapp-preview/",
+            {"execution_ids": [self.execution.id]},
+            format="json",
+        )
+
+        preview = response.data[0]
+        self.assertEqual(preview["template_title"], "other_template")
+        self.assertEqual(preview["params"]["model_name"], "Brezza")
+        self.assertEqual(preview["missing"], [])
+        self.assertNotIn("headers", preview)
+
+    def test_no_curl_configured_reports_error(self):
+        self.agent.omnichannel.whatsapp_curl = ""
+        self.agent.omnichannel.save()
+        with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
+            response = self._send()
+        mock_send.assert_not_called()
+        self.assertIn("no WhatsApp curl", response.data["results"][0]["error"])
+
+    def test_empty_execution_ids_400s(self):
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/send-whatsapp/", {"execution_ids": []}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

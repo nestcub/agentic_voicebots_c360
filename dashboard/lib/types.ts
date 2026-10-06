@@ -419,6 +419,36 @@ export interface Execution {
   current_node: string;
 }
 
+// Calls tab row — an Execution with its full variables (for an inbound agent,
+// Chat360's post-call payload, "@" stripped from keys) and latest WhatsApp send.
+export interface CallRow {
+  id: number;
+  lead_id: string;
+  status: string;
+  campaign_id: string;
+  duration: number | null;
+  current_node: string;
+  variables: Record<string, unknown>;
+  created_at: string;
+  whatsapp: { status: "sent" | "failed"; error: string | null; at: string; count: number } | null;
+}
+
+export interface WhatsAppPreview {
+  execution_id: number;
+  receiver_number: string;
+  template_title: string;
+  params: Record<string, string>;
+  missing: string[];
+  error: string | null;
+}
+
+export interface WhatsAppSendResult {
+  execution_id: number;
+  success: boolean;
+  status_code: number | null;
+  error: string | null;
+}
+
 export interface QaResult {
   id: number;
   execution: number;

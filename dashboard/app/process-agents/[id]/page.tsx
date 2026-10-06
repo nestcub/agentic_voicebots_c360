@@ -31,6 +31,7 @@ import { OverviewTab } from "@/components/process-agents/OverviewTab";
 import { JourneyTab } from "@/components/process-agents/JourneyTab";
 import { RunsTab } from "@/components/process-agents/RunsTab";
 import { QaTab } from "@/components/process-agents/QaTab";
+import { CallsTab } from "@/components/process-agents/CallsTab";
 import { AnalyticsTab } from "@/components/process-agents/AnalyticsTab";
 import { SettingsTab } from "@/components/process-agents/SettingsTab";
 
@@ -432,6 +433,7 @@ export default function ProcessAgentDetailPage() {
           botJourneys={botJourneys}
         />
       )}
+      {tab === "calls" && <CallsTab agent={agent} />}
       {tab === "qa" && (
         <QaTab
           qaResults={qaResults}
