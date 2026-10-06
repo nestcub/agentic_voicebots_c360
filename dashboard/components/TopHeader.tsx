@@ -23,12 +23,12 @@ export function TopHeader() {
       {/* Right side */}
       <div className="flex items-center gap-4">
         <ScopeSwitcher />
-        <button className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors">
+        {/* <button className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors">
           <RiSettings3Line className="w-5 h-5" />
         </button>
         <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold">
           {initial}
-        </div>
+        </div> */}
       </div>
     </header>
   );

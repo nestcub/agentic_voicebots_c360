@@ -4,11 +4,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card } from "@/components/Card";
 import { StatusBadge } from "@/components/StatusBadge";
-import { listDepartments, createDepartment } from "@/lib/telehubApi";
-import type { Department } from "@/lib/types";
+import { listChannels, createChannel } from "@/lib/telehubApi";
+import type { Channel } from "@/lib/types";
 
 const COLOR_SWATCHES = [
-  "#3366f0", // primary
+  "#2563eb", // primary
   "#2fb6a8", // accent
   "#1ca674", // ok
   "#f0883e", // warn
@@ -16,46 +16,46 @@ const COLOR_SWATCHES = [
   "#0f1b2e", // sidebar-bg
 ];
 
-interface NewDepartmentForm {
+interface NewChannelForm {
   name: string;
   description: string;
   icon: string;
   color: string;
 }
 
-const EMPTY_FORM: NewDepartmentForm = {
+const EMPTY_FORM: NewChannelForm = {
   name: "",
   description: "",
   icon: "",
   color: COLOR_SWATCHES[0],
 };
 
-export default function DepartmentsPage() {
-  const [departments, setDepartments] = useState<Department[]>([]);
+export default function ChannelsPage() {
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState<NewDepartmentForm>(EMPTY_FORM);
+  const [form, setForm] = useState<NewChannelForm>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  function loadDepartments() {
+  function loadChannels() {
     setLoading(true);
     setError(null);
-    return listDepartments()
+    return listChannels()
       .then((data) => {
-        setDepartments(data);
+        setChannels(data);
         setLoading(false);
       })
       .catch((e) => {
-        setError(e instanceof Error ? e.message : "Failed to load departments");
+        setError(e instanceof Error ? e.message : "Failed to load channels");
         setLoading(false);
       });
   }
 
   useEffect(() => {
-    loadDepartments();
+    loadChannels();
   }, []);
 
   function openForm() {
@@ -78,16 +78,16 @@ export default function DepartmentsPage() {
     setSubmitting(true);
     setFormError(null);
     try {
-      await createDepartment({
+      await createChannel({
         name: form.name.trim(),
         description: form.description.trim() || undefined,
         icon: form.icon.trim() || undefined,
         color: form.color || undefined,
       });
-      await loadDepartments();
+      await loadChannels();
       setFormOpen(false);
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : "Failed to create department");
+      setFormError(e instanceof Error ? e.message : "Failed to create channel");
     } finally {
       setSubmitting(false);
     }
@@ -98,22 +98,22 @@ export default function DepartmentsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-on-surface">Departments</h1>
-          <p className="text-xs text-text-muted mt-0.5">Organize process agents by department</p>
+          <h1 className="text-lg font-semibold text-on-surface">Channels</h1>
+          <p className="text-xs text-text-muted mt-0.5">Organize process agents by channel</p>
         </div>
         <button
           onClick={openForm}
           className="px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container transition-colors"
         >
-          + Add Department
+          + Add Channel
         </button>
       </div>
 
-      {/* Inline add-department form */}
+      {/* Inline add-channel form */}
       {formOpen && (
         <Card className="p-5">
           <form onSubmit={handleSubmit} className="space-y-4">
-            <p className="text-sm font-semibold text-on-surface">New Department</p>
+            <p className="text-sm font-semibold text-on-surface">New Channel</p>
 
             {formError && (
               <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-4 py-2">
@@ -153,7 +153,7 @@ export default function DepartmentsPage() {
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                 className="px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
                 rows={2}
-                placeholder="Short description of this department"
+                placeholder="Short description of this channel"
               />
             </label>
 
@@ -187,7 +187,7 @@ export default function DepartmentsPage() {
                 disabled={submitting}
                 className="px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container disabled:opacity-60 transition-colors"
               >
-                {submitting ? "Creating…" : "Create Department"}
+                {submitting ? "Creating…" : "Create Channel"}
               </button>
               <button
                 type="button"
@@ -213,31 +213,31 @@ export default function DepartmentsPage() {
       {loading && <p className="text-sm text-text-muted">Loading…</p>}
 
       {/* Empty state */}
-      {!loading && !error && departments.length === 0 && (
+      {!loading && !error && channels.length === 0 && (
         <Card className="p-10 flex flex-col items-center justify-center text-center">
           <p className="text-sm text-text-muted mb-3">
-            No departments yet. Create your first department to start building process agents.
+            No channels yet. Create your first channel to start building process agents.
           </p>
           <button
             onClick={openForm}
             className="px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container transition-colors"
           >
-            + Add Department
+            + Add Channel
           </button>
         </Card>
       )}
 
-      {/* Department grid */}
-      {!loading && !error && departments.length > 0 && (
+      {/* Channel grid */}
+      {!loading && !error && channels.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {departments.map((d) => (
-            <Link key={d.id} href={`/departments/${d.id}`}>
+          {channels.map((d) => (
+            <Link key={d.id} href={`/channels/${d.id}`}>
               <Card className="p-5 h-full hover:shadow-md hover:border-primary/40 transition-all cursor-pointer">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
                       className="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0"
-                      style={{ backgroundColor: `${d.color || "#3366f0"}22` }}
+                      style={{ backgroundColor: `${d.color || "#2563eb"}22` }}
                     >
                       {d.icon || "🗂️"}
                     </span>

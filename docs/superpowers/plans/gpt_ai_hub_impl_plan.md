@@ -638,7 +638,7 @@ All Departments
 
 Button
 
-+ Add Department
++ Add Channels
 
 Opening a Department shows
 

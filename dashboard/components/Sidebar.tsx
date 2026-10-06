@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { domainConfig } from "@/lib/domainConfig";
@@ -21,9 +22,10 @@ import {
 } from "react-icons/ri";
 
 const NAV_BEFORE_INTELLIGENCE = [
-  { href: "/",            label: "Dashboard",    Icon: RiHome5Line },
-  { href: "/departments", label: "Departments",  Icon: RiBuildingLine },
-  { href: "/leads",       label: "Leads",         Icon: RiUserLine },
+  { href: "/",        label: "Dashboard", Icon: RiHome5Line },
+  { href: "/channels", label: "Channels",   Icon: RiBuildingLine },
+  { href: "/leads",    label: "Leads",     Icon: RiUserLine },
+  { href: "/bots",     label: "Bots",      Icon: RiRobotLine },
 ];
 
 const NAV_AFTER_INTELLIGENCE = [
@@ -59,9 +61,14 @@ export function Sidebar() {
       {/* Logo + toggle */}
       <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border shrink-0">
         {isOpen && (
-          <span className="font-bold text-lg tracking-tight text-sidebar-text whitespace-nowrap">
-            Chat<span className="text-primary">360</span>
-          </span>
+          <Image
+            src="/Logo.png"
+            alt="Chat360"
+            width={120}
+            height={32}
+            className="h-8 w-auto"
+            priority
+          />
         )}
         <button
           onClick={toggle}
@@ -102,7 +109,7 @@ export function Sidebar() {
         })}
 
         {/* Intelligence expandable group */}
-        <div>
+        {/* <div>
           <button
             onClick={() => setIntelligenceOpen((prev) => !prev)}
             title={!isOpen ? "Intelligence" : undefined}
@@ -127,7 +134,7 @@ export function Sidebar() {
             )}
           </button>
 
-          {/* Sub-items — only when sidebar is open and group is open */}
+
           {isOpen && intelligenceOpen && (
             <div className="mt-0.5 space-y-0.5">
               {INTELLIGENCE_SUB.map(({ href, label, Icon, exact }) => {
@@ -149,10 +156,10 @@ export function Sidebar() {
               })}
             </div>
           )}
-        </div>
+        </div> */}
 
         {/* Items after Intelligence */}
-        {NAV_AFTER_INTELLIGENCE.map(({ href, label, Icon }) => {
+        {/* {NAV_AFTER_INTELLIGENCE.map(({ href, label, Icon }) => {
           const active = pathname.startsWith(href);
           return (
             <Link
@@ -171,7 +178,7 @@ export function Sidebar() {
               {isOpen && <span className="truncate">{label}</span>}
             </Link>
           );
-        })}
+        })} */}
       </nav>
 
       {/* Footer */}

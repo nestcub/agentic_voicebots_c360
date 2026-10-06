@@ -1,11 +1,14 @@
 // TelehubApi — talks directly to the Telehub Django/DRF service (services/telehub/),
-// which owns Departments, Process Agents, their journeys/executions/QA, Integrations
-// and Node Templates. Mirrors the fetch conventions of lib/sources/apiDataSource.ts:
+// which owns Channels (backend: Departments), Process Agents, their journeys/executions/QA,
+// Integrations and Node Templates. Mirrors the fetch conventions of lib/sources/apiDataSource.ts:
 // same base-URL-env-var pattern, same `!res.ok` -> throw Error(...) handling.
+//
+// Frontend uses "Channel" terminology; backend uses "Department". The adapter layer below
+// transparently maps between them. See CHANNEL_MIGRATION.md for context.
 
 import type {
-  Department,
-  DepartmentDetail,
+  Channel,
+  ChannelDetail,
   ProcessAgentSummary,
   ProcessAgentDetail,
   ProcessAgentWizardPayload,
@@ -15,10 +18,18 @@ import type {
   NodeTemplate,
   Execution,
   QaResult,
+  ProcessAgentStats,
+  ProcessAgentAnalytics,
+  LeadSource,
   LaunchCampaignPayload,
   LaunchCampaignResult,
   CampaignSummary,
   CampaignLead,
+  ProcessAgentVariable,
+  WebhookDefinition,
+  ProcessAgentIntegration,
+  BotJourney,
+  VoiceBot,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_TELEHUB_API_URL || "http://localhost:8000";
@@ -58,56 +69,91 @@ function del(path: string): Promise<void> {
   return request<void>(path, { method: "DELETE" });
 }
 
-// ── Departments ──────────────────────────────────────────────────────────
+// ── Adapter layer: map frontend "Channel" terminology to backend "Department" ──
+// This allows the frontend to use "channel" while keeping the backend unchanged.
+// See CHANNEL_MIGRATION.md for rationale.
 
-export function listDepartments(): Promise<Department[]> {
-  return get<Department[]>("/departments/");
+function mapChannelToBackend(data: any): any {
+  if (data && typeof data === "object") {
+    const copy = { ...data };
+    if ("channelId" in copy) {
+      copy.department = copy.channelId;
+      delete copy.channelId;
+    }
+    return copy;
+  }
+  return data;
 }
 
-export function getDepartment(id: number): Promise<DepartmentDetail> {
-  return get<DepartmentDetail>(`/departments/${id}/`);
+function mapBackendToChannel(data: any): any {
+  if (!data) return data;
+  if (Array.isArray(data)) {
+    return data.map(mapBackendToChannel);
+  }
+  if (typeof data === "object") {
+    const copy = { ...data };
+    if ("department" in copy && "department_name" in copy) {
+      copy.channel = copy.department;
+      copy.channel_name = copy.department_name;
+      delete copy.department;
+      delete copy.department_name;
+    }
+    return copy;
+  }
+  return data;
 }
 
-export function createDepartment(data: {
+// ── Channels (backend: Departments) ──────────────────────────────────────
+
+export function listChannels(): Promise<Channel[]> {
+  return get<any>("/departments/").then(mapBackendToChannel);
+}
+
+export function getChannel(id: number): Promise<ChannelDetail> {
+  return get<any>(`/departments/${id}/`).then(mapBackendToChannel);
+}
+
+export function createChannel(data: {
   name: string;
   description?: string;
   icon?: string;
   color?: string;
-}): Promise<Department> {
-  return post<Department>("/departments/", data);
+}): Promise<Channel> {
+  return post<any>("/departments/", data).then(mapBackendToChannel);
 }
 
-export function updateDepartment(
+export function updateChannel(
   id: number,
   data: Partial<{ name: string; description: string; icon: string; color: string; is_active: boolean }>,
-): Promise<Department> {
-  return patch<Department>(`/departments/${id}/`, data);
+): Promise<Channel> {
+  return patch<any>(`/departments/${id}/`, data).then(mapBackendToChannel);
 }
 
-export function deleteDepartment(id: number): Promise<void> {
+export function deleteChannel(id: number): Promise<void> {
   return del(`/departments/${id}/`);
 }
 
 // ── Process Agents ───────────────────────────────────────────────────────
 
-export function listProcessAgents(departmentId?: number): Promise<ProcessAgentSummary[]> {
-  const qs = departmentId !== undefined ? `?department=${departmentId}` : "";
-  return get<ProcessAgentSummary[]>(`/process-agents/${qs}`);
+export function listProcessAgents(channelId?: number): Promise<ProcessAgentSummary[]> {
+  const qs = channelId !== undefined ? `?department=${channelId}` : "";
+  return get<any>(`/process-agents/${qs}`).then(mapBackendToChannel);
 }
 
 export function getProcessAgent(id: number): Promise<ProcessAgentDetail> {
-  return get<ProcessAgentDetail>(`/process-agents/${id}/`);
+  return get<any>(`/process-agents/${id}/`).then(mapBackendToChannel);
 }
 
 export function createProcessAgent(payload: ProcessAgentWizardPayload): Promise<ProcessAgentDetail> {
-  return post<ProcessAgentDetail>("/process-agents/", payload);
+  const backendPayload = mapChannelToBackend(payload);
+  return post<any>("/process-agents/", backendPayload).then(mapBackendToChannel);
 }
 
 export function updateProcessAgent(
   id: number,
   data: Partial<{ name: string; description: string; status: string; is_active: boolean }>,
 ): Promise<ProcessAgentDetail> {
-  return patch<ProcessAgentDetail>(`/process-agents/${id}/`, data);
+  return patch<any>(`/process-agents/${id}/`, data).then(mapBackendToChannel);
 }
 
 export function deleteProcessAgent(id: number): Promise<void> {
@@ -124,6 +170,129 @@ export function getProcessAgentExecutions(id: number): Promise<Execution[]> {
 
 export function getProcessAgentQaResults(id: number): Promise<QaResult[]> {
   return get<QaResult[]>(`/process-agents/${id}/qa_results/`);
+}
+
+export function getProcessAgentStats(id: number): Promise<ProcessAgentStats> {
+  return get<ProcessAgentStats>(`/process-agents/${id}/stats/`);
+}
+
+export function getProcessAgentAnalytics(id: number): Promise<ProcessAgentAnalytics> {
+  return get<ProcessAgentAnalytics>(`/process-agents/${id}/analytics/`);
+}
+
+// A ProcessAgent's BotJourney(s), created by the wizard — read-only here.
+// Used to resolve bot_journey_id for the Runs/QA tabs' dispatch actions.
+export function getProcessAgentBotJourneys(id: number): Promise<BotJourney[]> {
+  return get<BotJourney[]>(`/process-agents/${id}/journeys/`);
+}
+
+// ── Bots (global VoiceBot library — dashboard's /bots page) ─────────────
+
+export type VoiceBotWrite = Partial<
+  Pick<VoiceBot, "label" | "communication_type" | "bot_name" | "bot_id" | "dids" | "api_url" | "script" | "webhook_schema">
+>;
+
+export function listVoiceBots(): Promise<VoiceBot[]> {
+  return get<VoiceBot[]>("/voice-bots/");
+}
+
+export function createVoiceBot(data: VoiceBotWrite): Promise<VoiceBot> {
+  return post<VoiceBot>("/voice-bots/", data);
+}
+
+export function updateVoiceBot(voiceBotId: number, data: VoiceBotWrite): Promise<VoiceBot> {
+  return patch<VoiceBot>(`/voice-bots/${voiceBotId}/`, data);
+}
+
+export function deleteVoiceBot(voiceBotId: number): Promise<void> {
+  return del(`/voice-bots/${voiceBotId}/`);
+}
+
+export function getProcessAgentLeadSource(id: number): Promise<LeadSource | Record<string, never>> {
+  return get<LeadSource | Record<string, never>>(`/process-agents/${id}/lead-source/`);
+}
+
+export function updateProcessAgentLeadSource(
+  id: number,
+  data: Partial<Pick<LeadSource, "type" | "configuration" | "field_mapping">>,
+): Promise<LeadSource> {
+  return patch<LeadSource>(`/process-agents/${id}/lead-source/`, data);
+}
+
+// ── Settings tab: QA / Analytics stats / Variables / Webhooks / Omnichannel / Integrations ──
+
+export function getProcessAgentQaConfig(id: number): Promise<Record<string, boolean>> {
+  return get<Record<string, boolean>>(`/process-agents/${id}/qa-config/`);
+}
+
+export function updateProcessAgentQaConfig(
+  id: number,
+  data: Partial<Record<string, boolean>>,
+): Promise<Record<string, boolean>> {
+  return patch<Record<string, boolean>>(`/process-agents/${id}/qa-config/`, data);
+}
+
+export function updateProcessAgentAnalyticsStats(
+  id: number,
+  data: Partial<Record<string, boolean>>,
+): Promise<Record<string, boolean>> {
+  return patch<Record<string, boolean>>(`/process-agents/${id}/analytics-stats/`, data);
+}
+
+export type ProcessAgentVariableWrite = Partial<
+  Pick<ProcessAgentVariable, "key" | "type" | "default_value" | "label" | "required" | "source">
+>;
+
+export function createProcessAgentVariable(
+  id: number,
+  data: ProcessAgentVariableWrite,
+): Promise<ProcessAgentVariable> {
+  return post<ProcessAgentVariable>(`/process-agents/${id}/variables/`, data);
+}
+
+export function updateProcessAgentVariable(
+  id: number,
+  variableId: number,
+  data: ProcessAgentVariableWrite,
+): Promise<ProcessAgentVariable> {
+  return patch<ProcessAgentVariable>(`/process-agents/${id}/variables/${variableId}/`, data);
+}
+
+export function deleteProcessAgentVariable(id: number, variableId: number): Promise<void> {
+  return del(`/process-agents/${id}/variables/${variableId}/`);
+}
+
+export function updateProcessAgentWebhook(
+  id: number,
+  webhookId: number,
+  data: Partial<Pick<WebhookDefinition, "name" | "schema" | "status">>,
+): Promise<WebhookDefinition> {
+  return patch<WebhookDefinition>(`/process-agents/${id}/webhooks/${webhookId}/`, data);
+}
+
+export interface OmnichannelConfigWrite {
+  channel?: string;
+  variables?: string[];
+  whatsapp_template?: string;
+  whatsapp_curl?: string;
+}
+
+export function updateProcessAgentOmnichannel(
+  id: number,
+  data: OmnichannelConfigWrite,
+): Promise<OmnichannelConfigWrite> {
+  return patch<OmnichannelConfigWrite>(`/process-agents/${id}/omnichannel/`, data);
+}
+
+export function attachProcessAgentIntegration(
+  id: number,
+  integrationId: number,
+): Promise<ProcessAgentIntegration> {
+  return post<ProcessAgentIntegration>(`/process-agents/${id}/integrations/`, { integration: integrationId });
+}
+
+export function detachProcessAgentIntegration(id: number, processIntegrationId: number): Promise<void> {
+  return del(`/process-agents/${id}/integrations/${processIntegrationId}/`);
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────
@@ -175,4 +344,33 @@ export function listCampaignLeads(processAgentId: number, campaignId: string): P
   return get<CampaignLead[]>(
     `/process-agents/${processAgentId}/campaigns/${encodeURIComponent(campaignId)}/leads/`,
   );
+}
+
+export interface DispatchSingleCallResult {
+  execution_id: number;
+  created_count: number;
+  success: boolean;
+  status_code: number | null;
+  error: string | null;
+}
+
+export function dispatchSingleCall(
+  processAgentId: number,
+  params: Record<string, string>,
+  botJourneyId?: number,
+): Promise<DispatchSingleCallResult> {
+  return post<DispatchSingleCallResult>(`/process-agents/${processAgentId}/dispatch-single-call/`, {
+    params,
+    ...(botJourneyId !== undefined ? { bot_journey_id: botJourneyId } : {}),
+  });
+}
+
+// QA tab's "Dispatch Follow-up": re-dials the lead from a past Execution
+// through a chosen BotJourney — see the dispatch_follow_up action in
+// services/telehub/apps/telehub/api/views.py for the full contract.
+export function dispatchFollowUp(
+  processAgentId: number,
+  data: { execution_id: number; bot_journey_id: number; params?: Record<string, string> },
+): Promise<DispatchSingleCallResult> {
+  return post<DispatchSingleCallResult>(`/process-agents/${processAgentId}/dispatch-follow-up/`, data);
 }

@@ -11,24 +11,19 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from ..models import Execution, NodeInstance
+from ..models import Execution
 from .callback_time import parse_call_back_time
+from .journey import journey_nodes
 
 NODE_NAME_CALLBACK = "Callback"
-
 DEFAULT_DELAY_MINUTES = 30
 
 
 def _get_callback_config(execution: "Execution") -> dict:
-    """
-    Defensively reads the Callback NodeInstance's config for this Execution's
-    process_agent. Treat a missing node (or any lookup error) as an empty
-    config rather than raising.
-    """
+    """Fail-open: {} if the Callback node doesn't exist for this journey."""
     try:
-        return execution.process_agent.nodes.get(name=NODE_NAME_CALLBACK).config or {}
-    except NodeInstance.DoesNotExist:
-        return {}
+        node = journey_nodes(execution).get(name=NODE_NAME_CALLBACK)
+        return node.config or {}
     except Exception:
         return {}
 

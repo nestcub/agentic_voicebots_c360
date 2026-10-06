@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { parseCampaignFile } from "@/lib/parseCampaignFile";
-import { listDepartments, listProcessAgents, getProcessAgent, launchCampaign } from "@/lib/telehubApi";
-import type { Department, ProcessAgentSummary, ProcessAgentDetail, ProcessAgentVariable } from "@/lib/types";
+import { listChannels, listProcessAgents, getProcessAgent, launchCampaign } from "@/lib/telehubApi";
+import type { Channel, ProcessAgentSummary, ProcessAgentDetail, ProcessAgentVariable } from "@/lib/types";
 
 export interface UploadCampaignModalProps {
   open: boolean;
@@ -98,10 +98,10 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
   const [step, setStep] = useState<Step>("process");
 
   // Step 1: Process
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [departmentsLoading, setDepartmentsLoading] = useState(false);
-  const [departmentsError, setDepartmentsError] = useState<string | null>(null);
-  const [selectedDepartmentId, setSelectedDepartmentId] = useState<number | undefined>(undefined);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
+  const [selectedChannelId, setSelectedChannelId] = useState<number | undefined>(undefined);
 
   const [processAgents, setProcessAgents] = useState<ProcessAgentSummary[]>([]);
   const [processAgentsLoading, setProcessAgentsLoading] = useState(false);
@@ -126,26 +126,26 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
 
-  // Load departments when the modal opens.
+  // Load channels when the modal opens.
   useEffect(() => {
     if (!open) return;
-    setDepartmentsLoading(true);
-    setDepartmentsError(null);
-    listDepartments()
-      .then((data) => setDepartments(data))
-      .catch((e) => setDepartmentsError(e instanceof Error ? e.message : "Failed to load departments"))
-      .finally(() => setDepartmentsLoading(false));
+    setChannelsLoading(true);
+    setChannelsError(null);
+    listChannels()
+      .then((data) => setChannels(data))
+      .catch((e) => setChannelsError(e instanceof Error ? e.message : "Failed to load channels"))
+      .finally(() => setChannelsLoading(false));
   }, [open]);
 
   // Pre-select a process agent when opened with initialProcessAgentId — resolve its
-  // department first so the department/process selects both land on the right value.
+  // channel first so the channel/process selects both land on the right value.
   useEffect(() => {
     if (!open || !initialProcessAgentId) return;
     setDetailLoading(true);
     setDetailError(null);
     getProcessAgent(initialProcessAgentId)
       .then((detail) => {
-        setSelectedDepartmentId(detail.department);
+        setSelectedChannelId(detail.channel);
         setSelectedProcessAgentId(detail.id);
         setProcessAgentDetail(detail);
       })
@@ -154,28 +154,28 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialProcessAgentId]);
 
-  // Load process agents whenever the selected department changes.
+  // Load process agents whenever the selected channel changes.
   useEffect(() => {
-    if (!open || selectedDepartmentId === undefined) {
+    if (!open || selectedChannelId === undefined) {
       setProcessAgents([]);
       return;
     }
     setProcessAgentsLoading(true);
     setProcessAgentsError(null);
-    listProcessAgents(selectedDepartmentId)
+    listProcessAgents(selectedChannelId)
       .then((data) => setProcessAgents(data))
       .catch((e) => setProcessAgentsError(e instanceof Error ? e.message : "Failed to load process agents"))
       .finally(() => setProcessAgentsLoading(false));
-  }, [open, selectedDepartmentId]);
+  }, [open, selectedChannelId]);
 
   if (!open) return null;
 
   function resetAll() {
     setStep("process");
-    setDepartments([]);
-    setDepartmentsLoading(false);
-    setDepartmentsError(null);
-    setSelectedDepartmentId(undefined);
+    setChannels([]);
+    setChannelsLoading(false);
+    setChannelsError(null);
+    setSelectedChannelId(undefined);
     setProcessAgents([]);
     setProcessAgentsLoading(false);
     setProcessAgentsError(null);
@@ -199,15 +199,15 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
     onClose();
   }
 
-  function handleDepartmentChange(value: string) {
+  function handleChannelChange(value: string) {
     const id = value ? Number(value) : undefined;
-    setSelectedDepartmentId(id);
+    setSelectedChannelId(id);
     setSelectedProcessAgentId(undefined);
     setProcessAgentDetail(null);
   }
 
   async function handleProcessNext() {
-    if (selectedDepartmentId === undefined || selectedProcessAgentId === undefined || detailLoading) return;
+    if (selectedChannelId === undefined || selectedProcessAgentId === undefined || detailLoading) return;
     setDetailLoading(true);
     setDetailError(null);
     try {
@@ -337,7 +337,7 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
 
   const stepLabel =
     step === "process"
-      ? "Step 1 of 3 — Select process"
+      ? "Step 1 of 3 — Select agent"
       : step === "upload"
         ? "Step 2 of 3 — Upload file"
         : "Step 3 of 3 — Map columns";
@@ -365,18 +365,18 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
         <div className="px-5 pb-5">
           {step === "process" && (
             <div className="space-y-4">
-              <Field label="Department *">
-                {departmentsError ? (
-                  <p className="text-sm text-bad">{departmentsError}</p>
+              <Field label="Channel *">
+                {channelsError ? (
+                  <p className="text-sm text-bad">{channelsError}</p>
                 ) : (
                   <select
-                    value={selectedDepartmentId ?? ""}
-                    onChange={(e) => handleDepartmentChange(e.target.value)}
-                    disabled={departmentsLoading}
+                    value={selectedChannelId ?? ""}
+                    onChange={(e) => handleChannelChange(e.target.value)}
+                    disabled={channelsLoading}
                     className={inputCls}
                   >
-                    <option value="">{departmentsLoading ? "Loading…" : "— select a department —"}</option>
-                    {departments.map((d) => (
+                    <option value="">{channelsLoading ? "Loading…" : "— select a channel —"}</option>
+                    {channels.map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.name}
                       </option>
@@ -385,22 +385,22 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
                 )}
               </Field>
 
-              <Field label="Process *">
+              <Field label="Agent *">
                 {processAgentsError ? (
                   <p className="text-sm text-bad">{processAgentsError}</p>
                 ) : (
                   <select
                     value={selectedProcessAgentId ?? ""}
                     onChange={(e) => setSelectedProcessAgentId(e.target.value ? Number(e.target.value) : undefined)}
-                    disabled={selectedDepartmentId === undefined || processAgentsLoading}
+                    disabled={selectedChannelId === undefined || processAgentsLoading}
                     className={inputCls}
                   >
                     <option value="">
-                      {selectedDepartmentId === undefined
-                        ? "Select a department first"
+                      {selectedChannelId === undefined
+                        ? "Select a channel first"
                         : processAgentsLoading
                           ? "Loading…"
-                          : "— select a process —"}
+                          : "— select an agent —"}
                     </option>
                     {processAgents.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -420,7 +420,7 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
               <div className="flex justify-end items-center gap-3 pt-1">
                 <button
                   onClick={handleProcessNext}
-                  disabled={selectedDepartmentId === undefined || selectedProcessAgentId === undefined || detailLoading}
+                  disabled={selectedChannelId === undefined || selectedProcessAgentId === undefined || detailLoading}
                   className="bg-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed text-on-primary text-sm font-medium px-4 py-2 rounded-lg transition-colors"
                 >
                   {detailLoading ? "Loading…" : "Next"}

@@ -280,7 +280,7 @@ cp .env.example .env   # then fill the keys below
 `.env` (repo root) keys:
 - Intelligence: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `DEEPGRAM_API_KEY`
 - Orchestrator store (live mode): `ORCH_STORE=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY`
-- Voice dispatch (live calls): `CHAT360_AUTH_COOKIE`, `DID_POOL=+9179...`
+- Voice dispatch (live calls): `CHAT360_AUTH_COOKIE`; the outbound DID is per-VoiceBot (`VoiceBot.dids`), not an env var
 - Note: `SUPABASE_URL` (bare) is for Python; `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` are for the dashboard.
 
 ## 1. Intelligence plane — Streamlit (transcribe · plan · Goal/Target)

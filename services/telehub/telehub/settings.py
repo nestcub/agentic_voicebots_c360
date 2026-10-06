@@ -1,14 +1,14 @@
 """
 Django settings for telehub project.
 
-Standalone scaffold (Wave 1) — SQLite only, no Postgres/Redis, no auth.
-This project skeleton owns no business models yet; a later wave adds
-Departments, Process Agents, Workflows, Executions, QA, Analytics, etc.
+Postgres (Supabase) backend, no Redis, no auth.
 """
 
+import os
 import sys
 from pathlib import Path
 
+import dj_database_url
 from dotenv import load_dotenv
 
 # BASE_DIR is the outer services/telehub/ directory (contains manage.py),
@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.postgres",
     "corsheaders",
     "rest_framework",
     "apps.telehub",
@@ -80,15 +81,34 @@ TEMPLATES = [
 WSGI_APPLICATION = "telehub.wsgi.application"
 ASGI_APPLICATION = "telehub.asgi.application"
 
-# Database
+# Database — Supabase Postgres.
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+#
+# Deliberately NOT the repo's existing DATABASE_URL — that name is already
+# claimed by the Intelligence plane's Neon/pgvector connection (see
+# .env.example, intelligence/). Reusing it here would silently point telehub
+# at the wrong database. TELEHUB_DATABASE_URL is a separate Supabase project.
+#
+# Use Supabase's pooled connection string (port 6543, ?pgbouncer=true) for
+# normal app traffic. Set TELEHUB_DATABASE_MIGRATE_URL (direct port 5432) if
+# the pooled connection rejects DDL when running `manage.py migrate`.
+_database_url = os.environ.get("TELEHUB_DATABASE_MIGRATE_URL") if "migrate" in sys.argv else None
+_database_url = _database_url or os.environ.get("TELEHUB_DATABASE_URL")
+if not _database_url:
+    raise RuntimeError(
+        "TELEHUB_DATABASE_URL is not set — telehub requires a Supabase/Postgres "
+        "connection string in the repo-root .env (see CLAUDE.md). Do not reuse "
+        "DATABASE_URL — that's the Intelligence plane's Neon connection."
+    )
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": dj_database_url.parse(_database_url, conn_max_age=600),
 }
+# Supabase's docs append ?pgbouncer=true to the pooled URL as a hint for
+# clients like asyncpg — dj_database_url forwards unknown query params
+# straight into OPTIONS, and psycopg (unlike psycopg2) rejects unknown libpq
+# connection options outright, so this must be stripped rather than passed through.
+DATABASES["default"].get("OPTIONS", {}).pop("pgbouncer", None)
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators

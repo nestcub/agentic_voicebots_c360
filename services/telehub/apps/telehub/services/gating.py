@@ -11,21 +11,13 @@ from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
-from ..models import Execution, NodeInstance, ProcessAgent
+from ..models import Execution
+from .journey import journey_nodes
 
 NODE_NAME_BUSINESS_HOURS = "Business Hours"
 NODE_NAME_DND_CHECK = "DND Check"
 
 _TRUTHY_STRINGS = {"true", "1", "yes"}
-
-
-def _get_node_config(process_agent: "ProcessAgent", node_name: str) -> dict:
-    try:
-        return process_agent.nodes.get(name=node_name).config or {}
-    except NodeInstance.DoesNotExist:
-        return {}
-    except Exception:
-        return {}
 
 
 def _is_truthy(value) -> bool:
@@ -36,15 +28,28 @@ def _is_truthy(value) -> bool:
     return bool(value)
 
 
-def is_within_business_hours(process_agent: "ProcessAgent", at=None) -> bool:
+def _get_node_config(execution: "Execution", node_name: str) -> dict:
+    """
+    Fail-open node config lookup: returns {} if the node doesn't exist on
+    this execution's journey, or on any other error.
+    """
+    try:
+        node = journey_nodes(execution).get(name=node_name)
+        return node.config or {}
+    except Exception:
+        return {}
+
+
+def is_within_business_hours(execution: "Execution", at=None) -> bool:
     """
     Reads the "Business Hours" NodeInstance config: {timezone, start, end,
     working_days} (working_days as a list of ISO weekday ints, 1=Monday..
     7=Sunday). `at` defaults to timezone.now(); converted to the configured
     timezone before comparing. Missing/invalid config = always within
-    business hours (fail open).
+    business hours (fail open). Scoped to execution.current_bot_journey (see
+    journey_nodes) so multi-journey process agents resolve the right node.
     """
-    config = _get_node_config(process_agent, NODE_NAME_BUSINESS_HOURS)
+    config = _get_node_config(execution, NODE_NAME_BUSINESS_HOURS)
 
     tz_name = config.get("timezone")
     start_str = config.get("start")
@@ -83,7 +88,7 @@ def is_suppressed_dnc(execution: "Execution") -> bool:
     truthy. Missing node/config = not suppressed (fail open).
     """
     try:
-        config = _get_node_config(execution.process_agent, NODE_NAME_DND_CHECK)
+        config = _get_node_config(execution, NODE_NAME_DND_CHECK)
         if not _is_truthy(config.get("enabled")):
             return False
 

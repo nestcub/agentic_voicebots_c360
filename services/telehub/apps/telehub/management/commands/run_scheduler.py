@@ -22,7 +22,7 @@ def tick() -> int:
     )
 
     for execution in due_executions:
-        if not gating.is_within_business_hours(execution.process_agent):
+        if not gating.is_within_business_hours(execution):
             # Outside business hours: leave next_execution as-is so it's
             # picked up again next tick once within hours. Don't reschedule
             # forward — that would drift the due time.

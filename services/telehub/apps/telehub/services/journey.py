@@ -1,4 +1,4 @@
-from ..models import NodeConnection, NodeInstance, ProcessAgent
+from ..models import BotJourney, NodeConnection, NodeInstance, ProcessAgent
 from .seed_node_templates import seed_node_templates
 
 # Per docs/superpowers/plans/gpt_ai_hub_impl_plan.md "Journey" section. Main trunk:
@@ -44,25 +44,43 @@ JOURNEY_EDGES = [
 ]
 
 
-def generate_journey(process_agent: "ProcessAgent") -> None:
+def generate_journey(target) -> None:
     """
-    Idempotent: clears and rebuilds this process_agent's NodeInstance/NodeConnection
+    Idempotent: clears and rebuilds one BotJourney's NodeInstance/NodeConnection
     rows from the fixed JOURNEY_STEPS/JOURNEY_EDGES graph (9 nodes, 10 edges). Main
     trunk: Lead Received -> Business Hours -> DND Check -> Communication ->
     Completed. Retry/Callback/QA/CRM Update all branch off Completed; Retry and
     Callback loop back to Business Hours to re-attempt. V1 is form-driven only:
     users view this generated graph, they don't hand-edit it (no React Flow yet).
+
+    `target` is either a BotJourney (the normal, multi-journey-aware path — its
+    own complete 9-node subgraph, independent of any other journey on the same
+    ProcessAgent so node-name lookups like nodes.get(name="Communication") stay
+    unambiguous per journey) or a bare ProcessAgent (legacy call shape, kept so
+    existing single-journey callers/tests don't need to change): in that case a
+    single default BotJourney (order=0, name="Sales Journey") is get-or-created
+    for it and used as the target, exactly matching pre-multi-journey behaviour
+    when a ProcessAgent only ever has one journey.
     """
+    if isinstance(target, ProcessAgent):
+        bot_journey, _ = BotJourney.objects.get_or_create(
+            process_agent=target, order=0, defaults={"name": "Sales Journey"}
+        )
+    else:
+        bot_journey = target
+
+    process_agent = bot_journey.process_agent
     templates = seed_node_templates()
 
     # Deleting NodeInstances cascades to NodeConnection (source_node/target_node
     # are both on_delete=CASCADE from NodeInstance), so this alone clears both.
-    process_agent.nodes.all().delete()
+    bot_journey.nodes.all().delete()
 
     nodes_by_name = {}
     for name, template_type, x, y in JOURNEY_STEPS:
         nodes_by_name[name] = NodeInstance.objects.create(
             process_agent=process_agent,
+            bot_journey=bot_journey,
             node_template=templates[template_type],
             name=name,
             config={},
@@ -78,3 +96,19 @@ def generate_journey(process_agent: "ProcessAgent") -> None:
             condition=condition,
             priority=0,
         )
+
+
+def journey_nodes(execution: "Execution"):
+    """
+    The NodeInstance queryset to resolve fixed-node lookups (by name — "Retry",
+    "Communication", "Business Hours", ...) against for a given Execution.
+    Scoped to execution.current_bot_journey when set, so multi-journey
+    ProcessAgents (whose journeys each have their own same-named nodes) don't
+    collide; falls back to the process agent's full node set for
+    pre-multi-journey Executions that never had current_bot_journey populated
+    (safe as long as that process agent still only has one journey — the
+    common case, and the only case before this field existed).
+    """
+    if execution.current_bot_journey_id:
+        return execution.current_bot_journey.nodes
+    return execution.process_agent.nodes

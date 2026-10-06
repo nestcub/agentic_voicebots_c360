@@ -188,7 +188,7 @@ export interface UploadResult {
 // Mirror services/telehub/apps/telehub/api/serializers.py exactly — read that
 // file before changing any of these.
 
-export interface Department {
+export interface Channel {
   id: number;
   name: string;
   description: string;
@@ -202,8 +202,8 @@ export interface Department {
 
 export interface ProcessAgentSummary {
   id: number;
-  department: number;
-  department_name: string;
+  channel: number;
+  channel_name: string;
   name: string;
   description: string;
   status: string;
@@ -213,16 +213,16 @@ export interface ProcessAgentSummary {
   updated_at: string;
 }
 
-// DepartmentDetailSerializer nests process agents via
-// DepartmentNestedProcessAgentSerializer, which only exposes this subset of
-// ProcessAgentSummary's fields — not the full shape listProcessAgents() returns.
-export type DepartmentNestedProcessAgent = Pick<
+// ChannelDetailSerializer nests process agents via
+// ChannelNestedProcessAgentSerializer, which only exposes this subset of
+// ProcessAgentSummary's fields — not the full shape listChannels() returns.
+export type ChannelNestedProcessAgent = Pick<
   ProcessAgentSummary,
   "id" | "name" | "status" | "is_active" | "version"
 >;
 
-export interface DepartmentDetail extends Department {
-  process_agents: DepartmentNestedProcessAgent[];
+export interface ChannelDetail extends Channel {
+  process_agents: ChannelNestedProcessAgent[];
 }
 
 export interface LeadSource {
@@ -238,7 +238,9 @@ export interface ProcessAgentVariable {
   key: string;
   type: string;
   default_value: string;
+  label: string;
   required: boolean;
+  source: "business_rules" | "analytics";
 }
 
 export interface WebhookDefinition {
@@ -260,10 +262,37 @@ export interface ProcessAgentIntegration {
   integration_type: string;
 }
 
+// Mirrors services/telehub/apps/telehub/api/serializers.py's VoiceBotSerializer
+// / BotJourneySerializer — see services/telehub/apps/telehub/models.py's
+// VoiceBot/BotJourney for the backing tables. VoiceBot is a global, reusable
+// bot identity/config managed on the dashboard's /bots page (not owned by any
+// one ProcessAgent). A BotJourney is the one calling stage a ProcessAgent is
+// wired to a VoiceBot through, created automatically at agent-creation time.
+export interface VoiceBot {
+  id: number;
+  label: string;
+  communication_type: string;
+  bot_name: string;
+  bot_id: string;
+  dids: string[];
+  api_url: string;
+  script: string;
+  webhook_schema: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface BotJourney {
+  id: number;
+  name: string;
+  order: number;
+  voice_bot: VoiceBot | null;
+  created_at: string;
+}
+
 export interface ProcessAgentDetail {
   id: number;
-  department: number;
-  department_name: string;
+  channel: number;
+  channel_name: string;
   name: string;
   description: string;
   status: string;
@@ -271,10 +300,18 @@ export interface ProcessAgentDetail {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  analytics_stats: Record<string, boolean>;
   lead_sources: LeadSource[];
   variables: ProcessAgentVariable[];
   webhooks: WebhookDefinition[];
   integrations: ProcessAgentIntegration[];
+  omnichannel: {
+    channel: string;
+    variables: string[];
+    whatsapp_template: string;
+    whatsapp_curl: string;
+  } | null;
+  bot_journeys: BotJourney[];
 }
 
 // A single wizard-supplied runtime variable (business_rules.variables and
@@ -288,17 +325,18 @@ export interface ProcessAgentWizardVariable {
 }
 
 // POST /process-agents/ body. Every nested section is optional — the backend
-// defensively `.get()`s each one and a minimal {department, name} payload
+// defensively `.get()`s each one and a minimal {channelId, name} payload
 // must succeed. Voice/qa config is dumped as-is onto node config, so both
 // allow arbitrary extra keys beyond the ones the backend specifically reads.
 export interface ProcessAgentWizardPayload {
-  department: number;
+  channelId: number;
   name: string;
   description?: string;
   voice?: {
-    communication_type?: string;
-    webhook_schema?: Record<string, unknown>;
-    [key: string]: unknown;
+    // The globally-managed VoiceBot (dashboard's /bots page) this process
+    // agent's one BotJourney dispatches through — see
+    // services/telehub/apps/telehub/services/process_agent.py.
+    voice_bot_id?: number;
   };
   lead_source?: {
     type?: string;
@@ -315,13 +353,25 @@ export interface ProcessAgentWizardPayload {
   integrations?: number[];
   qa?: Record<string, unknown>;
   analytics?: {
+    // Dispositions and monitored variables are the same concept on the main
+    // platform — one freeform list, not two.
     custom_variables?: ProcessAgentWizardVariable[];
+    // Which dashboard stat tiles (call attempts, pickups, cost…) to show for
+    // this process — computed from execution data already in the DB.
+    stats?: Record<string, boolean>;
     [key: string]: unknown;
+  };
+  omnichannel?: {
+    channel?: string;
+    variables?: string[];
+    whatsapp_template?: string;
+    whatsapp_curl?: string;
   };
 }
 
 export interface JourneyNode {
   id: number;
+  bot_journey: number | null;
   node_template_type: string;
   name: string;
   config: Record<string, unknown>;
@@ -380,6 +430,42 @@ export interface QaResult {
   bot_failure: boolean;
   hot_lead: boolean;
   recommendation: string;
+  // Populated only when the wizard's QA "Missing Variables" check was on for
+  // this process — the declared Variable keys absent/empty in this
+  // execution's variables once the webhook payload merged in.
+  missing_variables: string[];
+  // The exact webhook payload merged in at QA time (outcome_routing.py's
+  // _run_qa passes the same payload it received straight through).
+  raw_result: Record<string, unknown>;
+}
+
+// GET /process-agents/{id}/analytics/ — wizard Analytics step's "Dispositions
+// / Variables" values as actually captured per execution, read off
+// Execution.variables (services/telehub/apps/telehub/api/views.py).
+export interface ProcessAgentAnalyticsRow {
+  execution_id: number;
+  lead_id: string;
+  status: string;
+  created_at: string;
+  values: Record<string, unknown>;
+}
+
+export interface ProcessAgentAnalytics {
+  variable_keys: string[];
+  rows: ProcessAgentAnalyticsRow[];
+}
+
+// GET /process-agents/{id}/stats/ — Overview tab's Performance cards
+// (services/telehub/apps/telehub/services/analytics_stats.py). A field is
+// null when there's nothing to compute it from yet (0 calls, or no QAResult
+// has ever been scored) rather than a fabricated 0.
+export interface ProcessAgentStats {
+  calls: number;
+  connected: number;
+  avg_duration_seconds: number | null;
+  qa_score: number | null;
+  hot_leads: number;
+  callback_requests: number;
 }
 
 // ── Campaign launch types ────────────────────────────────────────────────
@@ -393,7 +479,9 @@ export interface LaunchCampaignLead {
 
 export interface LaunchCampaignPayload {
   campaign_id: string;
-  leads: LaunchCampaignLead[];
+  // Omit (or pass []) to relaunch from the ProcessAgent's stored LeadSource
+  // instead of uploading a fresh list — see getProcessAgentLeadSource.
+  leads?: LaunchCampaignLead[];
 }
 
 export interface LaunchCampaignResult {

@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from ..services.ngrok import get_public_base_url
 from ..models import (
+    BotJourney,
     Department,
     Execution,
     Integration,
@@ -9,10 +10,12 @@ from ..models import (
     NodeConnection,
     NodeInstance,
     NodeTemplate,
+    OmnichannelConfig,
     ProcessAgent,
     ProcessIntegration,
     QAResult,
     Variable,
+    VoiceBot,
     WebhookDefinition,
 )
 
@@ -101,7 +104,7 @@ class LeadSourceSerializer(serializers.ModelSerializer):
 class VariableSerializer(serializers.ModelSerializer):
     class Meta:
         model = Variable
-        fields = ["id", "key", "type", "default_value", "required"]
+        fields = ["id", "key", "type", "default_value", "label", "required", "source"]
 
 
 class WebhookDefinitionSerializer(serializers.ModelSerializer):
@@ -134,6 +137,37 @@ class ProcessAgentIntegrationSerializer(serializers.ModelSerializer):
         fields = ["id", "integration", "integration_name", "integration_type"]
 
 
+class VoiceBotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VoiceBot
+        fields = [
+            "id",
+            "label",
+            "communication_type",
+            "bot_name",
+            "bot_id",
+            "dids",
+            "api_url",
+            "script",
+            "webhook_schema",
+            "created_at",
+        ]
+
+
+class BotJourneySerializer(serializers.ModelSerializer):
+    voice_bot = VoiceBotSerializer(read_only=True)
+
+    class Meta:
+        model = BotJourney
+        fields = ["id", "name", "order", "voice_bot", "created_at"]
+
+
+class OmnichannelConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OmnichannelConfig
+        fields = ["channel", "variables", "whatsapp_template", "whatsapp_curl"]
+
+
 class ProcessAgentDetailSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source="department.name", read_only=True)
     lead_sources = LeadSourceSerializer(many=True, read_only=True)
@@ -142,6 +176,9 @@ class ProcessAgentDetailSerializer(serializers.ModelSerializer):
     integrations = ProcessAgentIntegrationSerializer(
         source="process_integrations", many=True, read_only=True
     )
+    # OneToOneField — absent unless the wizard's Omnichannel step was filled in.
+    omnichannel = OmnichannelConfigSerializer(read_only=True)
+    bot_journeys = BotJourneySerializer(many=True, read_only=True)
 
     class Meta:
         model = ProcessAgent
@@ -154,12 +191,15 @@ class ProcessAgentDetailSerializer(serializers.ModelSerializer):
             "status",
             "version",
             "is_active",
+            "analytics_stats",
             "created_at",
             "updated_at",
             "lead_sources",
             "variables",
             "webhooks",
             "integrations",
+            "omnichannel",
+            "bot_journeys",
         ]
 
 
@@ -178,6 +218,7 @@ class NodeInstanceJourneySerializer(serializers.ModelSerializer):
         model = NodeInstance
         fields = [
             "id",
+            "bot_journey",
             "node_template_type",
             "name",
             "config",
@@ -234,4 +275,6 @@ class QAResultSerializer(serializers.ModelSerializer):
             "bot_failure",
             "hot_lead",
             "recommendation",
+            "missing_variables",
+            "raw_result",
         ]

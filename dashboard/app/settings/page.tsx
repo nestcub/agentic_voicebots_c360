@@ -121,7 +121,7 @@ export default function SettingsPage() {
 
       <Card className="p-4 border-primary/30 bg-primary/5">
         <p className="text-sm text-on-surface">
-          Settings are read-only in this preview — configuration happens per-Process in the Add Process wizard for
+          Settings are read-only in this preview — configuration happens per-Agent in the Add Agent wizard for
           now.
         </p>
       </Card>

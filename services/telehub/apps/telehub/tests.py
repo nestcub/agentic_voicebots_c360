@@ -11,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from .models import (
+    BotJourney,
     Department,
     Execution,
     ExecutionEvent,
@@ -19,8 +20,10 @@ from .models import (
     NodeConnection,
     NodeInstance,
     NodeTemplate,
+    OmnichannelConfig,
     ProcessAgent,
     Variable,
+    VoiceBot,
     WebhookDefinition,
     ProcessIntegration,
     QAResult,
@@ -218,23 +221,19 @@ class JourneyGenerationTests(TestCase):
             )
 
 
-def _full_wizard_payload(department_id, name="Free Service 1"):
+def _full_wizard_payload(department_id, name="Free Service 1", voice_bot_id=None):
+    if voice_bot_id is None:
+        # "Full" payload implies a bot is attached — callers that want no bot
+        # attached should build their own minimal payload instead.
+        voice_bot_id = VoiceBot.objects.create(
+            communication_type="voice_outbound",
+            webhook_schema={"summary": "", "transcript": "", "sentiment": "", "outcome": ""},
+        ).id
     return {
         "department": department_id,
         "name": name,
         "description": "",
-        "voice": {
-            "communication_type": "voice_outbound",
-            "bot_name": "",
-            "bot_id": "",
-            "api_url": "",
-            "webhook_schema": {
-                "summary": "",
-                "transcript": "",
-                "sentiment": "",
-                "outcome": "",
-            },
-        },
+        "voice": {"voice_bot_id": voice_bot_id},
         "lead_source": {"type": "webhook", "configuration": {}, "field_mapping": {}},
         "business_rules": {
             "retry": {"attempts": 3, "interval_minutes": 30, "strategy": "linear"},
@@ -283,7 +282,15 @@ class ProcessAgentWizardCreateTests(TestCase):
         self.department = Department.objects.create(name="Automobile")
 
     def test_full_wizard_payload_creates_agent_with_nodes_and_related_rows(self):
-        payload = _full_wizard_payload(self.department.id)
+        webhook_schema = {"summary": "", "transcript": "", "sentiment": "", "outcome": ""}
+        voice_bot = VoiceBot.objects.create(
+            communication_type="voice_outbound",
+            bot_name="Sales Bot",
+            bot_id="bot-1",
+            api_url="https://example.com/outbound",
+            webhook_schema=webhook_schema,
+        )
+        payload = _full_wizard_payload(self.department.id, voice_bot_id=voice_bot.id)
 
         response = self.client.post(
             "/api/telehub/process-agents/", payload, format="json"
@@ -295,7 +302,12 @@ class ProcessAgentWizardCreateTests(TestCase):
         self.assertEqual(agent.nodes.count(), 9)
 
         communication_node = agent.nodes.get(name="Communication")
-        self.assertEqual(communication_node.config, payload["voice"])
+        self.assertEqual(communication_node.config["bot_name"], "Sales Bot")
+        self.assertEqual(communication_node.config["bot_id"], "bot-1")
+        self.assertEqual(communication_node.config["api_url"], "https://example.com/outbound")
+
+        bot_journey = agent.bot_journeys.get(order=0)
+        self.assertEqual(bot_journey.voice_bot_id, voice_bot.id)
 
         retry_node = agent.nodes.get(name="Retry")
         self.assertEqual(retry_node.config, payload["business_rules"]["retry"])
@@ -306,7 +318,7 @@ class ProcessAgentWizardCreateTests(TestCase):
 
         self.assertEqual(agent.webhooks.count(), 1)
         webhook = agent.webhooks.get()
-        self.assertEqual(webhook.schema, payload["voice"]["webhook_schema"])
+        self.assertEqual(webhook.schema, webhook_schema)
 
         self.assertEqual(agent.variables.count(), 1)
         variable = agent.variables.get()
@@ -585,6 +597,95 @@ class WebhookIntakeTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertFalse(ExecutionEvent.objects.exists())
 
+    def test_no_dlr_id_falls_back_to_contact_no_match(self):
+        """
+        Mirrors Chat360's real post-call payload for this voicebot integration,
+        which never includes dlr_id (confirmed against voicebot_webhook.php) —
+        only contact_no, in whatever format the bot captured it.
+        """
+        agent_id, webhook = self._create_agent_with_webhook()
+        execution = Execution.objects.create(
+            process_agent_id=agent_id,
+            lead_id="lead-1",
+            variables={"to_number": "9876543210"},
+        )
+
+        response = self.client.post(
+            f"/api/telehub/webhooks/{webhook.secret}/",
+            {"contact_no": "+919876543210", "summary": "Call went well"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "completed")
+        self.assertEqual(execution.qa_result.summary, "Call went well")
+
+    def test_contact_no_match_ignores_already_completed_executions(self):
+        agent_id, webhook = self._create_agent_with_webhook()
+        Execution.objects.create(
+            process_agent_id=agent_id,
+            lead_id="lead-1",
+            status="completed",
+            variables={"to_number": "9876543210"},
+        )
+
+        response = self.client.post(
+            f"/api/telehub/webhooks/{webhook.secret}/",
+            {"contact_no": "9876543210", "summary": "duplicate delivery"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(ExecutionEvent.objects.exists())
+
+
+class ProcessAgentStatsTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        payload = _full_wizard_payload(self.department.id)
+        response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+        self.agent_id = response.data["id"]
+
+    def test_no_executions_returns_none_not_zero(self):
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent_id}/stats/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["calls"], 0)
+        self.assertEqual(response.data["connected"], 0)
+        self.assertIsNone(response.data["avg_duration_seconds"])
+        self.assertIsNone(response.data["qa_score"])
+
+    def test_connected_and_avg_duration_from_variables(self):
+        Execution.objects.create(
+            process_agent_id=self.agent_id,
+            lead_id="connected-1",
+            variables={"call_duration": "40"},
+        )
+        Execution.objects.create(
+            process_agent_id=self.agent_id,
+            lead_id="not-connected-1",
+            variables={"outcome": "no_answer"},
+        )
+
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent_id}/stats/")
+
+        self.assertEqual(response.data["calls"], 2)
+        self.assertEqual(response.data["connected"], 1)
+        self.assertEqual(response.data["avg_duration_seconds"], 40.0)
+
+    def test_hot_leads_and_callback_requests_counted(self):
+        execution = Execution.objects.create(
+            process_agent_id=self.agent_id, lead_id="hot-1", status="callback_scheduled"
+        )
+        QAResult.objects.create(execution=execution, hot_lead=True, lead_score=8)
+
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent_id}/stats/")
+
+        self.assertEqual(response.data["hot_leads"], 1)
+        self.assertEqual(response.data["callback_requests"], 1)
+        self.assertEqual(response.data["qa_score"], 8.0)
+
 
 class WebhookPublicUrlSerializationTests(TestCase):
     def setUp(self):
@@ -698,6 +799,52 @@ class CampaignLaunchServiceTests(TestCase):
 
         self.assertEqual(result["created_count"], 0)
         self.assertEqual(result["skipped"], ["row-0"])
+
+    def test_explicit_leads_are_persisted_onto_lead_source(self):
+        agent = self._create_agent()
+
+        launch_campaign(
+            agent,
+            {
+                "campaign_id": "camp-3",
+                "leads": [{"to_number": "+911111111111", "params": {"name": "Alice"}}],
+            },
+        )
+
+        lead_source = LeadSource.objects.get(process_agent=agent)
+        self.assertEqual(
+            lead_source.configuration["leads"],
+            [{"to_number": "+911111111111", "params": {"name": "Alice"}}],
+        )
+
+    def test_omitted_leads_falls_back_to_stored_lead_source(self):
+        agent = self._create_agent()
+        LeadSource.objects.create(
+            process_agent=agent,
+            type="upload",
+            configuration={"leads": [{"to_number": "+922222222222", "params": {"name": "Bob"}}]},
+        )
+
+        result = launch_campaign(agent, {"campaign_id": "camp-4"})
+
+        self.assertEqual(result["created_count"], 1)
+        execution = Execution.objects.get(process_agent=agent, campaign_id="camp-4")
+        self.assertEqual(execution.variables["to_number"], "+922222222222")
+
+    def test_omitted_leads_falls_back_to_single_source_number(self):
+        agent = self._create_agent()
+        LeadSource.objects.create(
+            process_agent=agent,
+            type="single_source",
+            configuration={"number": "+919999999999"},
+        )
+
+        result = launch_campaign(agent, {"campaign_id": "camp-5"})
+
+        self.assertEqual(result["created_count"], 1)
+        execution = Execution.objects.get(process_agent=agent, campaign_id="camp-5")
+        self.assertEqual(execution.variables["to_number"], "+919999999999")
+        self.assertEqual(execution.lead_id, "single-source")
 
 
 class CampaignLaunchApiTests(TestCase):
@@ -830,12 +977,481 @@ class CampaignLaunchApiTests(TestCase):
         self.assertEqual(len(beta_leads.data), 1)
 
 
+class LeadSourceEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def _create_agent(self, name="Free Service 1"):
+        payload = _full_wizard_payload(self.department.id, name=name)
+        response = self.client.post(
+            "/api/telehub/process-agents/", payload, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return response.data["id"]
+
+    def test_get_returns_the_lead_source_created_by_the_wizard(self):
+        agent_id = self._create_agent()
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent_id}/lead-source/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("type", response.data)
+
+    def test_get_returns_empty_object_when_no_lead_source_exists(self):
+        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent.id}/lead-source/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {})
+
+    def test_patch_updates_existing_lead_source_configuration(self):
+        agent_id = self._create_agent()
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent_id}/lead-source/",
+            {"configuration": {"leads": [{"to_number": "+911111111111"}]}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["configuration"]["leads"], [{"to_number": "+911111111111"}]
+        )
+        self.assertEqual(
+            LeadSource.objects.filter(process_agent_id=agent_id).count(), 1
+        )
+
+    def test_patch_creates_lead_source_when_none_exists(self):
+        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent.id}/lead-source/",
+            {"type": "crm", "configuration": {"endpoint": "https://crm.example/leads"}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["type"], "crm")
+        self.assertEqual(LeadSource.objects.filter(process_agent=agent).count(), 1)
+
+
+class QaConfigEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def _create_agent(self, name="Free Service 1"):
+        payload = _full_wizard_payload(self.department.id, name=name)
+        response = self.client.post(
+            "/api/telehub/process-agents/", payload, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return response.data["id"]
+
+    def test_get_returns_qa_node_config(self):
+        agent_id = self._create_agent()
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent_id}/qa-config/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_get_returns_empty_object_when_no_journey_exists(self):
+        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent.id}/qa-config/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {})
+
+    def test_patch_updates_qa_toggles(self):
+        agent_id = self._create_agent()
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent_id}/qa-config/",
+            {"missing_variables": True, "drop_off_analysis": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["missing_variables"], True)
+        self.assertEqual(response.data["drop_off_analysis"], True)
+
+    def test_patch_rejects_unknown_key(self):
+        agent_id = self._create_agent()
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent_id}/qa-config/",
+            {"not_a_real_field": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_400s_when_no_journey_exists(self):
+        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent.id}/qa-config/",
+            {"missing_variables": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class AnalyticsStatsConfigEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+
+    def test_get_returns_empty_dict_by_default(self):
+        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+        response = self.client.get(f"/api/telehub/process-agents/{agent.id}/analytics-stats/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {})
+
+    def test_patch_merges_toggles(self):
+        agent = ProcessAgent.objects.create(
+            department=self.department, name="Bare Agent", analytics_stats={"initiated_calls": True}
+        )
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent.id}/analytics-stats/",
+            {"completed_calls": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["initiated_calls"], True)
+        self.assertEqual(response.data["completed_calls"], True)
+        agent.refresh_from_db()
+        self.assertEqual(agent.analytics_stats["initiated_calls"], True)
+        self.assertEqual(agent.analytics_stats["completed_calls"], True)
+
+    def test_patch_rejects_unknown_key(self):
+        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{agent.id}/analytics-stats/",
+            {"not_a_real_stat": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class VariableEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+    def test_get_lists_variables(self):
+        Variable.objects.create(process_agent=self.agent, key="customer_name")
+
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/variables/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_post_creates_variable(self):
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/",
+            {"key": "customer_name", "type": "string", "required": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(
+            Variable.objects.filter(process_agent=self.agent, key="customer_name").count(), 1
+        )
+
+    def test_post_rejects_duplicate_key_and_source(self):
+        Variable.objects.create(process_agent=self.agent, key="customer_name")
+
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/",
+            {"key": "customer_name"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_post_rejects_missing_key(self):
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_updates_variable(self):
+        variable = Variable.objects.create(process_agent=self.agent, key="customer_name")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/{variable.id}/",
+            {"label": "Customer Name"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        variable.refresh_from_db()
+        self.assertEqual(variable.label, "Customer Name")
+
+    def test_patch_404s_for_unknown_variable(self):
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/99999/",
+            {"label": "x"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_removes_variable(self):
+        variable = Variable.objects.create(process_agent=self.agent, key="customer_name")
+
+        response = self.client.delete(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/{variable.id}/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(Variable.objects.filter(pk=variable.id).count(), 0)
+
+
+class WebhookDetailEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+    def test_patch_updates_editable_fields_only(self):
+        webhook = WebhookDefinition.objects.create(
+            process_agent=self.agent,
+            name="Old Name",
+            url="/api/telehub/webhooks/abc123/",
+            secret="abc123",
+            status="active",
+        )
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/webhooks/{webhook.id}/",
+            {"name": "New Name", "status": "disabled", "url": "/should/not/change/", "secret": "hacked"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        webhook.refresh_from_db()
+        self.assertEqual(webhook.name, "New Name")
+        self.assertEqual(webhook.status, "disabled")
+        self.assertEqual(webhook.url, "/api/telehub/webhooks/abc123/")
+        self.assertEqual(webhook.secret, "abc123")
+
+    def test_patch_404s_for_unknown_webhook(self):
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/webhooks/99999/",
+            {"name": "x"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class OmnichannelConfigEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+    def test_get_returns_empty_object_when_none_exists(self):
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/omnichannel/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {})
+
+    def test_patch_creates_when_none_exists(self):
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/omnichannel/",
+            {"channel": "whatsapp", "variables": ["customer_name"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["channel"], "whatsapp")
+        self.assertEqual(OmnichannelConfig.objects.filter(process_agent=self.agent).count(), 1)
+
+    def test_patch_updates_existing(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/omnichannel/",
+            {"whatsapp_template": "template_1"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            OmnichannelConfig.objects.filter(process_agent=self.agent).count(), 1
+        )
+        self.assertEqual(response.data["whatsapp_template"], "template_1")
+
+
+class IntegrationAttachDetachEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        self.integration = Integration.objects.create(name="CRM X", type="crm")
+
+    def test_post_attaches_integration(self):
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/integrations/",
+            {"integration": self.integration.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(
+            ProcessIntegration.objects.filter(
+                process_agent=self.agent, integration=self.integration
+            ).count(),
+            1,
+        )
+
+    def test_post_is_idempotent(self):
+        self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/integrations/",
+            {"integration": self.integration.id},
+            format="json",
+        )
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/integrations/",
+            {"integration": self.integration.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            ProcessIntegration.objects.filter(
+                process_agent=self.agent, integration=self.integration
+            ).count(),
+            1,
+        )
+
+    def test_post_rejects_unknown_integration(self):
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.agent.id}/integrations/",
+            {"integration": 99999},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_delete_removes_link_not_integration(self):
+        link = ProcessIntegration.objects.create(
+            process_agent=self.agent, integration=self.integration
+        )
+
+        response = self.client.delete(
+            f"/api/telehub/process-agents/{self.agent.id}/integrations/{link.id}/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(ProcessIntegration.objects.filter(pk=link.id).count(), 0)
+        self.assertEqual(Integration.objects.filter(pk=self.integration.id).count(), 1)
+
+
+class VoiceBotEndpointTests(TestCase):
+    """VoiceBot is a global library (no process_agent FK) — see
+    dashboard's /bots page and services/process_agent.py."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+
+    def test_get_lists_voice_bots(self):
+        VoiceBot.objects.create(bot_name="Sales Bot")
+
+        response = self.client.get("/api/telehub/voice-bots/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_post_creates_unattached_voice_bot(self):
+        response = self.client.post(
+            "/api/telehub/voice-bots/",
+            {"label": "Follow-up Bot", "bot_name": "Bot Two", "dids": ["+911111111111"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        voice_bot = VoiceBot.objects.get(label="Follow-up Bot")
+        self.assertEqual(voice_bot.bot_name, "Bot Two")
+        self.assertEqual(voice_bot.dids, ["+911111111111"])
+        self.assertIsNone(BotJourney.objects.filter(voice_bot=voice_bot).first())
+
+    def test_patch_updates_voice_bot_and_syncs_attached_journey_node(self):
+        voice_bot = VoiceBot.objects.create(bot_name="Old Name", api_url="https://old/")
+        bot_journey = BotJourney.objects.create(process_agent=self.agent, name="Sales Journey", order=0)
+        generate_journey(bot_journey)
+        bot_journey.voice_bot = voice_bot
+        bot_journey.save()
+
+        response = self.client.patch(
+            f"/api/telehub/voice-bots/{voice_bot.id}/",
+            {"bot_name": "New Name", "api_url": "https://new/"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        voice_bot.refresh_from_db()
+        self.assertEqual(voice_bot.bot_name, "New Name")
+
+        node = bot_journey.nodes.get(name="Communication")
+        self.assertEqual(node.config["bot_name"], "New Name")
+        self.assertEqual(node.config["api_url"], "https://new/")
+
+    def test_patch_404s_for_unknown_voice_bot(self):
+        response = self.client.patch(
+            "/api/telehub/voice-bots/99999/",
+            {"bot_name": "x"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_removes_unattached_voice_bot(self):
+        voice_bot = VoiceBot.objects.create(bot_name="Unused Bot")
+
+        response = self.client.delete(f"/api/telehub/voice-bots/{voice_bot.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(VoiceBot.objects.filter(pk=voice_bot.id).count(), 0)
+
+    def test_delete_rejects_voice_bot_in_use_by_a_journey(self):
+        voice_bot = VoiceBot.objects.create(bot_name="In Use Bot")
+        BotJourney.objects.create(
+            process_agent=self.agent, voice_bot=voice_bot, name="Sales Journey", order=0
+        )
+
+        response = self.client.delete(f"/api/telehub/voice-bots/{voice_bot.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(VoiceBot.objects.filter(pk=voice_bot.id).count(), 1)
+
+
 class DispatcherTests(TestCase):
     def _make_execution(
         self,
         api_url="https://example.com/outbound",
         bot_id="bot-1",
         bot_name="Bot One",
+        dids=None,
         variables=None,
     ):
         department = Department.objects.create(name="Automobile")
@@ -850,6 +1466,15 @@ class DispatcherTests(TestCase):
             "bot_name": bot_name,
         }
         communication_node.save()
+
+        voice_bot = VoiceBot.objects.create(
+            bot_id=bot_id,
+            bot_name=bot_name,
+            dids=dids if dids is not None else [],
+        )
+        bot_journey = process_agent.bot_journeys.get(order=0)
+        bot_journey.voice_bot = voice_bot
+        bot_journey.save()
 
         return Execution.objects.create(
             process_agent=process_agent,
@@ -927,10 +1552,11 @@ class DispatcherTests(TestCase):
         # earlier, unconfirmed guess) and are correctly absent here.
         execution = self._make_execution(
             api_url="https://example.com/outbound",
+            dids=["+917965314425", "+919999999999"],
             variables={"to_number": "+911234567890", "dnd": "false", "@name": "Charlie"},
         )
 
-        with patch.dict(os.environ, {"DID_POOL": "+917965314425,+919999999999"}), patch(
+        with patch(
             "apps.telehub.services.dispatcher.urllib.request.urlopen"
         ) as mock_urlopen:
             mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
@@ -958,9 +1584,11 @@ class DispatcherTests(TestCase):
         # Regression: a real dispatch sent "to": "8104130877" (no country
         # code) and Chat360 200'd but never placed the call — bare 10-digit
         # numbers must be normalized before dispatch.
-        execution = self._make_execution(variables={"to_number": "8104130877"})
+        execution = self._make_execution(
+            dids=["+917965314425"], variables={"to_number": "8104130877"}
+        )
 
-        with patch.dict(os.environ, {"DID_POOL": "+917965314425"}), patch(
+        with patch(
             "apps.telehub.services.dispatcher.urllib.request.urlopen"
         ) as mock_urlopen:
             mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
@@ -971,9 +1599,11 @@ class DispatcherTests(TestCase):
         self.assertEqual(body["to"], "+918104130877")
 
     def test_number_already_prefixed_is_left_untouched(self):
-        execution = self._make_execution(variables={"to_number": "+919892802815"})
+        execution = self._make_execution(
+            dids=["+917965314425"], variables={"to_number": "+919892802815"}
+        )
 
-        with patch.dict(os.environ, {"DID_POOL": "+917965314425"}), patch(
+        with patch(
             "apps.telehub.services.dispatcher.urllib.request.urlopen"
         ) as mock_urlopen:
             mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
@@ -1286,6 +1916,13 @@ class GatingTests(TestCase):
 
         return process_agent
 
+    def _make_execution(self, process_agent):
+        return Execution.objects.create(
+            process_agent=process_agent,
+            lead_id="lead-gating",
+            current_bot_journey=process_agent.bot_journeys.first(),
+        )
+
     def test_within_configured_business_hours_returns_true(self):
         process_agent = self._make_process_agent(
             business_hours_config={
@@ -1298,7 +1935,7 @@ class GatingTests(TestCase):
         # Monday 2026-07-06 12:00 IST (06:30 UTC) is within 09:00-19:00 IST.
         at = datetime(2026, 7, 6, 6, 30, tzinfo=ZoneInfo("UTC"))
 
-        self.assertTrue(is_within_business_hours(process_agent, at=at))
+        self.assertTrue(is_within_business_hours(self._make_execution(process_agent), at=at))
 
     def test_outside_configured_business_hours_returns_false(self):
         process_agent = self._make_process_agent(
@@ -1312,7 +1949,7 @@ class GatingTests(TestCase):
         # Monday 2026-07-06 22:00 IST (16:30 UTC) is after the 19:00 IST close.
         at = datetime(2026, 7, 6, 16, 30, tzinfo=ZoneInfo("UTC"))
 
-        self.assertFalse(is_within_business_hours(process_agent, at=at))
+        self.assertFalse(is_within_business_hours(self._make_execution(process_agent), at=at))
 
     def test_non_working_day_returns_false(self):
         process_agent = self._make_process_agent(
@@ -1326,12 +1963,12 @@ class GatingTests(TestCase):
         # Sunday 2026-07-12 12:00 IST — Sunday (7) is not a working day.
         at = datetime(2026, 7, 12, 6, 30, tzinfo=ZoneInfo("UTC"))
 
-        self.assertFalse(is_within_business_hours(process_agent, at=at))
+        self.assertFalse(is_within_business_hours(self._make_execution(process_agent), at=at))
 
     def test_missing_business_hours_config_fails_open(self):
         process_agent = self._make_process_agent(business_hours_config={})
 
-        self.assertTrue(is_within_business_hours(process_agent))
+        self.assertTrue(is_within_business_hours(self._make_execution(process_agent)))
 
     def test_dnd_suppressed_only_when_node_enabled_and_execution_variable_truthy(self):
         process_agent = self._make_process_agent(dnd_config={"enabled": True})

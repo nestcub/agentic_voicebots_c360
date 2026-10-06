@@ -13,16 +13,30 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from ..models import Execution, ExecutionEvent, NodeInstance
+from ..models import Execution, ExecutionEvent
+from .journey import journey_nodes
 
 logger = logging.getLogger(__name__)
 
 NODE_NAME_COMMUNICATION = "Communication"
 
+
+def _get_communication_config(execution: "Execution") -> dict:
+    """Fail-open: {} if the Communication node doesn't exist for this journey."""
+    try:
+        node = journey_nodes(execution).get(name=NODE_NAME_COMMUNICATION)
+        return node.config or {}
+    except Exception:
+        return {}
+
 # Truncate stored response bodies so a chatty endpoint never bloats the DB.
 RESPONSE_BODY_TRUNCATE_LEN = 500
 
-DISPATCH_TIMEOUT_SEC = 5
+# Chat360's outbound endpoint holds the connection open past a naive request
+# timeout for a real dispatch (observed: request timed out at 5s while the
+# call was still placed and the outcome webhook arrived ~80s later) — 5s was
+# an unverified guess from before this was tested against a real call.
+DISPATCH_TIMEOUT_SEC = 30
 
 # Python's urllib deliberately does NOT auto-follow 307/308 redirects for POST
 # requests (it only auto-follows those for GET/HEAD — resending a POST body
@@ -52,19 +66,24 @@ def _normalize_indian_number(raw: str) -> str:
     return raw
 
 
-def _get_communication_config(execution: "Execution") -> dict:
+def _get_dids(execution: "Execution") -> list:
     """
-    Defensively reads the Communication NodeInstance's config for this
-    Execution's process_agent. generate_journey always creates this node, but
-    never trust it blindly — treat a missing node (or any lookup error) as an
-    empty config rather than raising.
+    The outbound DID(s) to dial from, read straight off the VoiceBot model
+    (VoiceBot.dids) for this Execution's current bot journey — not the
+    Communication node's config copy, so this always reflects the live
+    VoiceBot row even if a NodeInstance.config sync was ever missed. Falls
+    back to the process agent's first bot journey (by order) when
+    current_bot_journey isn't set, mirroring journey_nodes()'s fallback for
+    pre-multi-journey Executions. Fails open (empty list) on any missing row.
     """
     try:
-        return execution.process_agent.nodes.get(name=NODE_NAME_COMMUNICATION).config or {}
-    except NodeInstance.DoesNotExist:
-        return {}
+        bot_journey = execution.current_bot_journey
+        if bot_journey is None:
+            bot_journey = execution.process_agent.bot_journeys.order_by("order", "id").first()
+        voice_bot = bot_journey.voice_bot if bot_journey else None
+        return voice_bot.dids if voice_bot else []
     except Exception:
-        return {}
+        return []
 
 
 def _send_once(url: str, body_bytes: bytes, headers: dict):
@@ -91,12 +110,18 @@ def _send_once(url: str, body_bytes: bytes, headers: dict):
         return exc.code, response_body, location
 
 
-def dispatch_execution(execution: "Execution") -> dict:
+def dispatch_execution(execution: "Execution", is_single_call: bool = False) -> dict:
     """
     Sends the outbound call request for a pending Execution to the Communication
     node's configured api_url. Never raises — catches every exception, always
     records an ExecutionEvent describing what happened, and returns a result dict
     so a caller (a later scheduler, not built yet) can decide what to do next.
+
+    is_single_call=True adds "is_single_call": true to the body — required by
+    Chat360's outbound API for a manual one-off dispatch to actually go through
+    (confirmed against a real working curl request). Only the Runs tab's
+    single-lead manual dispatch button passes this; ordinary campaign-lead
+    dispatches from run_scheduler leave it out.
 
     Returns: {"success": bool, "status_code": int | None, "error": str | None}
     """
@@ -137,11 +162,13 @@ def dispatch_execution(execution: "Execution") -> dict:
     # variables and a bot_id/bot_name field (both my own unconfirmed earlier
     # guesses) are NOT part of the real API and have been removed.
     #
-    # "from" = the registered DID/caller-ID to dial out from. Reuses DID_POOL
-    # (already in .env.example from the old orchestrator setup) rather than a
-    # new env var — takes the first entry if it's a comma-separated pool.
-    did_pool = os.environ.get("DID_POOL", "")
-    from_number = did_pool.split(",")[0].strip() if did_pool else ""
+    # "from" = the registered DID/caller-ID to dial out from. Used to fall
+    # back to a global DID_POOL env var, but that assumed one DID for the
+    # whole ProcessAgent — now that each BotJourney has its own VoiceBot,
+    # the DID comes straight off that journey's VoiceBot.dids (see
+    # _get_dids) — takes the first entry if the bot has several configured.
+    dids = _get_dids(execution)
+    from_number = str(dids[0]).strip() if dids else ""
 
     params = {
         k: v for k, v in execution.variables.items() if k not in ("to_number", "dnd")
@@ -154,6 +181,8 @@ def dispatch_execution(execution: "Execution") -> dict:
         # 400s with "cannot unmarshal number into ... dlr_id of type string".
         "dlr_id": str(execution.id),
     }
+    if is_single_call:
+        body["is_single_call"] = True
     body_bytes = json.dumps(body).encode()
 
     execution.attempt_count += 1
@@ -162,7 +191,7 @@ def dispatch_execution(execution: "Execution") -> dict:
         "dispatch attempt: execution=%s POST %s from=%s to=%s auth_header_set=%s cookie_set=%s param_keys=%s",
         execution.id,
         api_url,
-        from_number or "(DID_POOL not set)",
+        from_number or "(no dids configured on VoiceBot)",
         body["to"],
         bool(os.environ.get("CHAT360_OUTBOUND_BEARER_TOKEN")),
         bool(os.environ.get("CHAT360_AUTH_COOKIE")),

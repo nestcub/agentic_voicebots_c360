@@ -11,26 +11,20 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from ..models import Execution, NodeInstance
+from ..models import Execution
+from .journey import journey_nodes
 
 NODE_NAME_RETRY = "Retry"
-
 DEFAULT_ATTEMPTS = 3
 DEFAULT_INTERVAL_MINUTES = 15
 DEFAULT_STRATEGY = "linear"
 
 
 def _get_retry_config(execution: "Execution") -> dict:
-    """
-    Defensively reads the Retry NodeInstance's config for this Execution's
-    process_agent. generate_journey always creates this node, but never trust
-    it blindly — treat a missing node (or any lookup error) as an empty
-    config rather than raising.
-    """
+    """Fail-open: {} if the Retry node doesn't exist for this journey."""
     try:
-        return execution.process_agent.nodes.get(name=NODE_NAME_RETRY).config or {}
-    except NodeInstance.DoesNotExist:
-        return {}
+        node = journey_nodes(execution).get(name=NODE_NAME_RETRY)
+        return node.config or {}
     except Exception:
         return {}
 

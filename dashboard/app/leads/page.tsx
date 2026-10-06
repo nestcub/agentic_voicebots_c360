@@ -5,19 +5,19 @@ import Link from "next/link";
 import { Card, CardHeader } from "@/components/Card";
 import { UploadCampaignModal } from "@/components/leads/UploadCampaignModal";
 import {
-  listDepartments,
+  listChannels,
   listProcessAgents,
   listCampaigns,
   listCampaignLeads,
 } from "@/lib/telehubApi";
-import type { Department, ProcessAgentSummary, CampaignSummary, CampaignLead } from "@/lib/types";
+import type { Channel, ProcessAgentSummary, CampaignSummary, CampaignLead } from "@/lib/types";
 
 const POLL_MS = 2500;
 
 // Execution.status is a free string (currently only ever "pending" — no dispatch
 // engine exists yet). It doesn't belong to the shared lead-status vocabulary in
 // lib/domainConfig.ts (StatusBadge), so — same judgment call as ProcessStatusPill
-// in app/departments/[id]/page.tsx — this is a small local, component-scoped pill
+// in app/process-agents/[id]/page.tsx — this is a small local, component-scoped pill
 // instead of forcing a mismatch with that vocabulary.
 type Tone = "ok" | "warn" | "bad" | "muted";
 
@@ -45,13 +45,13 @@ function ExecutionStatusPill({ status }: { status: string }) {
 }
 
 export default function LeadsPage() {
-  // Departments
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [departmentsLoading, setDepartmentsLoading] = useState(true);
-  const [departmentsError, setDepartmentsError] = useState<string | null>(null);
-  const [selectedDepartmentId, setSelectedDepartmentId] = useState<number | null>(null);
+  // Channels
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(true);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
+  const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null);
 
-  // Process Agents (scoped to selected department)
+  // Process Agents (scoped to selected channel)
   const [processAgents, setProcessAgents] = useState<ProcessAgentSummary[]>([]);
   const [processAgentsLoading, setProcessAgentsLoading] = useState(false);
   const [processAgentsError, setProcessAgentsError] = useState<string | null>(null);
@@ -72,43 +72,43 @@ export default function LeadsPage() {
 
   const requestedCampaignRef = useRef<string | null>(null);
 
-  // ── Load departments on mount ───────────────────────────────────────────
+  // ── Load channels on mount ───────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    setDepartmentsLoading(true);
-    setDepartmentsError(null);
-    listDepartments()
+    setChannelsLoading(true);
+    setChannelsError(null);
+    listChannels()
       .then((data) => {
         if (cancelled) return;
-        setDepartments(data);
+        setChannels(data);
       })
       .catch((e) => {
         if (cancelled) return;
-        setDepartmentsError(e instanceof Error ? e.message : "Failed to load departments");
+        setChannelsError(e instanceof Error ? e.message : "Failed to load channels");
       })
       .finally(() => {
         if (cancelled) return;
-        setDepartmentsLoading(false);
+        setChannelsLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // ── Load process agents whenever the selected department changes ───────
+  // ── Load process agents whenever the selected channel changes ───────
   useEffect(() => {
     setSelectedProcessAgentId(null);
     setProcessAgents([]);
     setProcessAgentsError(null);
 
-    if (selectedDepartmentId === null) {
+    if (selectedChannelId === null) {
       setProcessAgentsLoading(false);
       return;
     }
 
     let cancelled = false;
     setProcessAgentsLoading(true);
-    listProcessAgents(selectedDepartmentId)
+    listProcessAgents(selectedChannelId)
       .then((data) => {
         if (cancelled) return;
         setProcessAgents(data);
@@ -124,7 +124,7 @@ export default function LeadsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedDepartmentId]);
+  }, [selectedChannelId]);
 
   // ── Load campaigns whenever the selected process agent changes ─────────
   function loadCampaigns(processAgentId: number) {
@@ -219,7 +219,7 @@ export default function LeadsPage() {
     if (result.processAgentId !== selectedProcessAgentId) {
       // Modal launched against a different process agent than the one currently
       // selected here (e.g. it re-asked). Follow the user's new selection.
-      setSelectedDepartmentId((prev) => prev); // department selector stays as-is; only process changes
+      setSelectedChannelId((prev) => prev); // channel selector stays as-is; only process changes
       setSelectedProcessAgentId(result.processAgentId);
       setSelectedCampaignId(result.campaignId);
       return;
@@ -242,19 +242,19 @@ export default function LeadsPage() {
         <p className="text-xs text-text-muted mt-0.5">Upload campaigns and track leads through a process</p>
       </div>
 
-      {/* Department / Process Agent selectors */}
+      {/* Channel / Process Agent selectors */}
       <Card className="p-4">
         <div className="flex flex-wrap items-end gap-4">
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-text-muted">Department</span>
+            <span className="text-xs font-medium text-text-muted">Channel</span>
             <select
-              value={selectedDepartmentId ?? ""}
-              onChange={(e) => setSelectedDepartmentId(e.target.value ? Number(e.target.value) : null)}
-              disabled={departmentsLoading}
+              value={selectedChannelId ?? ""}
+              onChange={(e) => setSelectedChannelId(e.target.value ? Number(e.target.value) : null)}
+              disabled={channelsLoading}
               className="min-w-50 px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
             >
-              <option value="">{departmentsLoading ? "Loading…" : "Select a department"}</option>
-              {departments.map((d) => (
+              <option value="">{channelsLoading ? "Loading…" : "Select a channel"}</option>
+              {channels.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
@@ -267,15 +267,15 @@ export default function LeadsPage() {
             <select
               value={selectedProcessAgentId ?? ""}
               onChange={(e) => setSelectedProcessAgentId(e.target.value ? Number(e.target.value) : null)}
-              disabled={selectedDepartmentId === null || processAgentsLoading}
+              disabled={selectedChannelId === null || processAgentsLoading}
               className="min-w-55 px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
             >
               <option value="">
-                {selectedDepartmentId === null
-                  ? "Select a department first"
+                {selectedChannelId === null
+                  ? "Select a channel first"
                   : processAgentsLoading
                     ? "Loading…"
-                    : "Select a process"}
+                    : "Select an agent"}
               </option>
               {processAgents.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -286,7 +286,7 @@ export default function LeadsPage() {
           </label>
         </div>
 
-        {departmentsError && <p className="text-xs text-bad mt-2">{departmentsError}</p>}
+        {channelsError && <p className="text-xs text-bad mt-2">{channelsError}</p>}
         {processAgentsError && <p className="text-xs text-bad mt-2">{processAgentsError}</p>}
       </Card>
 
@@ -294,7 +294,7 @@ export default function LeadsPage() {
       {selectedProcessAgentId === null && (
         <Card className="p-10 flex flex-col items-center justify-center text-center">
           <p className="text-sm text-text-muted">
-            Select a department and process above to view its campaigns and leads.
+            Select a channel and process above to view its campaigns and leads.
           </p>
         </Card>
       )}
@@ -311,7 +311,7 @@ export default function LeadsPage() {
                 href={`/process-agents/${selectedProcessAgentId}`}
                 className="text-sm font-medium text-primary hover:underline"
               >
-                View Process →
+                View Agent →
               </Link>
               <button
                 onClick={() => setModalOpen(true)}

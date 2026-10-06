@@ -20,7 +20,8 @@ librosa>=0.10.0
 praat-parselmouth>=0.4.3
 soundfile>=0.12.0
 
-# TeleHub (Django, standalone — services/telehub/)
+# TeleHub (Django — services/telehub/, Supabase Postgres)
 Django==6.0.7
 djangorestframework==3.17.1
 django-cors-headers==4.9.0
+dj-database-url==2.3.0
