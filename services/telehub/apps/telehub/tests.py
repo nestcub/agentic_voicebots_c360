@@ -25,9 +25,11 @@ from .models import (
     Variable,
     VoiceBot,
     WebhookDefinition,
+    WhatsAppSend,
     ProcessIntegration,
     QAResult,
 )
+from .services import hyundai_whatsapp
 from .services.callback_schedule import schedule_callback
 from .services.callback_time import parse_call_back_time
 from .services.campaign_launch import launch_campaign
@@ -2305,11 +2307,40 @@ class InboundCallTests(TestCase):
         self.assertIsNone(response.data[0]["whatsapp"])
 
 
+def _text_only_curl(template_title):
+    """A T2/T3-style curl: text template, no variable params."""
+    return INBOUND_WHATSAPP_CURL.split("--data-raw")[0] + "--data-raw '" + json.dumps(
+        {
+            "task_name": "whatsapp_push_notification",
+            "extra": "",
+            "task_body": [
+                {
+                    "client_number": "918799952622",
+                    "receiver_number": "9718066817",
+                    "country_code": "+91",
+                    "template_data": {
+                        "param_data": {},
+                        "template_title": template_title,
+                        "template_code": "en",
+                        "button_param_data": {},
+                        "file_name": "",
+                    },
+                }
+            ],
+        }
+    ) + "'"
+
+
+def _sent_body(mock_send):
+    return json.loads(mock_send.call_args.args[1])["task_body"][0]
+
+
 class WhatsAppSendTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         department = Department.objects.create(name="Automobile")
         self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+        # Pre-POC single curl: still read as T1's.
         OmnichannelConfig.objects.create(
             process_agent=self.agent, channel="whatsapp", whatsapp_curl=INBOUND_WHATSAPP_CURL
         )
@@ -2318,10 +2349,10 @@ class WhatsAppSendTests(TestCase):
             process_agent=self.agent, lead_id="x", status="completed", variables=variables
         )
 
-    def _send(self):
+    def _send(self, **extra):
         return self.client.post(
             f"/api/telehub/process-agents/{self.agent.id}/send-whatsapp/",
-            {"execution_ids": [self.execution.id]},
+            {"execution_ids": [self.execution.id], **extra},
             format="json",
         )
 
@@ -2329,7 +2360,9 @@ class WhatsAppSendTests(TestCase):
         with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
             response = self._send()
 
-        self.assertTrue(response.data["results"][0]["success"])
+        result = response.data["results"][0]
+        self.assertTrue(result["success"])
+        self.assertEqual(result["template_key"], "T1")
         url, body_bytes, headers = mock_send.call_args.args
         self.assertEqual(url, "https://app.chat360.io/service/v2/task")
         self.assertEqual(headers["Authorization"], "Api-Key test-key")
@@ -2341,27 +2374,47 @@ class WhatsAppSendTests(TestCase):
         self.assertEqual(params["appointment_time"], "11:00")
         self.assertEqual(params["link"], "https://example.com/kb.pdf")
         self.assertTrue(ExecutionEvent.objects.filter(execution=self.execution, event_type="whatsapp_sent").exists())
+        send = WhatsAppSend.objects.get(execution=self.execution)
+        self.assertEqual((send.trigger, send.status, send.template_key), ("manual", "sent", "T1"))
 
         calls = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/calls/").data
         self.assertEqual(calls[0]["whatsapp"]["status"], "sent")
+        self.assertEqual(calls[0]["whatsapp"]["template_key"], "T1")
+        self.assertEqual(calls[0]["suggested_template"], "T1")
 
-    def test_missing_variable_blocks_send(self):
-        self.execution.variables = {**self.execution.variables, "appointment_date": ""}
+    def test_t1_fills_empty_params_with_unspecified(self):
+        self.execution.variables = {**self.execution.variables, "appointment_date": "", "appointment_place": None}
         self.execution.save()
 
-        with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
             response = self._send()
 
-        mock_send.assert_not_called()
-        result = response.data["results"][0]
-        self.assertFalse(result["success"])
-        self.assertIn("appointment_date", result["error"])
-        self.assertTrue(ExecutionEvent.objects.filter(execution=self.execution, event_type="whatsapp_failed").exists())
+        self.assertTrue(response.data["results"][0]["success"])
+        params = _sent_body(mock_send)["template_data"]["param_data"]
+        self.assertEqual(params["appointment_date"], "unspecified")
+        self.assertEqual(params["appointment_place"], "unspecified")
+        self.assertEqual(params["customer_name"], "Ravi")
 
-    def test_template_override_and_preview(self):
-        self.agent.omnichannel.whatsapp_template = "other_template"
+    def test_missing_receiver_still_blocks(self):
+        self.execution.variables = {"customer_name": "Ravi"}
+        self.execution.save()
+        with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
+            response = self._send()
+        mock_send.assert_not_called()
+        self.assertIn("receiver_number", response.data["results"][0]["error"])
+
+    def test_explicit_template_key_uses_that_templates_curl(self):
+        self.agent.omnichannel.whatsapp_curls = {"T3": _text_only_curl("hyundai_agentic_sorry_followup")}
         self.agent.omnichannel.save()
 
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
+            self._send(template_key="T3")
+
+        task = _sent_body(mock_send)
+        self.assertEqual(task["template_data"]["template_title"], "hyundai_agentic_sorry_followup")
+        self.assertEqual(task["receiver_number"], "9876543210")
+
+    def test_preview_reports_template_and_params(self):
         response = self.client.post(
             f"/api/telehub/process-agents/{self.agent.id}/whatsapp-preview/",
             {"execution_ids": [self.execution.id]},
@@ -2369,21 +2422,235 @@ class WhatsAppSendTests(TestCase):
         )
 
         preview = response.data[0]
-        self.assertEqual(preview["template_title"], "other_template")
+        self.assertEqual(preview["template_key"], "T1")
+        self.assertEqual(preview["template_title"], "hyundai_agentic_temp")
         self.assertEqual(preview["params"]["model_name"], "Brezza")
         self.assertEqual(preview["missing"], [])
         self.assertNotIn("headers", preview)
 
-    def test_no_curl_configured_reports_error(self):
-        self.agent.omnichannel.whatsapp_curl = ""
-        self.agent.omnichannel.save()
+    def test_unconfigured_template_reports_error(self):
         with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
-            response = self._send()
+            response = self._send(template_key="T2")
         mock_send.assert_not_called()
         self.assertIn("no WhatsApp curl", response.data["results"][0]["error"])
+
+    def test_bad_template_key_400s(self):
+        self.assertEqual(self._send(template_key="T9").status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_empty_execution_ids_400s(self):
         response = self.client.post(
             f"/api/telehub/process-agents/{self.agent.id}/send-whatsapp/", {"execution_ids": []}, format="json"
         )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class HyundaiTemplatePickTests(TestCase):
+    def setUp(self):
+        department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+
+    def _pick(self, **variables):
+        execution = Execution(process_agent=self.agent, lead_id="x", variables=variables)
+        return hyundai_whatsapp.pick_template(execution)
+
+    def test_full_appointment_is_t1_even_on_drop_off(self):
+        self.assertEqual(
+            self._pick(
+                appointment_date="2026-10-12", appointment_time="19:00", appointment_place="Khar", call_status="DROP_OFF"
+            ),
+            "T1",
+        )
+
+    def test_partial_capture_is_t1(self):
+        self.assertEqual(self._pick(model_name="Creta"), "T1")
+        self.assertEqual(self._pick(appointment_date="2026-10-12"), "T1")
+
+    def test_model_of_interest_counts_as_model_name(self):
+        self.assertEqual(self._pick(model_of_interest="Creta"), "T1")
+
+    def test_nothing_captured_is_t3(self):
+        self.assertEqual(self._pick(), "T3")
+        self.assertEqual(self._pick(customer_name="  ", interest_type="test_drive", call_status="DROP_OFF"), "T3")
+
+    def test_callback_status_required_is_t2(self):
+        self.assertEqual(self._pick(callback_status="required"), "T2")
+        self.assertEqual(self._pick(callback_status=" Required ", model_name="Creta"), "T2")
+
+    def test_other_callback_status_values_are_ignored(self):
+        for value in ("not_required", "not required", "False", "", None):
+            self.assertEqual(self._pick(callback_status=value), "T3", value)
+        self.assertEqual(self._pick(callback_status="", model_name="Creta"), "T1")
+
+    def test_full_appointment_beats_callback_status(self):
+        self.assertEqual(
+            self._pick(
+                callback_status="required", appointment_date="d", appointment_time="t", appointment_place="p"
+            ),
+            "T1",
+        )
+
+    def test_callback_takes_priority_over_partial_but_not_full_appointment(self):
+        self.assertEqual(self._pick(model_name="Creta", callback_status="required"), "T2")
+        self.assertEqual(
+            self._pick(appointment_date="d", appointment_time="t", appointment_place="p", callback_status="required"),
+            "T1",
+        )
+
+
+class HyundaiAutoSendTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(name="Automobile")
+        voice_bot = VoiceBot.objects.create(communication_type="voice_inbound")
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": department.id, "name": "Hyundai", "voice": {"voice_bot_id": voice_bot.id}},
+            format="json",
+        )
+        self.agent = ProcessAgent.objects.get(pk=response.data["id"])
+        self.webhook = WebhookDefinition.objects.get(process_agent=self.agent)
+        self.config = OmnichannelConfig.objects.create(
+            process_agent=self.agent,
+            channel="whatsapp",
+            auto_send=True,
+            whatsapp_curls={
+                "T1": INBOUND_WHATSAPP_CURL,
+                "T2": _text_only_curl("hyundai_agentic_callback"),
+                "T3": _text_only_curl("hyundai_agentic_sorry_followup"),
+            },
+        )
+
+    def _post_call(self, payload=INBOUND_PAYLOAD):
+        self.client.post(f"/api/telehub/webhooks/{self.webhook.secret}/", payload, format="json")
+        return Execution.objects.filter(process_agent=self.agent).order_by("-created_at").first()
+
+    def _tick(self, response=(200, "{}", None), now=None):
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=response) as mock_send:
+            count = hyundai_whatsapp.process_due_sends(now=now)
+        return count, mock_send
+
+    def test_inbound_call_queues_and_scheduler_sends_t1(self):
+        execution = self._post_call()
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.trigger, send.status, send.template_key), ("auto", "pending", "T1"))
+
+        count, mock_send = self._tick()
+
+        self.assertEqual(count, 1)
+        send.refresh_from_db()
+        self.assertEqual(send.status, "sent")
+        self.assertIsNotNone(send.sent_at)
+        self.assertEqual(_sent_body(mock_send)["template_data"]["param_data"]["customer_name"], "Ravi")
+
+    def test_nothing_captured_sends_t3(self):
+        execution = self._post_call(
+            {"@caller_number": "+919876543210", "@call_start_time": "10:00:00", "@call_duration": "4"}
+        )
+        _, mock_send = self._tick()
+        self.assertEqual(WhatsAppSend.objects.get(execution=execution).template_key, "T3")
+        self.assertEqual(_sent_body(mock_send)["template_data"]["template_title"], "hyundai_agentic_sorry_followup")
+
+    def test_callback_status_required_sends_t2(self):
+        execution = self._post_call(
+            {"@caller_number": "+919876543210", "@call_start_time": "10:05:00", "@callback_status": "required"}
+        )
+        _, mock_send = self._tick()
+        self.assertEqual(WhatsAppSend.objects.get(execution=execution).template_key, "T2")
+        self.assertEqual(_sent_body(mock_send)["template_data"]["template_title"], "hyundai_agentic_callback")
+
+    def test_auto_send_off_queues_nothing(self):
+        self.config.auto_send = False
+        self.config.save()
+        self._post_call()
+        self.assertFalse(WhatsAppSend.objects.exists())
+
+    def test_test_call_is_skipped(self):
+        execution = self._post_call({**INBOUND_PAYLOAD, "@is_test": "True"})
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.last_error), ("skipped", "test call"))
+        self.assertEqual(self._tick()[0], 0)
+
+    def test_unconfigured_template_is_skipped(self):
+        self.config.whatsapp_curls = {"T1": INBOUND_WHATSAPP_CURL}
+        self.config.save()
+        execution = self._post_call({"@caller_number": "+919876543210", "@call_start_time": "10:00:00"})
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.last_error), ("skipped", "T3 not configured"))
+
+    def test_only_one_automatic_send_per_call(self):
+        execution = self._post_call()
+        hyundai_whatsapp.on_call_completed(execution)
+        self.assertEqual(WhatsAppSend.objects.filter(execution=execution).count(), 1)
+
+    def test_5xx_retries_then_fails(self):
+        execution = self._post_call()
+        send = WhatsAppSend.objects.get(execution=execution)
+
+        now = timezone.now()
+        for attempt, delay in enumerate(hyundai_whatsapp.RETRY_DELAYS_MINUTES, start=1):
+            self._tick(response=(502, "bad gateway", None), now=now)
+            send.refresh_from_db()
+            self.assertEqual((send.status, send.attempts), ("pending", attempt))
+            self.assertGreater(send.next_attempt_at, now)
+            now = send.next_attempt_at
+
+        self._tick(response=(502, "bad gateway", None), now=now)
+        send.refresh_from_db()
+        self.assertEqual((send.status, send.attempts), ("failed", 4))
+        self.assertIn("502", send.last_error)
+
+    def test_not_due_yet_is_not_sent(self):
+        execution = self._post_call()
+        self._tick(response=(502, "", None))
+        count, mock_send = self._tick()
+        self.assertEqual(count, 0)
+        mock_send.assert_not_called()
+
+    def test_4xx_fails_without_retry(self):
+        execution = self._post_call()
+        self._tick(response=(400, "bad request", None))
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.attempts), ("failed", 1))
+
+    def test_network_error_is_retried(self):
+        execution = self._post_call()
+        with patch("apps.telehub.services.whatsapp._send_once", side_effect=OSError("timed out")):
+            hyundai_whatsapp.process_due_sends()
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual(send.status, "pending")
+        self.assertIn("timed out", send.last_error)
+
+    def test_calls_endpoint_shows_auto_send_status(self):
+        self._post_call()
+        self._tick()
+        row = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/calls/").data[0]
+        self.assertEqual(row["whatsapp"]["status"], "sent")
+        self.assertEqual(row["whatsapp"]["trigger"], "auto")
+        self.assertEqual(row["whatsapp"]["template_key"], "T1")
+
+
+class OmnichannelTemplatesEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(name="Automobile")
+        self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+        self.url = f"/api/telehub/process-agents/{self.agent.id}/omnichannel/"
+
+    def test_patch_curls_and_auto_send_and_read_back_summary(self):
+        response = self.client.patch(
+            self.url,
+            {"auto_send": True, "whatsapp_curls": {"T1": INBOUND_WHATSAPP_CURL, "T3": "not a curl"}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["auto_send"])
+        templates = response.data["whatsapp_templates"]
+        self.assertEqual(templates["T1"]["template_title"], "hyundai_agentic_temp")
+        self.assertIn("customer_name", templates["T1"]["params"])
+        self.assertFalse(templates["T2"]["configured"])
+        self.assertIsNotNone(templates["T3"]["error"])
+
+    def test_unknown_template_key_400s(self):
+        response = self.client.patch(self.url, {"whatsapp_curls": {"T7": "curl x"}}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

@@ -2,9 +2,11 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Card, CardHeader } from "@/components/Card";
 import { getProcessAgentCalls, previewWhatsApp, sendWhatsApp } from "@/lib/telehubApi";
 import type { CallRow, ProcessAgentDetail, WhatsAppPreview, WhatsAppSendResult } from "@/lib/types";
-import { errorMessage, formatDate, formatDuration } from "./shared";
+import { errorMessage, formatDate, formatDuration, WHATSAPP_TEMPLATES } from "./shared";
 
-type WhatsAppFilter = "all" | "not_sent" | "sent" | "failed";
+type WhatsAppFilter = "all" | "not_sent" | "pending" | "sent" | "failed";
+
+const POLL_INTERVAL_MS = 15_000;
 
 function str(v: unknown): string {
   if (v === null || v === undefined) return "";
@@ -22,16 +24,26 @@ function phoneOf(row: CallRow): string {
 
 function WhatsAppBadge({ whatsapp }: { whatsapp: CallRow["whatsapp"] }) {
   if (!whatsapp) return <span className="text-text-muted text-xs">—</span>;
-  if (whatsapp.status === "sent") {
-    return (
-      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-ok/15 text-ok" title={formatDate(whatsapp.at)}>
-        Sent{whatsapp.count > 1 ? ` ×${whatsapp.count}` : ""}
-      </span>
-    );
-  }
+  const template = whatsapp.template_key ? ` · ${whatsapp.template_key}` : "";
+  const styles: Record<string, { cls: string; label: string }> = {
+    sent: { cls: "bg-ok/15 text-ok", label: `Sent${template}${whatsapp.count > 1 ? ` ×${whatsapp.count}` : ""}` },
+    failed: { cls: "bg-bad/15 text-bad", label: `Failed${template}` },
+    pending: { cls: "bg-primary/15 text-primary", label: `Sending${template}` },
+    skipped: { cls: "bg-text-muted/15 text-text-muted", label: `Skipped${template}` },
+  };
+  const style = styles[whatsapp.status] ?? styles.failed;
   return (
-    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-bad/15 text-bad" title={whatsapp.error ?? ""}>
-      Failed
+    <span className="inline-flex flex-col items-start gap-0.5">
+      <span
+        className={`text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap ${style.cls}`}
+        title={whatsapp.error || formatDate(whatsapp.at)}
+      >
+        {style.label}
+      </span>
+      <span className="text-[10px] text-text-muted">
+        {whatsapp.trigger === "auto" ? "auto" : "manual"}
+        {whatsapp.status === "skipped" && whatsapp.error ? ` · ${whatsapp.error}` : ""}
+      </span>
     </span>
   );
 }
@@ -53,16 +65,20 @@ function SendModal({
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<WhatsAppSendResult[] | null>(null);
+  // "" = each call gets the template the rules pick.
+  const [templateKey, setTemplateKey] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    previewWhatsApp(agentId, executionIds)
+    setPreviews(null);
+    setError(null);
+    previewWhatsApp(agentId, executionIds, templateKey || undefined)
       .then((data) => !cancelled && setPreviews(data))
       .catch((e: unknown) => !cancelled && setError(errorMessage(e, "Failed to load preview")));
     return () => {
       cancelled = true;
     };
-  }, [agentId, executionIds]);
+  }, [agentId, executionIds, templateKey]);
 
   const ready = (previews ?? []).filter((p) => !p.error && p.missing.length === 0);
   const blocked = (previews ?? []).length - ready.length;
@@ -74,6 +90,7 @@ function SendModal({
       const res = await sendWhatsApp(
         agentId,
         ready.map((p) => p.execution_id),
+        templateKey || undefined,
       );
       setResults(res.results);
       onSent();
@@ -95,12 +112,27 @@ function SendModal({
       >
         <div className="px-5 py-4 border-b border-border">
           <p className="text-base font-semibold text-on-surface">Send WhatsApp template</p>
-          {previews && previews[0]?.template_title && (
-            <p className="text-xs text-text-muted mt-0.5">
-              Template <span className="font-mono">{previews[0].template_title}</span> · {previews.length} recipient
-              {previews.length === 1 ? "" : "s"}
-            </p>
-          )}
+          <div className="flex items-center gap-2 mt-2">
+            <label className="text-xs text-text-muted">Template</label>
+            <select
+              value={templateKey}
+              onChange={(e) => setTemplateKey(e.target.value)}
+              disabled={sending || results !== null}
+              className="px-2 py-1 rounded-lg border border-border bg-surface text-sm"
+            >
+              <option value="">Rule&apos;s pick for each call</option>
+              {WHATSAPP_TEMPLATES.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            {previews && (
+              <span className="text-xs text-text-muted">
+                {previews.length} recipient{previews.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="px-5 py-4 overflow-y-auto space-y-3 flex-1">
@@ -124,7 +156,14 @@ function SendModal({
             previews?.map((p) => (
               <div key={p.execution_id} className="rounded-lg border border-border p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-on-surface font-mono">{p.receiver_number || "no number"}</p>
+                  <p className="text-sm text-on-surface">
+                    <span className="font-medium font-mono">{p.receiver_number || "no number"}</span>
+                    <span className="text-xs text-text-muted">
+                      {" "}
+                      · {p.template_key}
+                      {p.template_title ? ` (${p.template_title})` : ""}
+                    </span>
+                  </p>
                   {p.error || p.missing.length ? (
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-bad/15 text-bad">
                       Won&apos;t send
@@ -135,6 +174,8 @@ function SendModal({
                 </div>
                 {p.error ? (
                   <p className="text-xs text-bad">{p.error}</p>
+                ) : Object.keys(p.params).length === 0 ? (
+                  <p className="text-xs text-text-muted">No parameters — fixed text template.</p>
                 ) : (
                   <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-xs">
                     {Object.entries(p.params).map(([key, value]) => (
@@ -190,7 +231,10 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [modalIds, setModalIds] = useState<number[] | null>(null);
 
-  const whatsAppConfigured = Boolean(agent.omnichannel?.whatsapp_curl?.trim());
+  const templates = agent.omnichannel?.whatsapp_templates ?? {};
+  const whatsAppConfigured =
+    Object.values(templates).some((t) => t.configured) || Boolean(agent.omnichannel?.whatsapp_curl?.trim());
+  const unconfigured = WHATSAPP_TEMPLATES.filter((t) => !templates[t.key]?.configured).map((t) => t.key);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -205,11 +249,31 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
     load();
   }, [load]);
 
+  // Background poll: no loading/error state, so the table doesn't flicker and a
+  // transient failure keeps the last good rows on screen. Paused while the send
+  // modal is open or the browser tab is hidden.
+  useEffect(() => {
+    if (modalIds) return;
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      getProcessAgentCalls(agent.id)
+        .then(setRows)
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [agent.id, modalIds]);
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (rows ?? []).filter((row) => {
       if (hideTests && isTruthy(row.variables.is_test)) return false;
-      if (whatsAppFilter === "not_sent" && row.whatsapp) return false;
+      if (whatsAppFilter === "not_sent" && row.whatsapp && row.whatsapp.status !== "skipped") return false;
+      if (whatsAppFilter === "pending" && row.whatsapp?.status !== "pending") return false;
       if (whatsAppFilter === "sent" && row.whatsapp?.status !== "sent") return false;
       if (whatsAppFilter === "failed" && row.whatsapp?.status !== "failed") return false;
       if (q && !`${phoneOf(row)} ${str(row.variables.customer_name)}`.toLowerCase().includes(q)) return false;
@@ -244,10 +308,15 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
 
   return (
     <div className="space-y-4">
-      {!whatsAppConfigured && (
+      {!whatsAppConfigured ? (
         <div className="text-sm text-warn bg-warn/10 border border-warn/30 rounded-lg px-4 py-3">
           No WhatsApp curl configured — add one under Settings → Omnichannel to enable sending.
         </div>
+      ) : (
+        <p className="text-xs text-text-muted">
+          Auto-send is <span className="font-medium text-on-surface">{agent.omnichannel?.auto_send ? "on" : "off"}</span>
+          {unconfigured.length > 0 && ` · ${unconfigured.join(", ")} not configured yet (those calls are skipped)`}
+        </p>
       )}
 
       <Card className="p-0 overflow-hidden">
@@ -267,6 +336,7 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
           >
             <option value="all">WhatsApp: all</option>
             <option value="not_sent">WhatsApp: not sent</option>
+            <option value="pending">WhatsApp: sending</option>
             <option value="sent">WhatsApp: sent</option>
             <option value="failed">WhatsApp: failed</option>
           </select>
@@ -336,7 +406,7 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
                         <td className="px-3 py-2.5 text-xs text-text-muted whitespace-nowrap">
                           {str(v.call_start_time) || formatDate(row.created_at)}
                         </td>
-                        <td className="px-3 py-2.5">{str(v.model_name) || "—"}</td>
+                        <td className="px-3 py-2.5">{str(v.model_of_interest) || str(v.model_name) || "—"}</td>
                         <td className="px-3 py-2.5">{str(v.interest_type) || "—"}</td>
                         <td className="px-3 py-2.5">
                           {appointment || str(v.appointment_place) ? (
@@ -358,7 +428,7 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
                             disabled={!whatsAppConfigured}
                             className="px-2 py-1 rounded text-[11px] font-medium bg-primary text-on-primary hover:bg-primary-container disabled:opacity-60 whitespace-nowrap"
                           >
-                            {row.whatsapp?.status === "sent" ? "Resend" : "Send"}
+                            {row.whatsapp?.status === "sent" ? "Resend" : "Send"} · {row.suggested_template}
                           </button>
                         </td>
                       </tr>

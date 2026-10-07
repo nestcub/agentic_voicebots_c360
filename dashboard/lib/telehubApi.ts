@@ -177,13 +177,22 @@ export function getProcessAgentCalls(id: number): Promise<CallRow[]> {
   return get<CallRow[]>(`/process-agents/${id}/calls/`);
 }
 
-export function previewWhatsApp(id: number, executionIds: number[]): Promise<WhatsAppPreview[]> {
-  return post<WhatsAppPreview[]>(`/process-agents/${id}/whatsapp-preview/`, { execution_ids: executionIds });
+// templateKey omitted = each call gets the template the Hyundai rules pick.
+export function previewWhatsApp(id: number, executionIds: number[], templateKey?: string): Promise<WhatsAppPreview[]> {
+  return post<WhatsAppPreview[]>(`/process-agents/${id}/whatsapp-preview/`, {
+    execution_ids: executionIds,
+    ...(templateKey ? { template_key: templateKey } : {}),
+  });
 }
 
-export function sendWhatsApp(id: number, executionIds: number[]): Promise<{ results: WhatsAppSendResult[] }> {
+export function sendWhatsApp(
+  id: number,
+  executionIds: number[],
+  templateKey?: string,
+): Promise<{ results: WhatsAppSendResult[] }> {
   return post<{ results: WhatsAppSendResult[] }>(`/process-agents/${id}/send-whatsapp/`, {
     execution_ids: executionIds,
+    ...(templateKey ? { template_key: templateKey } : {}),
   });
 }
 
@@ -294,6 +303,8 @@ export interface OmnichannelConfigWrite {
   variables?: string[];
   whatsapp_template?: string;
   whatsapp_curl?: string;
+  whatsapp_curls?: Record<string, string>;
+  auto_send?: boolean;
 }
 
 export function updateProcessAgentOmnichannel(

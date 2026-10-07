@@ -18,6 +18,7 @@ from .models import (
     Variable,
     VoiceBot,
     WebhookDefinition,
+    WhatsAppSend,
 )
 
 admin.site.register(Department)
@@ -37,3 +38,4 @@ admin.site.register(AnalyticsEvent)
 admin.site.register(Variable)
 admin.site.register(WebhookDefinition)
 admin.site.register(OmnichannelConfig)
+admin.site.register(WhatsAppSend)

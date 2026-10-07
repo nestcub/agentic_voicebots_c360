@@ -19,8 +19,9 @@ from ..models import (
     Variable,
     VoiceBot,
     WebhookDefinition,
+    WhatsAppSend,
 )
-from ..services import analytics_stats, campaign_launch, inbound, outcome_routing, whatsapp
+from ..services import analytics_stats, campaign_launch, hyundai_whatsapp, inbound, outcome_routing, whatsapp
 from ..services.dispatcher import dispatch_execution
 from ..services.process_agent import (
     create_process_agent_from_wizard,
@@ -82,7 +83,14 @@ ANALYTICS_STAT_KEYS = {
 
 VARIABLE_WRITABLE_FIELDS = ("key", "type", "default_value", "label", "required", "source")
 WEBHOOK_WRITABLE_FIELDS = ("name", "schema", "status")
-OMNICHANNEL_WRITABLE_FIELDS = ("channel", "variables", "whatsapp_template", "whatsapp_curl")
+OMNICHANNEL_WRITABLE_FIELDS = (
+    "channel",
+    "variables",
+    "whatsapp_template",
+    "whatsapp_curl",
+    "whatsapp_curls",
+    "auto_send",
+)
 
 # Synchronous sends — cap a single click so the request can't run for minutes.
 MAX_WHATSAPP_BATCH = 50
@@ -373,6 +381,17 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
                 return Response({})
             return Response(OmnichannelConfigSerializer(obj).data)
 
+        curls = request.data.get("whatsapp_curls")
+        if curls is not None and (
+            not isinstance(curls, dict)
+            or set(curls) - set(hyundai_whatsapp.TEMPLATE_KEYS)
+            or not all(isinstance(c, str) for c in curls.values())
+        ):
+            return Response(
+                {"error": f"whatsapp_curls must map {', '.join(hyundai_whatsapp.TEMPLATE_KEYS)} to curl strings"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if obj is None:
             obj = OmnichannelConfig(process_agent=agent)
         for field in OMNICHANNEL_WRITABLE_FIELDS:
@@ -576,18 +595,30 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         """
         agent = self.get_object()
         executions = agent.executions.order_by("-created_at").prefetch_related(
+            Prefetch("whatsapp_sends", queryset=WhatsAppSend.objects.order_by("-created_at")),
+            # Sends from before WhatsAppSend existed only left events behind.
             Prefetch(
                 "events",
                 queryset=ExecutionEvent.objects.filter(
                     event_type__in=(whatsapp.EVENT_SENT, whatsapp.EVENT_FAILED)
                 ).order_by("-created_at"),
                 to_attr="whatsapp_events",
-            )
+            ),
         )
         return Response(CallRowSerializer(executions, many=True).data)
 
     def _whatsapp_executions(self, agent, request):
-        """Resolves body "execution_ids" to this agent's Executions, or returns a 400 Response."""
+        """
+        Resolves body "execution_ids" to this agent's Executions, or returns a
+        400 Response. Also validates the optional "template_key" (T1/T2/T3);
+        when it's omitted each execution gets the template the rules pick.
+        """
+        template_key = request.data.get("template_key")
+        if template_key not in (None, "", *hyundai_whatsapp.TEMPLATE_KEYS):
+            return None, Response(
+                {"error": f"template_key must be one of {', '.join(hyundai_whatsapp.TEMPLATE_KEYS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         ids = request.data.get("execution_ids")
         if not isinstance(ids, list) or not ids:
             return None, Response(
@@ -607,21 +638,33 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         executions, error_response = self._whatsapp_executions(agent, request)
         if error_response:
             return error_response
-        return Response([whatsapp.preview(e) for e in executions])
+        template_key = request.data.get("template_key")
+        return Response(
+            [hyundai_whatsapp.preview(e, template_key or hyundai_whatsapp.pick_template(e)) for e in executions]
+        )
 
     @action(detail=True, methods=["post"], url_path="send-whatsapp")
     def send_whatsapp(self, request, pk=None):
         """
-        The Calls tab's "Send WhatsApp": sends the agent's configured WhatsApp
-        template (OmnichannelConfig.whatsapp_curl) to each execution's lead,
-        synchronously, one request per lead. Per-lead failures (missing
-        values, non-2xx) are reported in the results, not as an HTTP error.
+        The Calls tab's "Send WhatsApp": sends a template (body "template_key",
+        or per execution the one the rules pick) to each execution's lead,
+        synchronously, one request per lead, using that template's curl from
+        OmnichannelConfig.whatsapp_curls. Per-lead failures (missing values,
+        non-2xx) are reported in the results, not as an HTTP error.
         """
         agent = self.get_object()
         executions, error_response = self._whatsapp_executions(agent, request)
         if error_response:
             return error_response
-        return Response({"results": [whatsapp.send_whatsapp(e) for e in executions]})
+        template_key = request.data.get("template_key")
+        return Response(
+            {
+                "results": [
+                    hyundai_whatsapp.send_manual(e, template_key or hyundai_whatsapp.pick_template(e))
+                    for e in executions
+                ]
+            }
+        )
 
     @action(detail=True, methods=["get"])
     def campaigns(self, request, pk=None):

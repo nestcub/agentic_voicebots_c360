@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
 from ..services.ngrok import get_public_base_url
+from ..services import hyundai_whatsapp
+from ..services.whatsapp import parse_curl
 from ..models import (
     BotJourney,
     Department,
@@ -163,9 +165,39 @@ class BotJourneySerializer(serializers.ModelSerializer):
 
 
 class OmnichannelConfigSerializer(serializers.ModelSerializer):
+    # What each template's curl parses to (no headers — those carry the API
+    # key), so Settings can show whether a pasted curl is usable.
+    whatsapp_templates = serializers.SerializerMethodField()
+
     class Meta:
         model = OmnichannelConfig
-        fields = ["channel", "variables", "whatsapp_template", "whatsapp_curl"]
+        fields = [
+            "channel",
+            "variables",
+            "whatsapp_template",
+            "whatsapp_curl",
+            "whatsapp_curls",
+            "auto_send",
+            "whatsapp_templates",
+        ]
+
+    def get_whatsapp_templates(self, obj):
+        summaries = {}
+        for key in hyundai_whatsapp.TEMPLATE_KEYS:
+            curl = hyundai_whatsapp.template_curl(obj.process_agent, key)
+            summary = {"configured": bool(curl.strip()), "url": "", "template_title": "", "params": [], "error": None}
+            if summary["configured"]:
+                try:
+                    url, _, body = parse_curl(curl)
+                    summary["url"] = url
+                    for task in body.get("task_body") or []:
+                        template_data = (task or {}).get("template_data") or {}
+                        summary["template_title"] = template_data.get("template_title", "")
+                        summary["params"] = list((template_data.get("param_data") or {}).keys())
+                except Exception as exc:
+                    summary["error"] = str(exc)
+            summaries[key] = summary
+        return summaries
 
 
 class ProcessAgentDetailSerializer(serializers.ModelSerializer):
@@ -255,6 +287,7 @@ class CallRowSerializer(serializers.ModelSerializer):
     """
 
     whatsapp = serializers.SerializerMethodField()
+    suggested_template = serializers.SerializerMethodField()
 
     class Meta:
         model = Execution
@@ -268,19 +301,37 @@ class CallRowSerializer(serializers.ModelSerializer):
             "variables",
             "created_at",
             "whatsapp",
+            "suggested_template",
         ]
 
     def get_whatsapp(self, obj):
+        """Latest WhatsAppSend (pending/sent/failed/skipped, which template, auto or manual)."""
+        sends = list(obj.whatsapp_sends.all())
+        if sends:
+            latest = sends[0]
+            return {
+                "status": latest.status,
+                "template_key": latest.template_key,
+                "trigger": latest.trigger,
+                "error": latest.last_error or None,
+                "at": (latest.sent_at or latest.updated_at).isoformat(),
+                "count": sum(1 for s in sends if s.status == "sent"),
+            }
         events = getattr(obj, "whatsapp_events", None) or []
         if not events:
             return None
         latest = events[0]
         return {
             "status": "sent" if latest.event_type == "whatsapp_sent" else "failed",
+            "template_key": (latest.payload or {}).get("template_key") or None,
+            "trigger": "manual",
             "error": (latest.payload or {}).get("error"),
             "at": latest.created_at.isoformat(),
-            "count": len(events),
+            "count": sum(1 for e in events if e.event_type == "whatsapp_sent"),
         }
+
+    def get_suggested_template(self, obj):
+        return hyundai_whatsapp.pick_template(obj)
 
 
 class CampaignLeadSerializer(serializers.ModelSerializer):

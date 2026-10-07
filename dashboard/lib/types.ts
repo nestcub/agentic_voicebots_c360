@@ -310,6 +310,10 @@ export interface ProcessAgentDetail {
     variables: string[];
     whatsapp_template: string;
     whatsapp_curl: string;
+    // Hyundai POC: one curl per template key (T1/T2/T3) + automatic sending.
+    whatsapp_curls: Record<string, string>;
+    auto_send: boolean;
+    whatsapp_templates: Record<string, WhatsAppTemplateSummary>;
   } | null;
   bot_journeys: BotJourney[];
 }
@@ -421,6 +425,15 @@ export interface Execution {
 
 // Calls tab row — an Execution with its full variables (for an inbound agent,
 // Chat360's post-call payload, "@" stripped from keys) and latest WhatsApp send.
+// What a pasted template curl parses to (see OmnichannelConfigSerializer).
+export interface WhatsAppTemplateSummary {
+  configured: boolean;
+  url: string;
+  template_title: string;
+  params: string[];
+  error: string | null;
+}
+
 export interface CallRow {
   id: number;
   lead_id: string;
@@ -430,11 +443,22 @@ export interface CallRow {
   current_node: string;
   variables: Record<string, unknown>;
   created_at: string;
-  whatsapp: { status: "sent" | "failed"; error: string | null; at: string; count: number } | null;
+  // Latest WhatsApp send for this call (automatic or manual).
+  whatsapp: {
+    status: "pending" | "sent" | "failed" | "skipped";
+    template_key: string | null;
+    trigger: "auto" | "manual";
+    error: string | null;
+    at: string;
+    count: number;
+  } | null;
+  // The template the Hyundai rules pick for this call.
+  suggested_template: string;
 }
 
 export interface WhatsAppPreview {
   execution_id: number;
+  template_key: string;
   receiver_number: string;
   template_title: string;
   params: Record<string, string>;
@@ -444,6 +468,7 @@ export interface WhatsAppPreview {
 
 export interface WhatsAppSendResult {
   execution_id: number;
+  template_key: string;
   success: boolean;
   status_code: number | null;
   error: string | null;

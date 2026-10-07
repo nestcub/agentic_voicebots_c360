@@ -22,6 +22,7 @@ import {
   STAT_FIELDS,
   errorMessage,
   getConfigBool,
+  WHATSAPP_TEMPLATES,
 } from "./shared";
 
 function SettingsRow({ label, value }: { label: string; value: string }) {
@@ -687,19 +688,26 @@ function OmnichannelSection({
   omnichannel: ProcessAgentDetail["omnichannel"];
   onSaved: () => void;
 }) {
+  // T1 falls back to the pre-POC single curl until it's saved as T1.
+  function initialCurls(): Record<string, string> {
+    const curls = { ...(omnichannel?.whatsapp_curls ?? {}) };
+    if (!curls.T1?.trim() && omnichannel?.whatsapp_curl) curls.T1 = omnichannel.whatsapp_curl;
+    return curls;
+  }
+
   const [editing, setEditing] = useState(false);
   const [channel, setChannel] = useState(omnichannel?.channel ?? "");
   const [variablesText, setVariablesText] = useState((omnichannel?.variables ?? []).join(", "));
-  const [whatsappTemplate, setWhatsappTemplate] = useState(omnichannel?.whatsapp_template ?? "");
-  const [whatsappCurl, setWhatsappCurl] = useState(omnichannel?.whatsapp_curl ?? "");
+  const [autoSend, setAutoSend] = useState(omnichannel?.auto_send ?? false);
+  const [curls, setCurls] = useState<Record<string, string>>(initialCurls);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function startEditing() {
     setChannel(omnichannel?.channel ?? "");
     setVariablesText((omnichannel?.variables ?? []).join(", "));
-    setWhatsappTemplate(omnichannel?.whatsapp_template ?? "");
-    setWhatsappCurl(omnichannel?.whatsapp_curl ?? "");
+    setAutoSend(omnichannel?.auto_send ?? false);
+    setCurls(initialCurls());
     setError(null);
     setEditing(true);
   }
@@ -711,8 +719,10 @@ function OmnichannelSection({
         .split(",")
         .map((v) => v.trim())
         .filter(Boolean),
-      whatsapp_template: whatsappTemplate,
-      whatsapp_curl: whatsappCurl,
+      auto_send: autoSend,
+      whatsapp_curls: Object.fromEntries(WHATSAPP_TEMPLATES.map((t) => [t.key, curls[t.key]?.trim() ?? ""])),
+      // Kept in step with T1 so clearing T1 doesn't fall back to a stale curl.
+      whatsapp_curl: curls.T1?.trim() ?? "",
     };
     setSaving(true);
     setError(null);
@@ -741,7 +751,7 @@ function OmnichannelSection({
     >
       {error && <p className="text-xs text-bad">{error}</p>}
       {editing ? (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <div>
             <label className="block text-xs text-text-muted mb-1">Channel</label>
             <select
@@ -765,23 +775,24 @@ function OmnichannelSection({
           </div>
           {channel === "whatsapp" && (
             <>
-              <div>
-                <label className="block text-xs text-text-muted mb-1">WhatsApp Template</label>
-                <input
-                  value={whatsappTemplate}
-                  onChange={(e) => setWhatsappTemplate(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-text-muted mb-1">curl template</label>
-                <textarea
-                  value={whatsappCurl}
-                  onChange={(e) => setWhatsappCurl(e.target.value)}
-                  rows={4}
-                  className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono"
-                />
-              </div>
+              <label className="flex items-center gap-2 text-sm text-on-surface">
+                <input type="checkbox" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} />
+                Auto-send WhatsApp after each inbound call
+              </label>
+              {WHATSAPP_TEMPLATES.map((t) => (
+                <div key={t.key}>
+                  <label className="block text-xs font-medium text-on-surface">{t.label}</label>
+                  <p className="text-[11px] text-text-muted mb-1">{t.when}</p>
+                  <textarea
+                    value={curls[t.key] ?? ""}
+                    onChange={(e) => setCurls((c) => ({ ...c, [t.key]: e.target.value }))}
+                    rows={4}
+                    placeholder="Paste the template's curl command"
+                    spellCheck={false}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono"
+                  />
+                </div>
+              ))}
             </>
           )}
         </div>
@@ -799,15 +810,40 @@ function OmnichannelSection({
           />
           {omnichannel.channel === "whatsapp" && (
             <>
-              <SettingsRow label="WhatsApp Template" value={omnichannel.whatsapp_template || "—"} />
-              {omnichannel.whatsapp_curl && (
-                <div>
-                  <p className="text-xs font-medium text-text-muted mb-1">curl template</p>
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words bg-background rounded p-2 text-[11px] text-text-muted font-mono">
-                    {omnichannel.whatsapp_curl}
-                  </pre>
-                </div>
-              )}
+              <SettingsRow label="Auto-send" value={omnichannel.auto_send ? "On" : "Off"} />
+              <div className="space-y-2 pt-1">
+                {WHATSAPP_TEMPLATES.map((t) => {
+                  const summary = omnichannel.whatsapp_templates?.[t.key];
+                  return (
+                    <div key={t.key} className="rounded-lg border border-border px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-on-surface">{t.label}</p>
+                        {!summary?.configured ? (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-text-muted/15 text-text-muted">
+                            Not configured
+                          </span>
+                        ) : summary.error ? (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-bad/15 text-bad">Invalid curl</span>
+                        ) : (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-ok/15 text-ok">Ready</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-text-muted mt-0.5">{t.when}</p>
+                      {summary?.configured &&
+                        (summary.error ? (
+                          <p className="text-xs text-bad mt-1">{summary.error}</p>
+                        ) : (
+                          <p className="text-xs text-on-surface mt-1">
+                            <span className="font-mono">{summary.template_title || "—"}</span>
+                            {summary.params.length > 0 && (
+                              <span className="text-text-muted"> · params: {summary.params.join(", ")}</span>
+                            )}
+                          </p>
+                        ))}
+                    </div>
+                  );
+                })}
+              </div>
             </>
           )}
         </div>

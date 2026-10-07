@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.telehub.models import Execution
-from apps.telehub.services import dispatcher, gating
+from apps.telehub.services import dispatcher, gating, hyundai_whatsapp
 
 POLLABLE_STATUSES = ["pending", "retry_scheduled", "callback_scheduled"]
 
@@ -40,8 +40,18 @@ def tick() -> int:
     return processed
 
 
+def run_once() -> tuple:
+    """One scheduler tick: due outbound calls, then due automatic WhatsApp sends."""
+    calls = tick()
+    messages = hyundai_whatsapp.process_due_sends()
+    return calls, messages
+
+
 class Command(BaseCommand):
-    help = "Polls due Executions and dispatches them (business-hours/DND gated)."
+    help = (
+        "Polls due Executions and dispatches them (business-hours/DND gated), "
+        "then sends due automatic WhatsApp messages."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -58,12 +68,15 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if options["once"]:
-            count = tick()
-            self.stdout.write(self.style.SUCCESS(f"Processed {count} execution(s)."))
+            self._report(*run_once())
             return
 
         interval = options["interval"]
         while True:
-            count = tick()
-            self.stdout.write(self.style.SUCCESS(f"Processed {count} execution(s)."))
+            self._report(*run_once())
             time.sleep(interval)
+
+    def _report(self, calls, messages):
+        self.stdout.write(
+            self.style.SUCCESS(f"Processed {calls} execution(s), {messages} WhatsApp send(s).")
+        )

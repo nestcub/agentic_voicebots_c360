@@ -1,25 +1,24 @@
 """
-Sends a Chat360 WhatsApp template to one Execution's lead, using the curl
-command pasted into the agent's Omnichannel config (OmnichannelConfig.
-whatsapp_curl) as the request template — URL, headers and JSON body are all
-taken from it verbatim, then filled in per lead:
+Sends a Chat360 WhatsApp template to one Execution's lead, using a pasted curl
+command (one per template, see hyundai_whatsapp.template_curl) as the request
+template — URL, headers and JSON body are all taken from it verbatim, then
+filled in per lead:
 
 - every task_body[].receiver_number is replaced with the lead's number
   (caller_number for inbound calls, to_number for outbound), as bare 10 digits
   since the curl carries country_code separately;
 - every template_data.param_data value that names a variable ("customer_name":
   "customer_name", or "@customer_name") is replaced with that variable's value
-  from execution.variables; anything else (e.g. a fixed "link") is sent as-is;
-- OmnichannelConfig.whatsapp_template, if set, overrides template_title.
+  from execution.variables; anything else (e.g. a fixed "link") is sent as-is.
 
 A placeholder whose variable is missing/empty blocks the send rather than
-sending the literal placeholder name to the customer.
+sending the literal placeholder name to the customer — unless the caller
+passes missing_fill, in which case that text is sent in its place.
 
 Stdlib-only and never raises, like dispatcher.py; every send attempt is
-recorded as a whatsapp_sent / whatsapp_failed ExecutionEvent (the Calls tab's
-WhatsApp status column reads the latest one).
+recorded as a whatsapp_sent / whatsapp_failed ExecutionEvent with the full
+request/response (the Calls tab's status column reads WhatsAppSend instead).
 """
-import copy
 import json
 import logging
 import shlex
@@ -94,12 +93,14 @@ def _receiver_number(execution: "Execution") -> str:
     return _normalize_phone(variables.get("caller_number") or variables.get("to_number"))
 
 
-def build_request(execution: "Execution") -> dict:
+def build_request(execution: "Execution", curl: str, missing_fill=None, variables=None) -> dict:
     """
-    Fills the agent's curl template in for this execution. Returns
-    {"url", "headers", "body", "receiver_number", "template_title", "params",
-    "missing", "error"} — "error" is set (and the rest may be empty) when the
-    agent has no usable WhatsApp curl configured. Never raises.
+    Fills `curl` in for this execution. Returns {"url", "headers", "body",
+    "receiver_number", "template_title", "params", "missing", "error"} —
+    "error" is set (and the rest may be empty) when the curl is empty or
+    unusable. With missing_fill, empty variable params are sent as that text
+    and are not reported in "missing". `variables` overrides
+    execution.variables (e.g. with aliases applied). Never raises.
     """
     result = {
         "url": "",
@@ -111,12 +112,10 @@ def build_request(execution: "Execution") -> dict:
         "missing": [],
         "error": None,
     }
+    if not (curl or "").strip():
+        result["error"] = "no WhatsApp curl configured for this template"
+        return result
     try:
-        config = getattr(execution.process_agent, "omnichannel", None)
-        curl = (config.whatsapp_curl if config else "") or ""
-        if not curl.strip():
-            result["error"] = "no WhatsApp curl configured in this agent's Omnichannel settings"
-            return result
         url, headers, body = parse_curl(curl)
     except ValueError as exc:
         result["error"] = f"WhatsApp curl could not be parsed: {exc}"
@@ -125,9 +124,8 @@ def build_request(execution: "Execution") -> dict:
         result["error"] = str(exc)
         return result
 
-    variables = execution.variables or {}
-    template_override = config.whatsapp_template.strip()
-    body = copy.deepcopy(body)
+    if variables is None:
+        variables = execution.variables or {}
     tasks = body.get("task_body") if isinstance(body.get("task_body"), list) else []
     for task in tasks:
         if not isinstance(task, dict):
@@ -136,8 +134,6 @@ def build_request(execution: "Execution") -> dict:
         template_data = task.get("template_data")
         if not isinstance(template_data, dict):
             continue
-        if template_override:
-            template_data["template_title"] = template_override
         result["template_title"] = template_data.get("template_title", "")
         param_data = template_data.get("param_data")
         if not isinstance(param_data, dict):
@@ -147,9 +143,12 @@ def build_request(execution: "Execution") -> dict:
             is_variable = name is not None and (name == key or placeholder.startswith("@") or name in variables)
             if is_variable:
                 value = variables.get(name)
-                if value in (None, ""):
-                    result["missing"].append(key)
-                    value = ""
+                if value is None or str(value).strip() == "":
+                    if missing_fill is None:
+                        result["missing"].append(key)
+                        value = ""
+                    else:
+                        value = missing_fill
                 param_data[key] = str(value)
             result["params"][key] = param_data[key]
 
@@ -160,9 +159,9 @@ def build_request(execution: "Execution") -> dict:
     return result
 
 
-def preview(execution: "Execution") -> dict:
+def preview(execution: "Execution", curl: str, missing_fill=None, variables=None) -> dict:
     """What a send would deliver — no headers (they carry the API key)."""
-    request = build_request(execution)
+    request = build_request(execution, curl, missing_fill, variables)
     return {
         "execution_id": execution.id,
         "receiver_number": request["receiver_number"],
@@ -173,17 +172,21 @@ def preview(execution: "Execution") -> dict:
     }
 
 
-def send_whatsapp(execution: "Execution") -> dict:
+def send_whatsapp(
+    execution: "Execution", curl: str, missing_fill=None, variables=None, template_key: str = ""
+) -> dict:
     """
     POSTs the filled-in template. Returns {"execution_id", "success",
-    "status_code", "error"}; never raises.
+    "status_code", "error", "retryable"} — retryable is True only for a
+    network error or a 5xx (a 4xx, bad curl or missing values won't get
+    better by resending). Never raises.
     """
-    request = build_request(execution)
+    request = build_request(execution, curl, missing_fill, variables)
     error = request["error"]
     if not error and request["missing"]:
         error = "missing values for: " + ", ".join(request["missing"])
 
-    status_code, response_body = None, ""
+    status_code, response_body, retryable = None, "", False
     if not error:
         try:
             headers = {"Content-Type": "application/json", **request["headers"]}
@@ -192,17 +195,20 @@ def send_whatsapp(execution: "Execution") -> dict:
             )
             if not 200 <= status_code < 300:
                 error = f"non-2xx status: {status_code}"
+                retryable = status_code >= 500
         except Exception as exc:
             error = str(exc)
+            retryable = True
 
     if error:
-        logger.error("whatsapp send failed: execution=%s %s", execution.id, error)
+        logger.error("whatsapp send failed: execution=%s template=%s %s", execution.id, template_key, error)
 
     try:
         ExecutionEvent.objects.create(
             execution=execution,
             event_type=EVENT_FAILED if error else EVENT_SENT,
             payload={
+                "template_key": template_key,
                 "receiver_number": request["receiver_number"],
                 "template_title": request["template_title"],
                 "params": request["params"],
@@ -219,4 +225,5 @@ def send_whatsapp(execution: "Execution") -> dict:
         "success": error is None,
         "status_code": status_code,
         "error": error,
+        "retryable": retryable,
     }

@@ -351,10 +351,59 @@ class OmnichannelConfig(models.Model):
     variables = models.JSONField(default=list)
     whatsapp_template = models.CharField(max_length=128, blank=True, default="")
     whatsapp_curl = models.TextField(blank=True, default="")
+    # Hyundai POC (docs/hyundai-whatsapp-automation-plan.md): one pasted curl
+    # per template key ("T1"/"T2"/"T3"), and whether completed inbound calls
+    # get one sent automatically. whatsapp_curl above is the pre-POC single
+    # curl, still read as T1's fallback.
+    whatsapp_curls = models.JSONField(default=dict, blank=True)
+    auto_send = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"Omnichannel ({self.process_agent_id}) -> {self.channel or '—'}"
+
+
+class WhatsAppSend(models.Model):
+    """
+    One WhatsApp template send for an Execution — automatic (picked by
+    services/hyundai_whatsapp.py, sent by run_scheduler, retried on transient
+    failures) or manual (the Calls tab's Send button, sent synchronously).
+    At most one automatic send per Execution, so a resent webhook can't
+    trigger a second message.
+    """
+
+    TRIGGER_AUTO = "auto"
+    TRIGGER_MANUAL = "manual"
+
+    STATUS_PENDING = "pending"
+    STATUS_SENT = "sent"
+    STATUS_FAILED = "failed"
+    STATUS_SKIPPED = "skipped"
+
+    execution = models.ForeignKey(
+        Execution, on_delete=models.CASCADE, related_name="whatsapp_sends"
+    )
+    template_key = models.CharField(max_length=16)
+    trigger = models.CharField(max_length=16, default=TRIGGER_AUTO)
+    status = models.CharField(max_length=16, default=STATUS_PENDING)
+    attempts = models.IntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_error = models.TextField(blank=True, default="")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["execution"],
+                condition=models.Q(trigger="auto"),
+                name="unique_auto_whatsapp_send_per_execution",
+            )
+        ]
+
+    def __str__(self):
+        return f"WhatsApp {self.template_key} ({self.trigger}) -> execution {self.execution_id}: {self.status}"
 
 
 class WebhookDefinition(models.Model):

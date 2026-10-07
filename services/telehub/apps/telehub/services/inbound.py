@@ -16,7 +16,7 @@ always ack 200, so nothing here raises.
 from django.utils import timezone
 
 from ..models import Execution
-from . import outcome_routing
+from . import hyundai_whatsapp, outcome_routing
 
 INBOUND_COMMUNICATION_TYPE = "voice_inbound"
 INBOUND_CAMPAIGN_ID = "inbound"
@@ -95,6 +95,7 @@ def record_inbound_call(process_agent, payload: dict):
             next_execution=None,
         )
         outcome_routing.record_completion(execution, payload)
+        hyundai_whatsapp.on_call_completed(execution)
         return execution
     except Exception:
         return None
