@@ -532,7 +532,14 @@ class CallbackTimeParsingTests(TestCase):
         self.assertIsNone(parse_call_back_time(None))
 
 
+@patch.dict(os.environ, {"PUBLIC_BASE_URL": ""})
 class NgrokPublicBaseUrlTests(TestCase):
+    def test_public_base_url_env_takes_precedence_over_ngrok(self):
+        with patch.dict(os.environ, {"PUBLIC_BASE_URL": "https://telehub-api.onrender.com/"}), \
+                patch("apps.telehub.services.ngrok.urllib.request.urlopen") as mock_urlopen:
+            self.assertEqual(get_public_base_url(), "https://telehub-api.onrender.com")
+            mock_urlopen.assert_not_called()
+
     def test_returns_https_tunnel_when_ngrok_running(self):
         fake_response = {
             "tunnels": [

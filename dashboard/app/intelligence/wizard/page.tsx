@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 const INTEL_URL = process.env.NEXT_PUBLIC_INTEL_API_URL ?? "http://localhost:8001";
@@ -82,7 +82,16 @@ function StepIndicator({ current }: { current: number }) {
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 
+// useSearchParams() needs a Suspense boundary or `next build` fails to prerender this page.
 export default function WizardPage() {
+  return (
+    <Suspense>
+      <WizardContent />
+    </Suspense>
+  );
+}
+
+function WizardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const clientId = searchParams.get("client_id") ?? "";

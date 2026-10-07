@@ -27,11 +27,12 @@ sys.path.insert(0, str(BASE_DIR))
 # on its own.
 load_dotenv(BASE_DIR.parent.parent / ".env")
 
-# SECURITY WARNING: dev-only secret key, fine for this throwaway/dev service.
-SECRET_KEY = "django-insecure-telehub-dev-only-secret-key-change-me"
+# Deployed (Render) sets DJANGO_SECRET_KEY / DJANGO_DEBUG=false; local dev needs neither.
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY", "django-insecure-telehub-dev-only-secret-key-change-me"
+)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() == "true"
 
 ALLOWED_HOSTS = ["*"]
 
@@ -52,6 +53,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -142,17 +144,34 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = "static/"
+# collectstatic target; WhiteNoise serves it (Django admin CSS) without a separate web server.
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# CORS — allow the Next.js dashboard's dev origin only (not CORS_ALLOW_ALL_ORIGINS).
+# CORS — explicit origins only (not CORS_ALLOW_ALL_ORIGINS). Defaults to the
+# Next.js dev origin; deployed, set a comma-separated list (the Vercel URL).
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
 ]
+# Needed for Django admin login over HTTPS on the deployed host.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+# Render terminates TLS at its proxy; trust its header so request.is_secure() is right.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Admin session/CSRF cookies over HTTPS only when deployed.
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
 
 # Without this, apps.telehub's loggers (e.g. services/dispatcher.py) are silent
 # on console — Django's unconfigured-logger default only surfaces WARNING+.

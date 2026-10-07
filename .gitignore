@@ -24,3 +24,6 @@ data/
 
 # Supabase CLI local state (linked-project, .temp). Migrations live in migrations/.
 supabase/
+
+# Django collectstatic output (telehub)
+services/telehub/staticfiles/
