@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Work_Sans } from "next/font/google";
 import "./globals.css";
-import { AccountProvider } from "@/context/AccountContext";
 import { LayoutShell } from "@/components/LayoutShell";
 
 const workSans = Work_Sans({
@@ -18,9 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className={workSans.className}>
-        <AccountProvider>
-          <LayoutShell>{children}</LayoutShell>
-        </AccountProvider>
+        <LayoutShell>{children}</LayoutShell>
       </body>
     </html>
   );

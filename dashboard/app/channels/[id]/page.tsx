@@ -10,9 +10,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 
 // Process Agent `status` values (draft/active/…) aren't part of the shared
 // lead-status vocabulary in lib/domainConfig.ts, so StatusBadge can't color
-// them meaningfully (it'd fall back to grey for both). Mirrors the local
-// status-styling pattern already used in app/intelligence/page.tsx for the
-// same reason — a component-local vocab that doesn't belong in domainConfig.
+// them meaningfully (it'd fall back to grey for both), so this page keeps a
+// component-local vocab that doesn't belong in domainConfig.
 type Tone = "ok" | "warn" | "bad" | "muted";
 
 const TONE_CLASSES: Record<Tone, string> = {

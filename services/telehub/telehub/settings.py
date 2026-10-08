@@ -86,10 +86,9 @@ ASGI_APPLICATION = "telehub.asgi.application"
 # Database — Supabase Postgres.
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 #
-# Deliberately NOT the repo's existing DATABASE_URL — that name is already
-# claimed by the Intelligence plane's Neon/pgvector connection (see
-# .env.example, intelligence/). Reusing it here would silently point telehub
-# at the wrong database. TELEHUB_DATABASE_URL is a separate Supabase project.
+# Deliberately NOT a generic DATABASE_URL — that name belonged to the removed
+# Intelligence plane's Neon/pgvector connection, and an old .env may still set
+# it. TELEHUB_DATABASE_URL is a separate Supabase project.
 #
 # Use Supabase's pooled connection string (port 6543, ?pgbouncer=true) for
 # normal app traffic. Set TELEHUB_DATABASE_MIGRATE_URL (direct port 5432) if

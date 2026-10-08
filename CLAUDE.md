@@ -7,29 +7,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 An outbound-calling operations platform for Excell Autovista (Maruti Suzuki dealer), built around a
 form-driven "Process Agent" concept: a department picks a wizard-configured workflow, launches a
 campaign of leads against it, and a scheduler dispatches, retries, and routes outcomes for each lead
-automatically. There is also a separate, older "Intelligence" plane (calls → insights → Chat360 bot
-plans) that predates and is independent of the calling platform.
+automatically. An older, independent "Intelligence" plane (calls → insights → Chat360 bot plans:
+`intelligence/`, `shared/`, `transcription/`, `seed/`, `scripts/`, `humanvoice_engine/`) has been
+removed from the repo, along with its dashboard pages.
 
 **The live, current backend is `services/telehub/`** (Django + DRF + Postgres — a hosted Supabase
-database, read from `DATABASE_URL` in the repo-root `.env`; it was SQLite early on, and any doc or
-comment still saying SQLite is stale). Two earlier
-orchestrator implementations (`orchestrator/`, FastAPI/Neon; `orchestrator_django/`) were built,
-then deleted (see `008b424 remove orchestrator/, dead dashboard pages, and orchestrator-only deps
-ahead of telehub rebuild`) in favor of telehub. **`README.md` at the repo root and
-`docs/orchestrator-v2-codebase-guide.md` both describe the deleted `orchestrator`/`orchestrator_django`
-planes and are stale for anything calling-platform-related** — do not trust them for that; trust this
-file and the actual code in `services/telehub/`. They're still accurate for the `intelligence/`
-plane and Neon/pgvector setup.
+database, read from `TELEHUB_DATABASE_URL` in the repo-root `.env`, with
+`TELEHUB_DATABASE_MIGRATE_URL` used instead while `manage.py migrate` runs; it was SQLite early on,
+and any doc or comment still saying SQLite is stale). Two earlier orchestrator implementations
+(`orchestrator/`, FastAPI/Neon; `orchestrator_django/`) were built, then deleted (see `008b424 remove
+orchestrator/, dead dashboard pages, and orchestrator-only deps ahead of telehub rebuild`) in favor
+of telehub.
 
 ## Repo layout
 
 ```
 services/telehub/            Live Django backend for the calling platform (see below)
 dashboard/                   Next.js 16 dashboard — talks to telehub via dashboard/lib/telehubApi.ts
-intelligence/, transcription/, shared/, seed/, scripts/, humanvoice_engine/, tests/
-                              Older, independent "Intelligence" plane (calls -> insights -> Chat360
-                              bot plans) — Python, Anthropic, Neon Postgres + pgvector. See README.md
-                              for this part; it's accurate here.
+requirements.txt             Just `-r services/telehub/requirements.txt` (the single source of truth)
+deploy.md                    Hosting telehub (Render) + dashboard (Vercel) for the Hyundai POC
 docs/superpowers/plans/gpt_ai_hub_impl_plan.md
                               The design doc telehub's journey graph and wizard were built from —
                               read this before changing journey topology or node semantics.
@@ -41,7 +37,7 @@ docs/superpowers/plans/gpt_ai_hub_impl_plan.md
 
 No venv is committed. First time:
 ```bash
-cd chat360-intelligence-fabric
+# from the repo root
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ```
@@ -72,8 +68,40 @@ The scheduler is not a daemon — nothing dispatches due `Execution`s until you 
 ../../venv/bin/python manage.py run_scheduler              # loops forever, --interval seconds between ticks (default 30)
 ```
 
+#### On Windows
+
+A venv created on Windows puts its interpreter at `venv\Scripts\python.exe`, not `venv/bin/python`,
+so every `../../venv/bin/python` above becomes `..\..\venv\Scripts\python.exe`. Everything else
+(the commands, the "never run `migrate` yourself" rule, the shared `.env`) is the same.
+
+First time, from the repo root in PowerShell (use `py -3` if `python` isn't on PATH):
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+From `services\telehub\`:
+```powershell
+..\..\venv\Scripts\python.exe manage.py migrate                 # apply migrations (user only — see above)
+..\..\venv\Scripts\python.exe manage.py seed_node_templates
+..\..\venv\Scripts\python.exe manage.py runserver                # :8000
+..\..\venv\Scripts\python.exe manage.py test apps.telehub -v 2
+..\..\venv\Scripts\python.exe manage.py run_scheduler --once
+..\..\venv\Scripts\python.exe manage.py run_scheduler            # loops forever; run in its own terminal
+```
+
+Notes:
+- Calling the venv's `python.exe` directly avoids activation entirely. If you do want to activate
+  it (`.\venv\Scripts\Activate.ps1`) and PowerShell blocks the script, run
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+- In Git Bash, the same paths work with forward slashes: `../../venv/Scripts/python.exe`.
+- The repo lives under OneDrive; if OneDrive sync locks files in `venv\` or `dashboard\node_modules\`
+  (pip/npm "access denied" or `EPERM` errors), pause syncing or exclude those folders.
+- Use two terminals for local runs: one for `runserver`, one for `run_scheduler`, plus a third for
+  the dashboard below.
+
 Settings load the **repo-root `.env`** (`services/telehub/telehub/settings.py` walks up three
-levels), shared with the rest of the monorepo — `CHAT360_OUTBOUND_BEARER_TOKEN` and
+levels) — `CHAT360_OUTBOUND_BEARER_TOKEN` and
 `CHAT360_AUTH_COOKIE` come from there, not a telehub-local `.env`. The outbound DID/caller-ID is
 **not** an env var — it's per-`VoiceBot` (`VoiceBot.dids`, synced onto each `BotJourney`'s
 Communication `NodeInstance.config`), since one `ProcessAgent` can have several `BotJourney`s each
@@ -94,15 +122,13 @@ npm run lint
 Point it at telehub with `NEXT_PUBLIC_TELEHUB_API_URL` (defaults to `http://localhost:8000`) in
 `dashboard/.env.local`.
 
-Two known-broken things here that are **not** caused by whatever you just changed: `npm run lint`
-fails outright (ESLint 9 with no `eslint.config.js` in the repo), and `npm run build` compiles and
-typechecks clean but then fails prerendering `/intelligence/wizard` on a `useSearchParams` suspense
-error. Treat `npx tsc --noEmit` plus the build's "Compiled successfully / Finished TypeScript" lines
-as the real signal.
+On Windows the dashboard commands are identical in PowerShell or Git Bash (`cd dashboard`,
+`npm run dev`, etc.). If PowerShell refuses to run `npm`/`npx` because `npm.ps1` is blocked by the
+execution policy, call `npm.cmd` / `npx.cmd` instead, or set the policy as above.
 
-### Intelligence plane (independent Python service, see README.md for full detail)
-Runs as its own FastAPI app (`intelligence/api.py`) against Neon Postgres; not exercised by telehub
-or its tests.
+`npm run lint` is known-broken and **not** caused by whatever you just changed: it fails outright
+(ESLint 9 with no `eslint.config.js` in the repo). Treat `npx tsc --noEmit` and `npm run build` as
+the real signal.
 
 ## Telehub architecture — how a lead actually moves
 

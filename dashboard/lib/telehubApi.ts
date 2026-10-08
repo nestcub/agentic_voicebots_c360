@@ -1,7 +1,7 @@
 // TelehubApi — talks directly to the Telehub Django/DRF service (services/telehub/),
 // which owns Channels (backend: Departments), Process Agents, their journeys/executions/QA,
-// Integrations and Node Templates. Mirrors the fetch conventions of lib/sources/apiDataSource.ts:
-// same base-URL-env-var pattern, same `!res.ok` -> throw Error(...) handling.
+// Integrations and Node Templates. Base URL comes from NEXT_PUBLIC_TELEHUB_API_URL; any
+// `!res.ok` response is thrown as an Error(...).
 //
 // Frontend uses "Channel" terminology; backend uses "Department". The adapter layer below
 // transparently maps between them. See CHANNEL_MIGRATION.md for context.

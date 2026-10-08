@@ -1,7 +1,6 @@
 "use client";
 
 import { domainConfig } from "@/lib/domainConfig";
-import { ScopeSwitcher } from "./ScopeSwitcher";
 import { RiSettings3Line } from "react-icons/ri";
 import { useSidebar } from "@/context/SidebarContext";
 
@@ -22,7 +21,6 @@ export function TopHeader() {
 
       {/* Right side */}
       <div className="flex items-center gap-4">
-        <ScopeSwitcher />
         {/* <button className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors">
           <RiSettings3Line className="w-5 h-5" />
         </button>

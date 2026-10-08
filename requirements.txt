@@ -1,27 +1,3 @@
-# LLM
-anthropic>=0.40.0
-
-# Database (Postgres + pgvector)
-psycopg[binary,pool]>=3.1
-pgvector>=0.2.5
-
-# Embeddings (provider-agnostic: Gemini default, OpenAI when team key available)
-google-genai>=1.0.0
-openai>=1.40.0
-
-# Audio duration detection
-mutagen>=1.47.0
-
-# Environment
-python-dotenv>=1.0.0
-
-# Human-voice engine (acoustic prosody)
-librosa>=0.10.0
-praat-parselmouth>=0.4.3
-soundfile>=0.12.0
-
-# TeleHub (Django — services/telehub/, Supabase Postgres)
-Django==6.0.7
-djangorestframework==3.17.1
-django-cors-headers==4.9.0
-dj-database-url==2.3.0
+# The repo has one Python service: services/telehub/. Its requirements file is the single
+# source of truth (pinned to what the test suite runs on, and what Render installs).
+-r services/telehub/requirements.txt

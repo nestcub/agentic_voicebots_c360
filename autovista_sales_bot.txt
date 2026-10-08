@@ -1,4 +1,0 @@
-outbound bot
-botname=autovista_sales_v4_clone_v4
-voice_number/did=917965314458
-bot_id=897fe599-c84a-44a8-a97d-28e96c8eef89
