@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { TablePagination, usePagination } from "@/components/common/TablePagination";
 import { ExecutionStatusBadge, ToneBadge } from "@/components/StatusBadge";
 import type { BotJourney, Execution, JourneyEdge, JourneyNode, ProcessAgentDetail } from "@/lib/types";
 import { formatDate, formatDuration, getConfigStr } from "./shared";
@@ -267,39 +268,55 @@ export function RunsTab({
           description="This process hasn't run any calls."
         />
       ) : (
-        <Card className="gap-0 py-0 overflow-hidden">
-          <div className="px-5 py-4 border-b border-border">
-            <p className="font-semibold text-foreground">Runs</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {executions.length} execution{executions.length === 1 ? "" : "s"}
-            </p>
-          </div>
-          <Table>
-            <TableHeader className="bg-muted">
-              <TableRow>
-                <TableHead className="px-5">Lead</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Duration</TableHead>
-                <TableHead className="pr-5">Current Node</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {executions.map((ex) => (
-                <TableRow key={ex.id}>
-                  <TableCell className="px-5 font-medium">{ex.lead_id}</TableCell>
-                  <TableCell>
-                    <ExecutionStatusBadge status={ex.status} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{formatDate(ex.started_at)}</TableCell>
-                  <TableCell className="text-muted-foreground tabular-nums">{formatDuration(ex.duration)}</TableCell>
-                  <TableCell className="pr-5 text-muted-foreground">{ex.current_node || "—"}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+        <RunsTable executions={executions} />
       )}
     </div>
+  );
+}
+
+function RunsTable({ executions }: { executions: Execution[] }) {
+  const pagination = usePagination(executions);
+  return (
+    <Card className="gap-0 py-0 overflow-hidden">
+      <div className="px-5 py-4 border-b border-border">
+        <p className="font-semibold text-foreground">Runs</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {executions.length} execution{executions.length === 1 ? "" : "s"}
+        </p>
+      </div>
+      <Table>
+        <TableHeader className="bg-muted">
+          <TableRow>
+            <TableHead className="px-5">Lead</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Started</TableHead>
+            <TableHead>Duration</TableHead>
+            <TableHead className="pr-5">Current Node</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {pagination.pageItems.map((ex) => (
+            <TableRow key={ex.id}>
+              <TableCell className="px-5 font-medium">{ex.lead_id}</TableCell>
+              <TableCell>
+                <ExecutionStatusBadge status={ex.status} />
+              </TableCell>
+              <TableCell className="text-muted-foreground">{formatDate(ex.started_at)}</TableCell>
+              <TableCell className="text-muted-foreground tabular-nums">{formatDuration(ex.duration)}</TableCell>
+              <TableCell className="pr-5 text-muted-foreground">{ex.current_node || "—"}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      <TablePagination
+        page={pagination.page}
+        pageCount={pagination.pageCount}
+        pageSize={pagination.pageSize}
+        total={pagination.total}
+        start={pagination.start}
+        onPageChange={pagination.setPage}
+        onPageSizeChange={pagination.setPageSize}
+      />
+    </Card>
   );
 }

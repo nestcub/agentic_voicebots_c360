@@ -420,9 +420,16 @@ export default function ProcessAgentDetailPage() {
         description={agent.description || undefined}
       />
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)}>
-        <div className="overflow-x-auto pb-1">
-          <TabsList className="h-10">
+      {/* Sticky must sit on <Tabs> itself: its only child is the list, so the
+          page div is the tall containing block. top-16 clears the fixed TopHeader;
+          -mx-6/px-6 bleeds to the edges of <main>'s p-6. */}
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as TabKey)}
+        className="sticky top-16 z-10 -mx-6 border-b border-border bg-background px-6 py-2"
+      >
+        <div className="overflow-x-auto">
+          <TabsList className="h-10 w-full">
             {TABS.map((t) => {
               const Icon = TAB_ICONS[t.key];
               return (

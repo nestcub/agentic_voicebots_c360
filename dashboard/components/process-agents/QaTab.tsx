@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { TablePagination, usePagination } from "@/components/common/TablePagination";
 import { ToneBadge } from "@/components/StatusBadge";
 import type { BotJourney, QaResult } from "@/lib/types";
 import type { DispatchSingleCallResult } from "@/lib/telehubApi";
@@ -123,6 +124,19 @@ export function QaTab({
     );
   }
 
+  return <QaTable qaResults={qaResults} botJourneys={botJourneys} onDispatchFollowUp={onDispatchFollowUp} />;
+}
+
+function QaTable({
+  qaResults,
+  botJourneys,
+  onDispatchFollowUp,
+}: {
+  qaResults: QaResult[];
+  botJourneys: BotJourney[] | null;
+  onDispatchFollowUp: (executionId: number, botJourneyId: number) => Promise<DispatchSingleCallResult>;
+}) {
+  const pagination = usePagination(qaResults);
   return (
     <Card className="gap-0 py-0 overflow-hidden">
       <div className="px-5 py-4 border-b border-border">
@@ -141,7 +155,7 @@ export function QaTab({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {qaResults.map((qa) => {
+          {pagination.pageItems.map((qa) => {
             const missing = emptyPayloadKeys(qa.raw_result || {});
             const appointmentTime = qa.raw_result?.appointment_time;
             const appointmentAddress = qa.raw_result?.appointment_address;
@@ -197,6 +211,15 @@ export function QaTab({
           })}
         </TableBody>
       </Table>
+      <TablePagination
+        page={pagination.page}
+        pageCount={pagination.pageCount}
+        pageSize={pagination.pageSize}
+        total={pagination.total}
+        start={pagination.start}
+        onPageChange={pagination.setPage}
+        onPageSizeChange={pagination.setPageSize}
+      />
     </Card>
   );
 }

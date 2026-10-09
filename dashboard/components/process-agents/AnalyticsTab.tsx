@@ -4,6 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { TablePagination, usePagination } from "@/components/common/TablePagination";
 import { ExecutionStatusBadge, ToneBadge } from "@/components/StatusBadge";
 import type { ProcessAgentAnalytics, ProcessAgentDetail } from "@/lib/types";
 
@@ -65,6 +66,17 @@ export function AnalyticsTab({
   // the raw key.
   const labelByKey = new Map(agent.variables.map((v) => [v.key, v.label || v.key]));
 
+  return <AnalyticsTable data={data} labelByKey={labelByKey} />;
+}
+
+function AnalyticsTable({
+  data,
+  labelByKey,
+}: {
+  data: ProcessAgentAnalytics;
+  labelByKey: Map<string, string>;
+}) {
+  const pagination = usePagination(data.rows);
   return (
     <Card className="gap-0 py-0 overflow-hidden">
       <div className="px-5 py-4 border-b border-border">
@@ -87,7 +99,7 @@ export function AnalyticsTab({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {data.rows.map((row) => (
+          {pagination.pageItems.map((row) => (
             <TableRow key={row.execution_id}>
               <TableCell className="px-5 font-medium sticky left-0 bg-card">{row.lead_id}</TableCell>
               <TableCell>
@@ -111,6 +123,15 @@ export function AnalyticsTab({
           ))}
         </TableBody>
       </Table>
+      <TablePagination
+        page={pagination.page}
+        pageCount={pagination.pageCount}
+        pageSize={pagination.pageSize}
+        total={pagination.total}
+        start={pagination.start}
+        onPageChange={pagination.setPage}
+        onPageSizeChange={pagination.setPageSize}
+      />
     </Card>
   );
 }

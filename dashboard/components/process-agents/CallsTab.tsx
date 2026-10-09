@@ -16,6 +16,7 @@ import "@xyflow/react/dist/style.css";
 import { FaWhatsapp } from "react-icons/fa";
 import { FiCheckCircle, FiClock, FiDatabase, FiMinusCircle, FiX, FiXCircle, FiZap } from "react-icons/fi";
 import { Card, CardHeader } from "@/components/Card";
+import { TablePagination, usePagination } from "@/components/common/TablePagination";
 import { getProcessAgentCalls, previewWhatsApp, sendWhatsApp } from "@/lib/telehubApi";
 import type { CallRow, ProcessAgentDetail, WhatsAppPreview, WhatsAppSendResult } from "@/lib/types";
 import { errorMessage, formatDate, formatDuration, WHATSAPP_TEMPLATES } from "./shared";
@@ -468,6 +469,13 @@ function CallsTable({
     });
   }, [rows, search, whatsAppFilter]);
 
+  const pagination = usePagination(visible);
+  const { setPage } = pagination;
+  // Back to page 1 whenever the search or filter changes the result set.
+  useEffect(() => {
+    setPage(1);
+  }, [search, whatsAppFilter, setPage]);
+
   const visibleSelected = visible.filter((r) => selected.has(r.id)).map((r) => r.id);
   const allVisibleSelected = visible.length > 0 && visibleSelected.length === visible.length;
 
@@ -540,7 +548,7 @@ function CallsTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {visible.map((row) => {
+              {pagination.pageItems.map((row) => {
                 const v = row.variables;
                 const appointment = [str(v.appointment_date), str(v.appointment_time)].filter(Boolean).join(" ");
                 const isOpen = expanded === row.id;
@@ -625,6 +633,15 @@ function CallsTable({
           </table>
         </div>
       )}
+      <TablePagination
+        page={pagination.page}
+        pageCount={pagination.pageCount}
+        pageSize={pagination.pageSize}
+        total={pagination.total}
+        start={pagination.start}
+        onPageChange={pagination.setPage}
+        onPageSizeChange={pagination.setPageSize}
+      />
     </div>
   );
 }
