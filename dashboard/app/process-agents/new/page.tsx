@@ -3,7 +3,12 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, ArrowRight, Check, Pencil, Plus, Sparkles, Workflow } from "lucide-react";
 import { Card, CardHeader } from "@/components/Card";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { PageHeader } from "@/components/common/PageHeader";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
 // listIntegrations/Integration are unused while the Integrations step is disabled — see STEPS above.
 import { listChannels, listVoiceBots, createProcessAgent } from "@/lib/telehubApi";
 import type {
@@ -197,23 +202,21 @@ function StepIndicator({ current, onJump }: { current: number; onJump: (idx: num
               <div
                 className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold transition-colors ${
                   isCompleted
-                    ? "bg-primary text-on-primary"
+                    ? "bg-primary text-primary-foreground"
                     : isCurrent
-                    ? "bg-primary text-on-primary ring-4 ring-primary/20"
-                    : "bg-surface-container text-text-muted"
+                    ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
+                    : "bg-card border border-border text-muted-foreground"
                 }`}
               >
                 {isCompleted ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
+                  <Check className="w-4 h-4" strokeWidth={2.5} />
                 ) : (
                   idx + 1
                 )}
               </div>
               <span
                 className={`text-xs font-medium whitespace-nowrap ${
-                  isCurrent ? "text-primary" : isCompleted ? "text-on-surface" : "text-text-muted"
+                  isCurrent ? "text-primary" : isCompleted ? "text-foreground" : "text-muted-foreground"
                 }`}
               >
                 {label}
@@ -253,7 +256,7 @@ function VariableRowsEditor({
   return (
     <div className="space-y-2">
       {rows.map((row, idx) => (
-        <div key={idx} className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-surface-container">
+        <div key={idx} className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/50">
           <input
             type="text"
             value={row.key}
@@ -305,13 +308,9 @@ function VariableRowsEditor({
           </button>
         </div>
       ))}
-      <button
-        type="button"
-        onClick={addRow}
-        className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-on-surface hover:bg-surface-container transition-colors"
-      >
-        + Add variable
-      </button>
+      <Button type="button" variant="outline" size="sm" onClick={addRow}>
+        <Plus /> Add variable
+      </Button>
     </div>
   );
 }
@@ -348,7 +347,7 @@ function VariableChecklist({
         {VARIABLE_LIST.map((name) => (
           <label
             key={name}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border bg-surface-container cursor-pointer text-sm text-on-surface"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border bg-muted/50 cursor-pointer text-sm text-on-surface"
           >
             <input
               type="checkbox"
@@ -364,7 +363,7 @@ function VariableChecklist({
         <p className="text-xs font-medium text-text-muted mb-1.5">Not on the list</p>
         <div className="space-y-2">
           {extra.map(({ value, index }) => (
-            <div key={index} className="flex items-center gap-2 p-2.5 rounded-lg border border-border bg-surface-container">
+            <div key={index} className="flex items-center gap-2 p-2.5 rounded-lg border border-border bg-muted/50">
               <input
                 type="text"
                 value={value}
@@ -381,13 +380,9 @@ function VariableChecklist({
               </button>
             </div>
           ))}
-          <button
-            type="button"
-            onClick={addExtra}
-            className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-on-surface hover:bg-surface-container transition-colors"
-          >
-            + Add variable
-          </button>
+          <Button type="button" variant="outline" size="sm" onClick={addExtra}>
+            <Plus /> Add variable
+          </Button>
         </div>
       </div>
     </div>
@@ -429,7 +424,7 @@ function VariableChecklist({
 //   return (
 //     <div className="space-y-2">
 //       {rows.map((row, idx) => (
-//         <div key={idx} className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-surface-container">
+//         <div key={idx} className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/50">
 //           <input
 //             type="text"
 //             value={row.variable}
@@ -467,7 +462,7 @@ function VariableChecklist({
 //       <button
 //         type="button"
 //         onClick={addRow}
-//         className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-on-surface hover:bg-surface-container transition-colors"
+//         className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-on-surface hover:bg-muted/50 transition-colors"
 //       >
 //         + Add condition
 //       </button>
@@ -479,16 +474,18 @@ function VariableChecklist({
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-text-muted">{label}</span>
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {children}
-      {hint && <span className="text-xs text-text-muted">{hint}</span>}
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
     </label>
   );
 }
 
+// Matches components/ui/input; kept as a class string because the selects and
+// textareas here share it.
 const inputCls =
-  "px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary";
+  "min-w-0 px-3 py-2 rounded-md border border-input bg-card text-sm text-foreground shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
 
 // ── Page (Suspense boundary for useSearchParams) ────────────────────────
 
@@ -671,14 +668,17 @@ function NewProcessAgentWizard() {
   // const selectedIntegrations = integrations.filter((i) => (payload.integrations ?? []).includes(i.id));
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div>
-        <Link href="/channels" className="text-xs text-text-muted hover:text-primary transition-colors">
-          ← Back to Channels
-        </Link>
-        <h1 className="text-lg font-semibold text-on-surface mt-1">New Agent</h1>
-        <p className="text-xs text-text-muted mt-0.5">{STEP_HINTS[STEPS[step]]}</p>
-      </div>
+    <div className="space-y-6 max-w-4xl mx-auto">
+      <PageHeader
+        breadcrumbs={[
+          { label: "Channels", href: "/channels" },
+          ...(selectedChannel ? [{ label: selectedChannel.name, href: `/channels/${selectedChannel.id}` }] : []),
+          { label: "New Agent" },
+        ]}
+        icon={Workflow}
+        title="New Agent"
+        description={STEP_HINTS[STEPS[step]]}
+      />
 
       <StepIndicator current={step} onJump={setStep} />
 
@@ -760,7 +760,7 @@ function NewProcessAgentWizard() {
               </p>
             )}
             {selectedVoiceBot && (
-              <div className="rounded-lg border border-border bg-surface-container p-3 space-y-0.5 text-xs text-text-muted">
+              <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5 text-xs text-text-muted">
                 {selectedVoiceBot.communication_type && (
                   <p>
                     {COMMUNICATION_TYPES.find((c) => c.value === selectedVoiceBot.communication_type)?.label ??
@@ -962,7 +962,7 @@ function NewProcessAgentWizard() {
                 {integrations.map((i) => (
                   <label
                     key={i.id}
-                    className="flex items-center gap-3 p-3 rounded-lg border border-border bg-surface-container cursor-pointer"
+                    className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/50 cursor-pointer"
                   >
                     <input
                       type="checkbox"
@@ -990,7 +990,7 @@ function NewProcessAgentWizard() {
               {QA_FIELDS.map((f) => (
                 <label
                   key={f.key}
-                  className="flex items-center gap-3 p-3 rounded-lg border border-border bg-surface-container cursor-pointer"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/50 cursor-pointer"
                 >
                   <input
                     type="checkbox"
@@ -1034,7 +1034,7 @@ function NewProcessAgentWizard() {
                 {STAT_FIELDS.map((f) => (
                   <label
                     key={f.key}
-                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border bg-surface-container cursor-pointer text-sm text-on-surface"
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border bg-muted/50 cursor-pointer text-sm text-on-surface"
                   >
                     <input
                       type="checkbox"
@@ -1252,25 +1252,13 @@ function NewProcessAgentWizard() {
               )}
             </ReviewSection>
 
-            {submitError && (
-              <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-4 py-2">{submitError}</div>
-            )}
+            {submitError && <ErrorAlert message={submitError} />}
 
             <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={handleGenerate}
-                disabled={submitting}
-                className="px-5 py-2.5 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container disabled:opacity-60 transition-colors flex items-center gap-2"
-              >
-                {submitting && (
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
-                  </svg>
-                )}
+              <Button type="button" size="lg" onClick={handleGenerate} disabled={submitting}>
+                {submitting ? <Spinner /> : <Sparkles />}
                 {submitting ? "Generating…" : "Generate Process"}
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -1278,22 +1266,12 @@ function NewProcessAgentWizard() {
         {/* ── Back / Next (all steps except Review, which has its own submit button) ── */}
         {step !== 6 && (
           <div className="flex items-center justify-between pt-6 mt-6 border-t border-border">
-            <button
-              type="button"
-              onClick={goBack}
-              disabled={step === 0}
-              className="text-sm text-text-muted hover:text-on-surface disabled:opacity-40 transition-colors"
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              onClick={goNext}
-              disabled={!canProceed}
-              className="px-5 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container disabled:opacity-40 transition-colors"
-            >
-              Next
-            </button>
+            <Button type="button" variant="ghost" onClick={goBack} disabled={step === 0}>
+              <ArrowLeft /> Back
+            </Button>
+            <Button type="button" onClick={goNext} disabled={!canProceed}>
+              Next <ArrowRight />
+            </Button>
           </div>
         )}
       </Card>
@@ -1305,12 +1283,12 @@ function NewProcessAgentWizard() {
 
 function ReviewSection({ title, onEdit, children }: { title: string; onEdit: () => void; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 bg-surface-container">
+    <div className="border border-border rounded-lg p-4 bg-muted/50">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-semibold text-on-surface">{title}</p>
-        <button type="button" onClick={onEdit} className="text-xs text-primary hover:underline">
-          Edit
-        </button>
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <Button type="button" variant="ghost" size="xs" onClick={onEdit}>
+          <Pencil /> Edit
+        </Button>
       </div>
       <div className="space-y-1">{children}</div>
     </div>
@@ -1320,8 +1298,8 @@ function ReviewSection({ title, onEdit, children }: { title: string; onEdit: () 
 function ReviewRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-start gap-2 text-sm">
-      <span className="text-text-muted min-w-[140px]">{label}</span>
-      <span className="text-on-surface break-words">{value}</span>
+      <span className="text-muted-foreground min-w-35">{label}</span>
+      <span className="text-foreground break-words">{value}</span>
     </div>
   );
 }

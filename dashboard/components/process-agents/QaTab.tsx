@@ -1,5 +1,14 @@
 import { useState } from "react";
-import { Card, CardHeader } from "@/components/Card";
+import { ClipboardCheck, Flame, Send } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { ToneBadge } from "@/components/StatusBadge";
 import type { BotJourney, QaResult } from "@/lib/types";
 import type { DispatchSingleCallResult } from "@/lib/telehubApi";
 import { errorMessage } from "./shared";
@@ -51,36 +60,36 @@ function FollowUpDispatch({
   }
 
   if (ordered.length === 0) {
-    return <span className="text-text-muted text-xs">—</span>;
+    return <span className="text-muted-foreground text-xs">—</span>;
   }
 
   return (
-    <div className="space-y-1 min-w-[160px]">
+    <div className="space-y-1 min-w-40">
       <div className="flex items-center gap-1.5">
         {ordered.length > 1 && (
-          <select
-            value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : "")}
-            className="px-1.5 py-1 rounded border border-border bg-surface text-[11px]"
-          >
-            {ordered.map((j) => (
-              <option key={j.id} value={j.id}>
-                {j.name}
-                {j.voice_bot?.bot_name ? ` — ${j.voice_bot.bot_name}` : ""}
-              </option>
-            ))}
-          </select>
+          <div className="w-40">
+            <NativeSelect
+              size="sm"
+              value={selectedId}
+              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : "")}
+              className="text-xs"
+            >
+              {ordered.map((j) => (
+                <NativeSelectOption key={j.id} value={j.id}>
+                  {j.name}
+                  {j.voice_bot?.bot_name ? ` — ${j.voice_bot.bot_name}` : ""}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
         )}
-        <button
-          onClick={handleDispatch}
-          disabled={dispatching || selectedId === ""}
-          className="px-2 py-1 rounded text-[11px] font-medium bg-primary text-on-primary hover:bg-primary-container disabled:opacity-60 transition-colors whitespace-nowrap"
-        >
-          {dispatching ? "Dispatching…" : "Dispatch Follow-up"}
-        </button>
+        <Button size="sm" onClick={handleDispatch} disabled={dispatching || selectedId === ""}>
+          {dispatching ? <Spinner /> : <Send />}
+          Follow-up
+        </Button>
       </div>
-      {result && <p className="text-[10px] text-ok">{result}</p>}
-      {error && <p className="text-[10px] text-bad">{error}</p>}
+      {result && <p className="text-[11px] text-ok">{result}</p>}
+      {error && <p className="text-[11px] text-bad">{error}</p>}
     </div>
   );
 }
@@ -99,93 +108,95 @@ export function QaTab({
   onDispatchFollowUp: (executionId: number, botJourneyId: number) => Promise<DispatchSingleCallResult>;
 }) {
   if (loading) {
-    return <div className="h-32 bg-surface-container rounded-xl animate-pulse" />;
+    return <Skeleton className="h-40 rounded-xl" />;
   }
   if (error) {
-    return <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-4 py-3">{error}</div>;
+    return <ErrorAlert message={error} />;
   }
   if (!qaResults || qaResults.length === 0) {
     return (
-      <Card className="p-8 text-center">
-        <p className="text-sm text-text-muted">No QA results yet.</p>
-      </Card>
+      <EmptyState
+        icon={ClipboardCheck}
+        title="No QA results yet"
+        description="Results appear here as calls complete and are scored."
+      />
     );
   }
 
   return (
-    <Card className="p-0 overflow-hidden">
-      <CardHeader title="QA Results" hint={`${qaResults.length} result${qaResults.length === 1 ? "" : "s"}`} />
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-text-muted uppercase tracking-wide border-t border-border">
-              <th className="px-5 py-2 font-medium">Summary</th>
-              <th className="px-5 py-2 font-medium">Hot Lead</th>
-              <th className="px-5 py-2 font-medium">Missing Variables</th>
-              <th className="px-5 py-2 font-medium">Follow-up Required</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {qaResults.map((qa) => {
-              const missing = emptyPayloadKeys(qa.raw_result || {});
-              const appointmentTime = qa.raw_result?.appointment_time;
-              const appointmentAddress = qa.raw_result?.appointment_address;
-              const hasFollowUp = Boolean(appointmentTime) || Boolean(appointmentAddress);
-              return (
-                <tr key={qa.id}>
-                  <td className="px-5 py-2.5 text-on-surface max-w-xs truncate" title={qa.summary}>
-                    {qa.summary || "—"}
-                  </td>
-                  <td className="px-5 py-2.5">
-                    {qa.hot_lead ? (
-                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-ok/15 text-ok">Yes</span>
-                    ) : (
-                      <span className="text-text-muted text-xs">No</span>
-                    )}
-                  </td>
-                  <td className="px-5 py-2.5 max-w-xs">
-                    {missing.length === 0 ? (
-                      <span className="text-text-muted text-xs">—</span>
-                    ) : (
-                      <div className="flex flex-wrap gap-1">
-                        {missing.map((key) => (
-                          <span
-                            key={key}
-                            className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-warn/15 text-warn"
-                          >
-                            {key}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-5 py-2.5 max-w-xs">
-                    {hasFollowUp ? (
-                      <div className="space-y-1.5">
-                        <div className="space-y-0.5">
-                          {Boolean(appointmentTime) && (
-                            <p className="text-xs text-on-surface">{String(appointmentTime)}</p>
-                          )}
-                          {Boolean(appointmentAddress) && (
-                            <p className="text-xs text-text-muted">{String(appointmentAddress)}</p>
-                          )}
-                        </div>
-                        <FollowUpDispatch
-                          executionId={qa.execution}
-                          botJourneys={botJourneys ?? []}
-                          onDispatchFollowUp={onDispatchFollowUp}
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-text-muted text-xs">—</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <Card className="gap-0 py-0 overflow-hidden">
+      <div className="px-5 py-4 border-b border-border">
+        <p className="font-semibold text-foreground">QA Results</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {qaResults.length} result{qaResults.length === 1 ? "" : "s"}
+        </p>
       </div>
+      <Table>
+        <TableHeader className="bg-muted">
+          <TableRow>
+            <TableHead className="px-5">Summary</TableHead>
+            <TableHead>Hot Lead</TableHead>
+            <TableHead>Missing Variables</TableHead>
+            <TableHead className="pr-5">Follow-up Required</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {qaResults.map((qa) => {
+            const missing = emptyPayloadKeys(qa.raw_result || {});
+            const appointmentTime = qa.raw_result?.appointment_time;
+            const appointmentAddress = qa.raw_result?.appointment_address;
+            const hasFollowUp = Boolean(appointmentTime) || Boolean(appointmentAddress);
+            return (
+              <TableRow key={qa.id} className="align-top">
+                <TableCell className="px-5 max-w-xs truncate" title={qa.summary}>
+                  {qa.summary || "—"}
+                </TableCell>
+                <TableCell>
+                  {qa.hot_lead ? (
+                    <ToneBadge tone="ok" className="normal-case">
+                      <Flame /> Hot
+                    </ToneBadge>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">No</span>
+                  )}
+                </TableCell>
+                <TableCell className="max-w-xs whitespace-normal">
+                  {missing.length === 0 ? (
+                    <span className="text-muted-foreground text-xs">—</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {missing.map((key) => (
+                        <ToneBadge key={key} tone="warn" className="normal-case font-mono text-[10px]">
+                          {key}
+                        </ToneBadge>
+                      ))}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="pr-5 max-w-xs whitespace-normal">
+                  {hasFollowUp ? (
+                    <div className="space-y-2">
+                      <div className="space-y-0.5">
+                        {Boolean(appointmentTime) && <p className="text-xs text-foreground">{String(appointmentTime)}</p>}
+                        {Boolean(appointmentAddress) && (
+                          <p className="text-xs text-muted-foreground">{String(appointmentAddress)}</p>
+                        )}
+                      </div>
+                      <FollowUpDispatch
+                        executionId={qa.execution}
+                        botJourneys={botJourneys ?? []}
+                        onDispatchFollowUp={onDispatchFollowUp}
+                      />
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">—</span>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
     </Card>
   );
 }

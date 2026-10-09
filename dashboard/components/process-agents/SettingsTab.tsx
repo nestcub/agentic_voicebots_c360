@@ -1,6 +1,25 @@
 import { useState } from "react";
 import Link from "next/link";
-import { Card, CardHeader } from "@/components/Card";
+import {
+  ArrowRight,
+  Bot,
+  Braces,
+  ChartColumn,
+  ClipboardCheck,
+  Inbox,
+  MessageSquare,
+  Pencil,
+  Plug,
+  Plus,
+  Webhook,
+  type LucideIcon,
+} from "lucide-react";
+import { Card } from "@/components/Card";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
+import { ActiveBadge } from "@/components/StatusBadge";
 import type { Integration, JourneyEdge, JourneyNode, ProcessAgentDetail, ProcessAgentVariable } from "@/lib/types";
 import {
   attachProcessAgentIntegration,
@@ -28,8 +47,8 @@ import {
 function SettingsRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-start gap-2 text-sm">
-      <span className="text-text-muted min-w-[160px]">{label}</span>
-      <span className="text-on-surface break-words">{value}</span>
+      <span className="text-muted-foreground min-w-40">{label}</span>
+      <span className="text-foreground break-words">{value}</span>
     </div>
   );
 }
@@ -37,44 +56,46 @@ function SettingsRow({ label, value }: { label: string; value: string }) {
 function SettingsSection({
   title,
   hint,
+  icon: Icon,
   actions,
   children,
 }: {
   title: string;
   hint?: string;
+  icon?: LucideIcon;
   actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <Card className="p-5 space-y-3">
-      {actions ? (
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-base font-semibold text-on-surface">{title}</p>
-            {hint && <p className="text-xs text-text-muted mt-0.5">{hint}</p>}
+    <Card className="p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          {Icon && (
+            <span className="w-9 h-9 shrink-0 rounded-lg bg-accent text-primary flex items-center justify-center">
+              <Icon className="w-4 h-4" />
+            </span>
+          )}
+          <div className="min-w-0">
+            <p className="text-base font-semibold text-foreground">{title}</p>
+            {hint && <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>}
           </div>
-          <div className="flex items-center gap-2 shrink-0">{actions}</div>
         </div>
-      ) : (
-        <CardHeader title={title} hint={hint} />
-      )}
+        {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
+      </div>
       <div className="space-y-2">{children}</div>
     </Card>
   );
 }
 
 function EmptySection({ label }: { label: string }) {
-  return <p className="text-sm text-text-muted">{label}</p>;
+  return <p className="text-sm text-muted-foreground">{label}</p>;
 }
 
 function EditButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-text-muted hover:bg-surface-container transition-colors"
-    >
-      Edit
-    </button>
+    <Button variant="outline" size="sm" onClick={onClick}>
+      <Pencil /> Edit
+    </Button>
   );
 }
 
@@ -89,20 +110,13 @@ function SaveCancelButtons({
 }) {
   return (
     <>
-      <button
-        onClick={onCancel}
-        disabled={saving}
-        className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-text-muted hover:bg-surface-container disabled:opacity-60 transition-colors"
-      >
+      <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
         Cancel
-      </button>
-      <button
-        onClick={onSave}
-        disabled={saving}
-        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-on-primary hover:bg-primary-container disabled:opacity-60 transition-colors"
-      >
-        {saving ? "Saving…" : "Save"}
-      </button>
+      </Button>
+      <Button size="sm" onClick={onSave} disabled={saving}>
+        {saving && <Spinner />}
+        Save
+      </Button>
     </>
   );
 }
@@ -114,18 +128,19 @@ function VoiceBotSection({ agent }: { agent: ProcessAgentDetail }) {
 
   return (
     <SettingsSection
+      icon={Bot}
       title="Voice"
-      hint="Managed on the Bots page"
+      hint="Managed on the Voicebots page"
       actions={
-        <Link href="/bots" className="text-xs text-primary hover:underline whitespace-nowrap">
-          Manage bots →
+        <Link href="/bots" className={buttonVariants({ variant: "outline", size: "sm" })}>
+          Manage bots <ArrowRight />
         </Link>
       }
     >
       {bot ? (
         <div className="rounded-lg border border-border p-3">
-          <p className="text-sm font-medium text-on-surface">{bot.label || bot.bot_name || `Voice Bot ${bot.id}`}</p>
-          <div className="mt-1 space-y-0.5 text-xs text-text-muted">
+          <p className="text-sm font-medium text-foreground">{bot.label || bot.bot_name || `Voice Bot ${bot.id}`}</p>
+          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
             {bot.communication_type && (
               <p>{COMMUNICATION_TYPE_LABELS[bot.communication_type] || bot.communication_type}</p>
             )}
@@ -186,6 +201,7 @@ function QaSection({
 
   return (
     <SettingsSection
+      icon={ClipboardCheck}
       title="QA"
       hint="Automated checks run against every execution's transcript"
       actions={
@@ -197,32 +213,32 @@ function QaSection({
       }
     >
       {journeyLoading && !hasJourneyData ? (
-        <div className="h-16 bg-surface-container rounded-lg animate-pulse" />
+        <div className="h-16 bg-muted/50 rounded-lg animate-pulse" />
       ) : (
         <div className="space-y-2">
           {error && <p className="text-xs text-bad">{error}</p>}
           {QA_FIELDS.map((f) => (
             <div
               key={f.key}
-              className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface-container"
+              className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-muted/50"
             >
               <div>
-                <p className="text-sm font-medium text-on-surface">{f.label}</p>
-                <p className="text-xs text-text-muted">{f.hint}</p>
+                <p className="text-sm font-medium text-foreground">{f.label}</p>
+                <p className="text-xs text-muted-foreground">{f.hint}</p>
               </div>
               {editing ? (
                 <input
                   type="checkbox"
                   checked={Boolean(draft[f.key])}
                   onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.checked }))}
-                  className="shrink-0 mt-0.5 h-4 w-4"
+                  className="shrink-0 mt-0.5 h-4 w-4 accent-primary"
                 />
               ) : getConfigBool(qaConfig, f.key) ? (
                 <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-ok/15 text-ok">
                   Enabled
                 </span>
               ) : (
-                <span className="shrink-0 text-text-muted text-xs">Off</span>
+                <span className="shrink-0 text-muted-foreground text-xs">Off</span>
               )}
             </div>
           ))}
@@ -271,6 +287,7 @@ function AnalyticsStatsSection({
 
   return (
     <SettingsSection
+      icon={ChartColumn}
       title="Analytics — Stats & Summaries"
       hint={`${enabledStats.length} of ${STAT_FIELDS.length} enabled`}
       actions={
@@ -285,12 +302,12 @@ function AnalyticsStatsSection({
       {editing ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {STAT_FIELDS.map((f) => (
-            <label key={f.key} className="flex items-center gap-2 text-sm text-on-surface">
+            <label key={f.key} className="flex items-center gap-2 text-sm text-foreground">
               <input
                 type="checkbox"
                 checked={Boolean(draft[f.key])}
                 onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.checked }))}
-                className="h-4 w-4"
+                className="h-4 w-4 accent-primary"
               />
               {f.label}
             </label>
@@ -378,7 +395,7 @@ function VariableRowForm({
           type="checkbox"
           checked={Boolean(draft.required)}
           onChange={(e) => onChange({ ...draft, required: e.target.checked })}
-          className="h-4 w-4"
+          className="h-4 w-4 accent-primary"
         />
       </td>
     </tr>
@@ -428,8 +445,15 @@ function VariablesSection({
     }
   }
 
-  async function handleDelete(v: ProcessAgentVariable) {
-    if (!window.confirm(`Remove variable "${v.key}"?`)) return;
+  const [pendingDelete, setPendingDelete] = useState<ProcessAgentVariable | null>(null);
+
+  function handleDelete(v: ProcessAgentVariable) {
+    setPendingDelete(v);
+  }
+
+  async function confirmDelete() {
+    const v = pendingDelete;
+    if (!v) return;
     setSaving(true);
     setError(null);
     try {
@@ -439,6 +463,7 @@ function VariablesSection({
       setError(errorMessage(e, "Failed to remove variable"));
     } finally {
       setSaving(false);
+      setPendingDelete(null);
     }
   }
 
@@ -459,6 +484,7 @@ function VariablesSection({
 
   return (
     <SettingsSection
+      icon={Braces}
       title="Dispositions / Variables"
       hint={`${variables.length} configured`}
       actions={
@@ -469,9 +495,9 @@ function VariablesSection({
               setNewDraft(emptyVariableDraft());
               setAdding(true);
             }}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-on-primary hover:bg-primary-container transition-colors"
+            className={buttonVariants({ size: "sm" })}
           >
-            + Add variable
+            <Plus /> Add variable
           </button>
         )
       }
@@ -482,7 +508,7 @@ function VariablesSection({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-text-muted uppercase tracking-wide">
+              <tr className="text-left text-xs text-muted-foreground border-b border-border">
                 <th className="py-1.5 pr-4 font-medium">Key</th>
                 <th className="py-1.5 pr-4 font-medium">Source</th>
                 <th className="py-1.5 pr-4 font-medium">Type</th>
@@ -498,14 +524,14 @@ function VariablesSection({
                   <VariableRowForm key={v.id} draft={editDraft} onChange={setEditDraft} />
                 ) : (
                   <tr key={v.id}>
-                    <td className="py-1.5 pr-4 text-on-surface font-mono text-xs">{v.key}</td>
-                    <td className="py-1.5 pr-4 text-text-muted">
+                    <td className="py-1.5 pr-4 text-foreground font-mono text-xs">{v.key}</td>
+                    <td className="py-1.5 pr-4 text-muted-foreground">
                       {v.source === "analytics" ? "Analytics" : "Business Rules"}
                     </td>
-                    <td className="py-1.5 pr-4 text-text-muted">{v.type}</td>
-                    <td className="py-1.5 pr-4 text-text-muted">{v.default_value || "—"}</td>
-                    <td className="py-1.5 pr-4 text-text-muted">{v.label || "—"}</td>
-                    <td className="py-1.5 pr-4 text-text-muted">{v.required ? "Yes" : "No"}</td>
+                    <td className="py-1.5 pr-4 text-muted-foreground">{v.type}</td>
+                    <td className="py-1.5 pr-4 text-muted-foreground">{v.default_value || "—"}</td>
+                    <td className="py-1.5 pr-4 text-muted-foreground">{v.label || "—"}</td>
+                    <td className="py-1.5 pr-4 text-muted-foreground">{v.required ? "Yes" : "No"}</td>
                     <td className="py-1.5 pr-4" />
                   </tr>
                 )
@@ -552,7 +578,7 @@ function VariablesSection({
                 <button onClick={() => startEdit(v)} className="text-xs text-primary hover:underline">
                   Edit {v.key}
                 </button>
-                <span className="text-text-muted">·</span>
+                <span className="text-muted-foreground">·</span>
                 <button onClick={() => handleDelete(v)} className="text-xs text-bad hover:underline">
                   Remove
                 </button>
@@ -561,6 +587,14 @@ function VariablesSection({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => !o && setPendingDelete(null)}
+        title={`Remove variable "${pendingDelete?.key ?? ""}"?`}
+        description="Executions stop collecting this variable from the next call outcome."
+        busy={saving}
+        onConfirm={confirmDelete}
+      />
     </SettingsSection>
   );
 }
@@ -616,18 +650,18 @@ function WebhookRow({
     return (
       <div className="rounded-lg border border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-on-surface">{webhook.name}</p>
+          <p className="text-sm font-medium text-foreground">{webhook.name}</p>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-text-muted">{webhook.status}</span>
+            <span className="text-xs text-muted-foreground">{webhook.status}</span>
             <EditButton onClick={startEditing} />
           </div>
         </div>
         {webhook.public_url ? (
-          <p className="text-xs text-on-surface mt-0.5 break-all font-mono">{webhook.public_url}</p>
+          <p className="text-xs text-foreground mt-0.5 break-all font-mono">{webhook.public_url}</p>
         ) : (
           <>
-            <p className="text-xs text-text-muted mt-0.5 break-all font-mono">{webhook.url}</p>
-            <p className="text-[11px] text-text-muted mt-1">
+            <p className="text-xs text-muted-foreground mt-0.5 break-all font-mono">{webhook.url}</p>
+            <p className="text-[11px] text-muted-foreground mt-1">
               No public URL — run <code className="font-mono">ngrok http 8000</code> locally to get one
               for pasting into the voice platform.
             </p>
@@ -636,7 +670,7 @@ function WebhookRow({
         {webhook.schema && Object.keys(webhook.schema).length > 0 && (
           <details className="mt-2">
             <summary className="cursor-pointer text-[11px] text-primary select-none">webhook schema</summary>
-            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-background rounded p-2 text-[10px] text-text-muted">
+            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-background rounded p-2 text-[10px] text-muted-foreground">
               {JSON.stringify(webhook.schema, null, 2)}
             </pre>
           </details>
@@ -652,24 +686,24 @@ function WebhookRow({
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
+          className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
         />
         <select
           value={statusValue}
           onChange={(e) => setStatusValue(e.target.value)}
-          className="px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
+          className="px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
         >
           <option value="active">active</option>
           <option value="disabled">disabled</option>
         </select>
       </div>
       <div>
-        <p className="text-xs font-medium text-text-muted mb-1">Schema (JSON)</p>
+        <p className="text-xs font-medium text-muted-foreground mb-1">Schema (JSON)</p>
         <textarea
           value={schemaText}
           onChange={(e) => setSchemaText(e.target.value)}
           rows={5}
-          className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono"
+          className="w-full px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-xs font-mono"
         />
       </div>
       <SaveCancelButtons onSave={handleSave} onCancel={() => setEditing(false)} saving={saving} />
@@ -739,6 +773,7 @@ function OmnichannelSection({
 
   return (
     <SettingsSection
+      icon={MessageSquare}
       title="Omnichannel"
       hint={omnichannel ? undefined : "Not configured"}
       actions={
@@ -753,11 +788,11 @@ function OmnichannelSection({
       {editing ? (
         <div className="space-y-3">
           <div>
-            <label className="block text-xs text-text-muted mb-1">Channel</label>
+            <label className="block text-xs text-muted-foreground mb-1">Channel</label>
             <select
               value={channel}
               onChange={(e) => setChannel(e.target.value)}
-              className="w-full max-w-xs px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
+              className="w-full max-w-xs px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
             >
               <option value="">None</option>
               <option value="whatsapp">WhatsApp</option>
@@ -766,30 +801,30 @@ function OmnichannelSection({
             </select>
           </div>
           <div>
-            <label className="block text-xs text-text-muted mb-1">Variables to send (comma-separated)</label>
+            <label className="block text-xs text-muted-foreground mb-1">Variables to send (comma-separated)</label>
             <input
               value={variablesText}
               onChange={(e) => setVariablesText(e.target.value)}
-              className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
+              className="w-full px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
             />
           </div>
           {channel === "whatsapp" && (
             <>
-              <label className="flex items-center gap-2 text-sm text-on-surface">
+              <label className="flex items-center gap-2 text-sm text-foreground">
                 <input type="checkbox" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} />
                 Auto-send WhatsApp after each inbound call
               </label>
               {WHATSAPP_TEMPLATES.map((t) => (
                 <div key={t.key}>
-                  <label className="block text-xs font-medium text-on-surface">{t.label}</label>
-                  <p className="text-[11px] text-text-muted mb-1">{t.when}</p>
+                  <label className="block text-xs font-medium text-foreground">{t.label}</label>
+                  <p className="text-[11px] text-muted-foreground mb-1">{t.when}</p>
                   <textarea
                     value={curls[t.key] ?? ""}
                     onChange={(e) => setCurls((c) => ({ ...c, [t.key]: e.target.value }))}
                     rows={4}
                     placeholder="Paste the template's curl command"
                     spellCheck={false}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono"
+                    className="w-full px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-xs font-mono"
                   />
                 </div>
               ))}
@@ -817,9 +852,9 @@ function OmnichannelSection({
                   return (
                     <div key={t.key} className="rounded-lg border border-border px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-medium text-on-surface">{t.label}</p>
+                        <p className="text-sm font-medium text-foreground">{t.label}</p>
                         {!summary?.configured ? (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-text-muted/15 text-text-muted">
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-text-muted/15 text-muted-foreground">
                             Not configured
                           </span>
                         ) : summary.error ? (
@@ -828,15 +863,15 @@ function OmnichannelSection({
                           <span className="text-[11px] px-2 py-0.5 rounded-full bg-ok/15 text-ok">Ready</span>
                         )}
                       </div>
-                      <p className="text-[11px] text-text-muted mt-0.5">{t.when}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{t.when}</p>
                       {summary?.configured &&
                         (summary.error ? (
                           <p className="text-xs text-bad mt-1">{summary.error}</p>
                         ) : (
-                          <p className="text-xs text-on-surface mt-1">
+                          <p className="text-xs text-foreground mt-1">
                             <span className="font-mono">{summary.template_title || "—"}</span>
                             {summary.params.length > 0 && (
-                              <span className="text-text-muted"> · params: {summary.params.join(", ")}</span>
+                              <span className="text-muted-foreground"> · params: {summary.params.join(", ")}</span>
                             )}
                           </p>
                         ))}
@@ -912,15 +947,16 @@ function IntegrationsSection({
 
   return (
     <SettingsSection
+      icon={Plug}
       title="Integrations"
       hint={`${integrations.length} configured`}
       actions={
         !attaching && (
           <button
             onClick={startAttaching}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-on-primary hover:bg-primary-container transition-colors"
+            className={buttonVariants({ size: "sm" })}
           >
-            + Attach
+            <Plus /> Attach
           </button>
         )
       }
@@ -929,14 +965,14 @@ function IntegrationsSection({
       {attaching && (
         <div className="flex items-center gap-2 p-3 rounded-lg border border-dashed border-border">
           {available === null ? (
-            <span className="text-xs text-text-muted">Loading integrations…</span>
+            <span className="text-xs text-muted-foreground">Loading integrations…</span>
           ) : available.length === 0 ? (
-            <span className="text-xs text-text-muted">No other integrations available to attach.</span>
+            <span className="text-xs text-muted-foreground">No other integrations available to attach.</span>
           ) : (
             <select
               value={selectedId}
               onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : "")}
-              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
+              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
             >
               <option value="">Select an integration…</option>
               {available.map((it) => (
@@ -953,8 +989,8 @@ function IntegrationsSection({
       {integrations.map((it) => (
         <div key={it.id} className="rounded-lg border border-border p-3 flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium text-on-surface">{it.integration_name}</p>
-            <span className="text-xs text-text-muted">{it.integration_type}</span>
+            <p className="text-sm font-medium text-foreground">{it.integration_name}</p>
+            <span className="text-xs text-muted-foreground">{it.integration_type}</span>
           </div>
           <button
             onClick={() => handleDetach(it.id)}
@@ -994,30 +1030,33 @@ export function SettingsTab({
 
   return (
     <div className="space-y-6">
-      <Card className="p-5 flex items-center justify-between">
+      <Card className="p-5 flex items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-semibold text-on-surface">Agent status</p>
-          <p className="text-xs text-text-muted mt-0.5">
+          <div className="flex items-center gap-2">
+            <label htmlFor="agent-active" className="text-sm font-semibold text-foreground">
+              Agent status
+            </label>
+            <ActiveBadge active={agent.is_active} />
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
             {agent.is_active ? "This agent is active and can run." : "This agent is inactive and won't run."}
           </p>
           {toggleError && <p className="text-xs text-bad mt-1">{toggleError}</p>}
         </div>
-        <button
-          onClick={onToggleActive}
-          disabled={toggling}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-60 ${
-            agent.is_active
-              ? "border border-border text-text-muted hover:bg-surface-container"
-              : "bg-primary text-on-primary hover:bg-primary-container"
-          }`}
-        >
-          {toggling ? "Saving…" : agent.is_active ? "Deactivate" : "Activate"}
-        </button>
+        <div className="flex items-center gap-2">
+          {toggling && <Spinner className="text-muted-foreground" />}
+          <Switch
+            id="agent-active"
+            checked={agent.is_active}
+            onCheckedChange={onToggleActive}
+            disabled={toggling}
+          />
+        </div>
       </Card>
 
       <VoiceBotSection agent={agent} />
 
-      <SettingsSection title="Lead Sources" hint={`${agent.lead_sources.length} configured`}>
+      <SettingsSection icon={Inbox} title="Lead Sources" hint={`${agent.lead_sources.length} configured`}>
         {agent.lead_sources.length === 0 && <EmptySection label="No lead sources configured." />}
         {agent.lead_sources.map((ls) => {
           const leadCount = Array.isArray((ls.configuration as { leads?: unknown[] })?.leads)
@@ -1026,21 +1065,21 @@ export function SettingsTab({
           return (
             <div key={ls.id} className="rounded-lg border border-border p-3">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-medium text-on-surface">{ls.type}</p>
+                <p className="text-sm font-medium text-foreground">{ls.type}</p>
                 {leadCount !== null && (
-                  <span className="text-xs text-text-muted">{leadCount} lead{leadCount === 1 ? "" : "s"} stored</span>
+                  <span className="text-xs text-muted-foreground">{leadCount} lead{leadCount === 1 ? "" : "s"} stored</span>
                 )}
               </div>
-              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words bg-background rounded p-2 text-[11px] text-text-muted">
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words bg-muted rounded-md p-2 text-[11px] text-muted-foreground font-mono">
                 {JSON.stringify(ls.configuration, null, 2)}
               </pre>
             </div>
           );
         })}
         {agent.lead_sources.length > 0 && (
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-muted-foreground">
             Dispatch calls to this lead source from the{" "}
-            <span className="font-medium text-on-surface">Runs</span> tab.
+            <span className="font-medium text-foreground">Runs</span> tab.
           </p>
         )}
       </SettingsSection>
@@ -1057,7 +1096,7 @@ export function SettingsTab({
 
       <VariablesSection agentId={agent.id} variables={agent.variables} onSaved={onAgentChanged} />
 
-      <SettingsSection title="Webhooks" hint={`${agent.webhooks.length} configured`}>
+      <SettingsSection icon={Webhook} title="Webhooks" hint={`${agent.webhooks.length} configured`}>
         {agent.webhooks.length === 0 && <EmptySection label="No webhooks configured." />}
         {agent.webhooks.map((wh) => (
           <WebhookRow key={wh.id} agentId={agent.id} webhook={wh} onSaved={onAgentChanged} />

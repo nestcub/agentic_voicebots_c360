@@ -1,6 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ArrowLeft, ArrowRight, Check, FileSpreadsheet, Rocket, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { cn } from "@/lib/utils";
 import { parseCampaignFile } from "@/lib/parseCampaignFile";
 import { listChannels, listProcessAgents, getProcessAgent, launchCampaign } from "@/lib/telehubApi";
 import type { Channel, ProcessAgentSummary, ProcessAgentDetail, ProcessAgentVariable } from "@/lib/types";
@@ -78,19 +88,105 @@ function buildDefaultMapping(
   return mapping;
 }
 
-// ── Small shared bits (mirrors app/process-agents/new/page.tsx conventions) ──
+// ── Small shared bits ──────────────────────────────────────────────────────────
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-text-muted">{label}</span>
+    <div className="space-y-1.5">
+      <Label htmlFor={htmlFor} className="text-xs text-muted-foreground">
+        {label}
+      </Label>
       {children}
-    </label>
+    </div>
   );
 }
 
-const inputCls =
-  "px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary";
+const STEPS: { key: Step; label: string }[] = [
+  { key: "process", label: "Select agent" },
+  { key: "upload", label: "Upload file" },
+  { key: "mapping", label: "Map columns" },
+];
+
+function StepIndicator({ step }: { step: Step }) {
+  const current = STEPS.findIndex((s) => s.key === step);
+  return (
+    <ol className="flex items-center gap-2">
+      {STEPS.map((s, i) => (
+        <li key={s.key} className="flex items-center gap-2 flex-1 last:flex-none">
+          <span
+            className={cn(
+              "w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold",
+              i < current && "bg-primary text-primary-foreground",
+              i === current && "bg-primary text-primary-foreground ring-4 ring-primary/15",
+              i > current && "bg-muted text-muted-foreground",
+            )}
+          >
+            {i < current ? <Check className="w-3.5 h-3.5" /> : i + 1}
+          </span>
+          <span
+            className={cn(
+              "text-xs whitespace-nowrap",
+              i === current ? "font-medium text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {s.label}
+          </span>
+          {i < STEPS.length - 1 && (
+            <span className={cn("h-px flex-1 min-w-4", i < current ? "bg-primary" : "bg-border")} />
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function FileDropZone({ file, onFile }: { file: File | null; onFile: (file: File | null) => void }) {
+  const [dragging, setDragging] = useState(false);
+  return (
+    <label
+      htmlFor="campaign-file"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        onFile(e.dataTransfer.files?.[0] ?? null);
+      }}
+      className={cn(
+        "flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center cursor-pointer transition-colors",
+        dragging ? "border-primary bg-accent" : "border-border hover:border-primary/50 hover:bg-muted/50",
+      )}
+    >
+      <input
+        id="campaign-file"
+        type="file"
+        accept=".xlsx,.csv"
+        className="sr-only"
+        onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+      />
+      {file ? (
+        <>
+          <span className="w-10 h-10 rounded-lg bg-ok/10 text-ok flex items-center justify-center">
+            <FileSpreadsheet className="w-5 h-5" />
+          </span>
+          <p className="text-sm font-medium text-foreground">{file.name}</p>
+          <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(1)} KB · click to choose another</p>
+        </>
+      ) : (
+        <>
+          <span className="w-10 h-10 rounded-lg bg-accent text-primary flex items-center justify-center">
+            <Upload className="w-5 h-5" />
+          </span>
+          <p className="text-sm font-medium text-foreground">Drop your leads file here, or click to browse</p>
+          <p className="text-xs text-muted-foreground">.xlsx or .csv</p>
+        </>
+      )}
+    </label>
+  );
+}
 
 // ── Main component ───────────────────────────────────────────────────────────
 
@@ -167,8 +263,6 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
       .catch((e) => setProcessAgentsError(e instanceof Error ? e.message : "Failed to load process agents"))
       .finally(() => setProcessAgentsLoading(false));
   }, [open, selectedChannelId]);
-
-  if (!open) return null;
 
   function resetAll() {
     setStep("process");
@@ -335,255 +429,219 @@ export function UploadCampaignModal({ open, onClose, onLaunched, initialProcessA
     }
   }
 
-  const stepLabel =
-    step === "process"
-      ? "Step 1 of 3 — Select agent"
-      : step === "upload"
-        ? "Step 2 of 3 — Upload file"
-        : "Step 3 of 3 — Map columns";
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={handleClose}>
-      <div
-        className="bg-surface rounded-xl shadow-lg border border-border w-full max-w-2xl max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-2">
-          <div>
-            <p className="text-base font-semibold text-on-surface">Upload Campaign</p>
-            <p className="text-xs text-text-muted mt-0.5">{stepLabel}</p>
-          </div>
-          <button
-            onClick={handleClose}
-            aria-label="Close"
-            className="text-text-muted hover:text-on-surface text-lg leading-none px-1"
-          >
-            ×
-          </button>
-        </div>
+    <Dialog open={open} onOpenChange={(o) => !o && !launching && handleClose()}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Upload Campaign</DialogTitle>
+          <DialogDescription>Launch a list of leads against a process agent.</DialogDescription>
+        </DialogHeader>
 
-        <div className="px-5 pb-5">
-          {step === "process" && (
-            <div className="space-y-4">
-              <Field label="Channel *">
-                {channelsError ? (
-                  <p className="text-sm text-bad">{channelsError}</p>
-                ) : (
-                  <select
-                    value={selectedChannelId ?? ""}
-                    onChange={(e) => handleChannelChange(e.target.value)}
-                    disabled={channelsLoading}
-                    className={inputCls}
-                  >
-                    <option value="">{channelsLoading ? "Loading…" : "— select a channel —"}</option>
-                    {channels.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </Field>
+        <StepIndicator step={step} />
 
-              <Field label="Agent *">
-                {processAgentsError ? (
-                  <p className="text-sm text-bad">{processAgentsError}</p>
-                ) : (
-                  <select
-                    value={selectedProcessAgentId ?? ""}
-                    onChange={(e) => setSelectedProcessAgentId(e.target.value ? Number(e.target.value) : undefined)}
-                    disabled={selectedChannelId === undefined || processAgentsLoading}
-                    className={inputCls}
-                  >
-                    <option value="">
-                      {selectedChannelId === undefined
-                        ? "Select a channel first"
-                        : processAgentsLoading
-                          ? "Loading…"
-                          : "— select an agent —"}
-                    </option>
-                    {processAgents.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </Field>
-
-              {detailError && (
-                <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-3 py-2">
-                  {detailError}
-                </div>
-              )}
-
-              <div className="flex justify-end items-center gap-3 pt-1">
-                <button
-                  onClick={handleProcessNext}
-                  disabled={selectedChannelId === undefined || selectedProcessAgentId === undefined || detailLoading}
-                  className="bg-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed text-on-primary text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        {step === "process" && (
+          <div className="space-y-4">
+            <Field label="Channel *" htmlFor="upload-channel">
+              {channelsError ? (
+                <p className="text-sm text-bad">{channelsError}</p>
+              ) : (
+                <NativeSelect
+                  id="upload-channel"
+                  value={selectedChannelId ?? ""}
+                  onChange={(e) => handleChannelChange(e.target.value)}
+                  disabled={channelsLoading}
                 >
-                  {detailLoading ? "Loading…" : "Next"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {step === "upload" && (
-            <div className="space-y-4">
-              <Field label="Campaign name">
-                <input
-                  type="text"
-                  value={campaignName}
-                  onChange={(e) => setCampaignName(e.target.value)}
-                  placeholder="e.g. diwali_offer_2026"
-                  className={inputCls}
-                />
-              </Field>
-
-              <Field label="Leads file (.xlsx or .csv)">
-                <input
-                  type="file"
-                  accept=".xlsx,.csv"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                  className="text-sm text-on-surface file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
-                />
-              </Field>
-
-              {parseErrors.length > 0 && (
-                <ul className="text-sm text-bad list-disc list-inside space-y-0.5">
-                  {parseErrors.map((err, i) => (
-                    <li key={i}>{err}</li>
+                  <NativeSelectOption value="">
+                    {channelsLoading ? "Loading…" : "— select a channel —"}
+                  </NativeSelectOption>
+                  {channels.map((d) => (
+                    <NativeSelectOption key={d.id} value={d.id}>
+                      {d.name}
+                    </NativeSelectOption>
                   ))}
-                </ul>
+                </NativeSelect>
               )}
+            </Field>
 
-              <div className="flex justify-between items-center pt-1">
-                <button onClick={handleBackToProcess} className="text-sm font-medium text-text-muted hover:text-on-surface">
-                  ← Back
-                </button>
-                <div className="flex items-center gap-3">
-                  {!parsing && (!campaignName.trim() || !file) && (
-                    <p className="text-xs text-text-muted">
-                      {!campaignName.trim() && !file
-                        ? "Enter a campaign name and choose a file"
-                        : !campaignName.trim()
-                          ? "Enter a campaign name"
-                          : "Choose a file"}
-                    </p>
-                  )}
-                  <button
-                    onClick={handleUploadNext}
-                    disabled={!campaignName.trim() || !file || parsing}
-                    title={!campaignName.trim() || !file ? "Enter a campaign name and choose a file first" : undefined}
-                    className="bg-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed text-on-primary text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-                  >
-                    {parsing ? "Parsing…" : "Next"}
-                  </button>
-                </div>
+            <Field label="Agent *" htmlFor="upload-agent">
+              {processAgentsError ? (
+                <p className="text-sm text-bad">{processAgentsError}</p>
+              ) : (
+                <NativeSelect
+                  id="upload-agent"
+                  value={selectedProcessAgentId ?? ""}
+                  onChange={(e) => setSelectedProcessAgentId(e.target.value ? Number(e.target.value) : undefined)}
+                  disabled={selectedChannelId === undefined || processAgentsLoading}
+                >
+                  <NativeSelectOption value="">
+                    {selectedChannelId === undefined
+                      ? "Select a channel first"
+                      : processAgentsLoading
+                        ? "Loading…"
+                        : "— select an agent —"}
+                  </NativeSelectOption>
+                  {processAgents.map((p) => (
+                    <NativeSelectOption key={p.id} value={p.id}>
+                      {p.name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              )}
+            </Field>
+
+            {detailError && <ErrorAlert message={detailError} />}
+
+            <div className="flex justify-end pt-1">
+              <Button
+                onClick={handleProcessNext}
+                disabled={selectedChannelId === undefined || selectedProcessAgentId === undefined || detailLoading}
+              >
+                {detailLoading && <Spinner />}
+                Next <ArrowRight />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {step === "upload" && (
+          <div className="space-y-4">
+            <Field label="Campaign name" htmlFor="upload-campaign-name">
+              <Input
+                id="upload-campaign-name"
+                value={campaignName}
+                onChange={(e) => setCampaignName(e.target.value)}
+                placeholder="e.g. diwali_offer_2026"
+              />
+            </Field>
+
+            <Field label="Leads file">
+              <FileDropZone file={file} onFile={setFile} />
+            </Field>
+
+            {parseErrors.length > 0 && (
+              <ul className="text-sm text-bad list-disc list-inside space-y-0.5">
+                {parseErrors.map((err, i) => (
+                  <li key={i}>{err}</li>
+                ))}
+              </ul>
+            )}
+
+            <div className="flex justify-between items-center pt-1">
+              <Button variant="ghost" onClick={handleBackToProcess}>
+                <ArrowLeft /> Back
+              </Button>
+              <div className="flex items-center gap-3">
+                {!parsing && (!campaignName.trim() || !file) && (
+                  <p className="text-xs text-muted-foreground hidden sm:block">
+                    {!campaignName.trim() && !file
+                      ? "Enter a campaign name and choose a file"
+                      : !campaignName.trim()
+                        ? "Enter a campaign name"
+                        : "Choose a file"}
+                  </p>
+                )}
+                <Button onClick={handleUploadNext} disabled={!campaignName.trim() || !file || parsing}>
+                  {parsing && <Spinner />}
+                  Next <ArrowRight />
+                </Button>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {step === "mapping" && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                {headers.map((header) => {
-                  const colMapping = mapping[header] ?? { type: "ignore" as const };
-                  return (
-                    <div
-                      key={header}
-                      className="flex items-center gap-3 flex-wrap p-2 rounded-lg bg-surface-container border border-border"
-                    >
-                      <span className="text-sm font-bold text-on-surface min-w-[120px]">{header}</span>
-                      <select
+        {step === "mapping" && (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              {headers.map((header) => {
+                const colMapping = mapping[header] ?? { type: "ignore" as const };
+                return (
+                  <div
+                    key={header}
+                    className="flex items-center gap-3 flex-wrap p-2.5 rounded-lg bg-muted/60 border border-border"
+                  >
+                    <span className="text-sm font-semibold text-foreground min-w-30 truncate">{header}</span>
+                    <div className="w-48">
+                      <NativeSelect
+                        size="sm"
                         value={colMapping.type}
                         onChange={(e) => updateMappingType(header, e.target.value as ColumnMapping["type"])}
-                        className={inputCls}
+                        aria-label={`Mapping for ${header}`}
+                        className="bg-card"
                       >
-                        <option value="to">Phone Number (to)</option>
-                        <option value="dnd">DND Flag</option>
-                        <option value="variable">Custom Variable</option>
-                        <option value="ignore">Ignore this column</option>
-                      </select>
-                      {colMapping.type === "variable" && (
-                        <input
-                          type="text"
-                          value={colMapping.variableName}
-                          onChange={(e) => updateVariableName(header, e.target.value)}
-                          onBlur={() => blurVariableName(header)}
-                          className={`${inputCls} w-40`}
-                        />
-                      )}
+                        <NativeSelectOption value="to">Phone Number (to)</NativeSelectOption>
+                        <NativeSelectOption value="dnd">DND Flag</NativeSelectOption>
+                        <NativeSelectOption value="variable">Custom Variable</NativeSelectOption>
+                        <NativeSelectOption value="ignore">Ignore this column</NativeSelectOption>
+                      </NativeSelect>
                     </div>
-                  );
-                })}
+                    {colMapping.type === "variable" && (
+                      <Input
+                        value={colMapping.variableName}
+                        onChange={(e) => updateVariableName(header, e.target.value)}
+                        onBlur={() => blurVariableName(header)}
+                        aria-label={`Variable name for ${header}`}
+                        className="h-8 w-40 font-mono text-xs bg-card"
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {validationMessage && (
+              <div className="text-sm text-warn bg-warn/10 border border-warn/30 rounded-lg px-3 py-2">
+                {validationMessage}
               </div>
+            )}
 
-              {validationMessage && (
-                <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  {validationMessage}
-                </div>
-              )}
-
-              <div>
-                <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-1.5">
-                  Preview (first 3 rows)
-                </p>
-                <div className="overflow-x-auto border border-border rounded-lg">
-                  <table className="min-w-full text-sm">
-                    <thead className="bg-surface-container">
-                      <tr>
-                        <th className="text-left px-3 py-1.5 font-medium text-text-muted">To</th>
-                        {variableHeaders.map((header) => {
-                          const colMapping = mapping[header];
-                          const name = colMapping?.type === "variable" ? colMapping.variableName : header;
-                          return (
-                            <th key={header} className="text-left px-3 py-1.5 font-medium text-text-muted">
-                              {name}
-                            </th>
-                          );
-                        })}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {previewRows.map((row, i) => (
-                        <tr key={i} className="border-t border-border">
-                          <td className="px-3 py-1.5 text-on-surface">{toHeader ? row[toHeader] : "—"}</td>
-                          {variableHeaders.map((header) => (
-                            <td key={header} className="px-3 py-1.5 text-on-surface">
-                              {row[header]}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {launchError && (
-                <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-3 py-2">
-                  {launchError}
-                </div>
-              )}
-
-              <div className="flex justify-between items-center pt-1">
-                <button onClick={handleBackToUpload} className="text-sm font-medium text-text-muted hover:text-on-surface">
-                  ← Back
-                </button>
-                <button
-                  onClick={handleLaunch}
-                  disabled={!mappingValid || launching}
-                  className="bg-primary hover:bg-primary-container disabled:opacity-50 disabled:cursor-not-allowed text-on-primary text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-                >
-                  {launching ? "Launching…" : "Launch Campaign"}
-                </button>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                Preview (first 3 rows)
+              </p>
+              <div className="border border-border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-muted">
+                    <TableRow>
+                      <TableHead>To</TableHead>
+                      {variableHeaders.map((header) => {
+                        const colMapping = mapping[header];
+                        const name = colMapping?.type === "variable" ? colMapping.variableName : header;
+                        return (
+                          <TableHead key={header} className="font-mono text-xs">
+                            {name}
+                          </TableHead>
+                        );
+                      })}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {previewRows.map((row, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="font-mono text-xs">{toHeader ? row[toHeader] : "—"}</TableCell>
+                        {variableHeaders.map((header) => (
+                          <TableCell key={header}>{row[header]}</TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             </div>
-          )}
-        </div>
-      </div>
-    </div>
+
+            {launchError && <ErrorAlert message={launchError} />}
+
+            <div className="flex justify-between items-center pt-1">
+              <Button variant="ghost" onClick={handleBackToUpload}>
+                <ArrowLeft /> Back
+              </Button>
+              <Button onClick={handleLaunch} disabled={!mappingValid || launching}>
+                {launching ? <Spinner /> : <Rocket />}
+                Launch Campaign
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

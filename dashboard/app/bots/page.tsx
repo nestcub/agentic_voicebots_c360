@@ -1,7 +1,39 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, CardHeader } from "@/components/Card";
+import { toast } from "sonner";
+import { Bot, Check, Copy, Pencil, Plus, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { PageHeader } from "@/components/common/PageHeader";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { ToneBadge } from "@/components/StatusBadge";
 import {
   listVoiceBots,
   createVoiceBot,
@@ -41,33 +73,17 @@ function botToDraft(bot: VoiceBot): VoiceBotWrite {
   };
 }
 
-function SaveCancelButtons({
-  onSave,
-  onCancel,
-  saving,
-  saveLabel = "Save",
-}: {
-  onSave: () => void;
-  onCancel: () => void;
-  saving: boolean;
-  saveLabel?: string;
-}) {
+function botTitle(bot: VoiceBot): string {
+  return bot.label || bot.bot_name || `Bot ${bot.id}`;
+}
+
+function Field({ label, htmlFor, children }: { label: React.ReactNode; htmlFor: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 justify-end pt-1">
-      <button
-        onClick={onCancel}
-        disabled={saving}
-        className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-text-muted hover:bg-surface-container disabled:opacity-60 transition-colors"
-      >
-        Cancel
-      </button>
-      <button
-        onClick={onSave}
-        disabled={saving}
-        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-on-primary hover:bg-primary-container disabled:opacity-60 transition-colors"
-      >
-        {saving ? "Saving…" : saveLabel}
-      </button>
+    <div className="space-y-1.5">
+      <Label htmlFor={htmlFor} className="text-xs text-muted-foreground">
+        {label}
+      </Label>
+      {children}
     </div>
   );
 }
@@ -76,52 +92,44 @@ function BotForm({ draft, onChange }: { draft: VoiceBotWrite; onChange: (draft: 
   const [didsText, setDidsText] = useState((draft.dids ?? []).join(", "));
 
   return (
-    <div className="space-y-3">
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-text-muted mb-1">Label</label>
-          <input
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-2 gap-4">
+        <Field label="Label" htmlFor="bot-label">
+          <Input
+            id="bot-label"
             value={draft.label ?? ""}
             onChange={(e) => onChange({ ...draft, label: e.target.value })}
             placeholder="Sales Bot"
-            className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
           />
-        </div>
-        <div>
-          <label className="block text-xs text-text-muted mb-1">Communication Type</label>
-          <select
+        </Field>
+        <Field label="Communication Type" htmlFor="bot-type">
+          <NativeSelect
+            id="bot-type"
             value={draft.communication_type ?? ""}
             onChange={(e) => onChange({ ...draft, communication_type: e.target.value })}
-            className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
           >
-            <option value="">—</option>
+            <NativeSelectOption value="">—</NativeSelectOption>
             {Object.entries(COMMUNICATION_TYPE_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
+              <NativeSelectOption key={value} value={value}>
                 {label}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs text-text-muted mb-1">Bot Name</label>
-          <input
+          </NativeSelect>
+        </Field>
+        <Field label="Bot Name" htmlFor="bot-name">
+          <Input
+            id="bot-name"
             value={draft.bot_name ?? ""}
             onChange={(e) => onChange({ ...draft, bot_name: e.target.value })}
-            className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
           />
-        </div>
-        <div>
-          <label className="block text-xs text-text-muted mb-1">Bot ID</label>
-          <input
-            value={draft.bot_id ?? ""}
-            onChange={(e) => onChange({ ...draft, bot_id: e.target.value })}
-            className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
-          />
-        </div>
+        </Field>
+        <Field label="Bot ID" htmlFor="bot-id">
+          <Input id="bot-id" value={draft.bot_id ?? ""} onChange={(e) => onChange({ ...draft, bot_id: e.target.value })} />
+        </Field>
       </div>
-      <div>
-        <label className="block text-xs text-text-muted mb-1">Bot DID/s (comma-separated)</label>
-        <input
+      <Field label="Bot DID/s (comma-separated)" htmlFor="bot-dids">
+        <Input
+          id="bot-dids"
           value={didsText}
           onChange={(e) => {
             setDidsText(e.target.value);
@@ -134,114 +142,203 @@ function BotForm({ draft, onChange }: { draft: VoiceBotWrite; onChange: (draft: 
             });
           }}
           placeholder="+91XXXXXXXXXX"
-          className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
         />
-      </div>
-      <div>
-        <label className="block text-xs text-text-muted mb-1">API URL</label>
-        <input
+      </Field>
+      <Field label="API URL" htmlFor="bot-api-url">
+        <Input
+          id="bot-api-url"
           value={draft.api_url ?? ""}
           onChange={(e) => onChange({ ...draft, api_url: e.target.value })}
           placeholder={DEFAULT_OUTBOUND_API_URL}
-          className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm font-mono"
+          className="font-mono text-xs"
         />
-      </div>
-      <div>
-        <label className="block text-xs text-text-muted mb-1">
-          Script / curl <span className="text-text-muted">(reference only — not executed)</span>
-        </label>
-        <textarea
+      </Field>
+      <Field
+        label={
+          <>
+            Script / curl <span className="font-normal">(reference only — not executed)</span>
+          </>
+        }
+        htmlFor="bot-script"
+      >
+        <Textarea
+          id="bot-script"
           value={draft.script ?? ""}
           onChange={(e) => onChange({ ...draft, script: e.target.value })}
           rows={4}
           spellCheck={false}
-          className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono"
+          className="font-mono text-xs"
         />
-      </div>
+      </Field>
     </div>
   );
 }
 
-function BotRow({ bot, onSaved, onDeleted }: { bot: VoiceBot; onSaved: () => void; onDeleted: () => void }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<VoiceBotWrite>(botToDraft(bot));
+// Add and edit share one dialog: `bot` null means "create".
+function BotDialog({
+  open,
+  bot,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  bot: VoiceBot | null;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [draft, setDraft] = useState<VoiceBotWrite>(emptyDraft());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function startEditing() {
-    setDraft(botToDraft(bot));
+  useEffect(() => {
+    if (!open) return;
+    setDraft(bot ? botToDraft(bot) : emptyDraft());
     setError(null);
-    setEditing(true);
-  }
+  }, [open, bot]);
 
   async function handleSave() {
     setSaving(true);
     setError(null);
     try {
-      await updateVoiceBot(bot.id, draft);
+      if (bot) {
+        await updateVoiceBot(bot.id, draft);
+        toast.success(`Saved "${draft.label || draft.bot_name || "bot"}"`);
+      } else {
+        await createVoiceBot(draft);
+        toast.success(`Created "${draft.label || draft.bot_name || "bot"}"`);
+      }
       onSaved();
-      setEditing(false);
+      onOpenChange(false);
     } catch (e) {
-      setError(errorMessage(e, "Failed to update bot"));
+      setError(errorMessage(e, bot ? "Failed to update bot" : "Failed to create bot"));
     } finally {
       setSaving(false);
     }
-  }
-
-  async function handleDelete() {
-    if (!window.confirm(`Remove bot "${bot.label || bot.bot_name || bot.id}"?`)) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await deleteVoiceBot(bot.id);
-      onDeleted();
-    } catch (e) {
-      setError(errorMessage(e, "Failed to remove bot — it may still be in use by a process agent"));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (!editing) {
-    return (
-      <div className="rounded-lg border border-border p-4 bg-surface-container">
-        {error && <p className="text-xs text-bad mb-1">{error}</p>}
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-on-surface">{bot.label || bot.bot_name || `Bot ${bot.id}`}</p>
-          <div className="flex items-center gap-3">
-            <button onClick={startEditing} className="text-xs text-primary hover:underline">
-              Edit
-            </button>
-            <button
-              onClick={handleDelete}
-              disabled={saving}
-              className="text-xs text-bad hover:underline disabled:opacity-60"
-            >
-              Remove
-            </button>
-          </div>
-        </div>
-        <div className="mt-2 space-y-0.5 text-xs text-text-muted">
-          {bot.communication_type && (
-            <p>{COMMUNICATION_TYPE_LABELS[bot.communication_type] || bot.communication_type}</p>
-          )}
-          <p>
-            {bot.bot_name || "—"}
-            {bot.bot_id && <span className="ml-1">({bot.bot_id})</span>}
-          </p>
-          {bot.dids.length > 0 && <p>DIDs: {bot.dids.join(", ")}</p>}
-          {bot.api_url && <p className="font-mono break-all">{bot.api_url}</p>}
-        </div>
-      </div>
-    );
   }
 
   return (
-    <div className="rounded-lg border border-border p-4 space-y-2">
-      {error && <p className="text-xs text-bad">{error}</p>}
-      <BotForm draft={draft} onChange={setDraft} />
-      <SaveCancelButtons onSave={handleSave} onCancel={() => setEditing(false)} saving={saving} />
-    </div>
+    <Dialog open={open} onOpenChange={(o) => !saving && onOpenChange(o)}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{bot ? `Edit ${botTitle(bot)}` : "Add Voicebot"}</DialogTitle>
+          <DialogDescription>
+            A reusable bot identity — pick it for a process agent instead of typing it in.
+          </DialogDescription>
+        </DialogHeader>
+        {error && <ErrorAlert message={error} />}
+        {/* Keyed so the DIDs text box re-initialises for each bot. */}
+        {open && <BotForm key={bot?.id ?? "new"} draft={draft} onChange={setDraft} />}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving && <Spinner />}
+            {bot ? "Save" : "Create Bot"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Copy"
+          onClick={() => {
+            navigator.clipboard
+              .writeText(value)
+              .then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              })
+              .catch(() => toast.error("Couldn't copy to clipboard"));
+          }}
+        >
+          {copied ? <Check className="text-ok" /> : <Copy />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{copied ? "Copied" : "Copy"}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function BotCard({ bot, onEdit, onRemove }: { bot: VoiceBot; onEdit: () => void; onRemove: () => void }) {
+  return (
+    <Card className="gap-4">
+      <CardHeader className="flex flex-row items-start gap-3">
+        <div className="w-10 h-10 shrink-0 rounded-xl bg-accent text-primary flex items-center justify-center">
+          <Bot className="w-5 h-5" />
+        </div>
+        <div className="min-w-0 space-y-1.5">
+          <CardTitle className="truncate">{botTitle(bot)}</CardTitle>
+          {bot.communication_type && (
+            <ToneBadge tone="info" className="normal-case">
+              {COMMUNICATION_TYPE_LABELS[bot.communication_type] || bot.communication_type}
+            </ToneBadge>
+          )}
+        </div>
+        <CardAction className="flex gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-sm" onClick={onEdit} aria-label="Edit">
+                <Pencil />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Edit</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={onRemove}
+                aria-label="Remove"
+                className="text-muted-foreground hover:text-bad"
+              >
+                <Trash2 />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Remove</TooltipContent>
+          </Tooltip>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="grid grid-cols-[5rem_1fr] gap-y-2 gap-x-3 items-center">
+          <span className="text-xs text-muted-foreground">Bot name</span>
+          <span className="truncate">{bot.bot_name || "—"}</span>
+          <span className="text-xs text-muted-foreground">Bot ID</span>
+          <span className="flex items-center gap-1 min-w-0">
+            <span className="font-mono text-xs truncate">{bot.bot_id || "—"}</span>
+            {bot.bot_id && <CopyButton value={bot.bot_id} />}
+          </span>
+          <span className="text-xs text-muted-foreground">DIDs</span>
+          <span className="flex flex-wrap gap-1">
+            {bot.dids.length > 0 ? (
+              bot.dids.map((did) => (
+                <span key={did} className="px-2 py-0.5 rounded-md bg-muted font-mono text-xs">
+                  {did}
+                </span>
+              ))
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </span>
+        </div>
+        {bot.api_url && (
+          <div className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5">
+            <span className="font-mono text-xs text-muted-foreground truncate flex-1">{bot.api_url}</span>
+            <CopyButton value={bot.api_url} />
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -250,10 +347,11 @@ export default function BotsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [adding, setAdding] = useState(false);
-  const [newDraft, setNewDraft] = useState<VoiceBotWrite>(emptyDraft());
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingBot, setEditingBot] = useState<VoiceBot | null>(null);
+
+  const [removingBot, setRemovingBot] = useState<VoiceBot | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   function refresh() {
     setLoading(true);
@@ -268,77 +366,99 @@ export default function BotsPage() {
     refresh();
   }, []);
 
-  async function handleCreate() {
-    setCreating(true);
-    setCreateError(null);
+  function openCreate() {
+    setEditingBot(null);
+    setDialogOpen(true);
+  }
+
+  function openEdit(bot: VoiceBot) {
+    setEditingBot(bot);
+    setDialogOpen(true);
+  }
+
+  async function handleRemove() {
+    if (!removingBot) return;
+    setRemoving(true);
     try {
-      await createVoiceBot(newDraft);
-      setAdding(false);
-      setNewDraft(emptyDraft());
+      await deleteVoiceBot(removingBot.id);
+      toast.success(`Removed "${botTitle(removingBot)}"`);
+      setRemovingBot(null);
       refresh();
     } catch (e) {
-      setCreateError(errorMessage(e, "Failed to create bot"));
+      toast.error(errorMessage(e, "Failed to remove bot — it may still be in use by a process agent"));
     } finally {
-      setCreating(false);
+      setRemoving(false);
     }
   }
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div>
-        <h1 className="text-lg font-semibold text-on-surface">Bots</h1>
-        <p className="text-xs text-text-muted mt-0.5">
-          Reusable bot identities — pick one for a process agent at creation time instead of typing it in.
-        </p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        icon={Bot}
+        title="Voicebots"
+        description="Reusable bot identities — pick one for a process agent at creation time instead of typing it in."
+        badges={bots && <ToneBadge tone="muted" className="normal-case">{bots.length} total</ToneBadge>}
+        actions={
+          <Button onClick={openCreate}>
+            <Plus /> Add Voicebot
+          </Button>
+        }
+      />
 
-      <Card className="p-5 space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <CardHeader
-            title="Voice Bots"
-            hint={bots ? `${bots.length} bot${bots.length === 1 ? "" : "s"}` : undefined}
-          />
-          {!adding && (
-            <button
-              onClick={() => {
-                setCreateError(null);
-                setNewDraft(emptyDraft());
-                setAdding(true);
-              }}
-              className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-on-primary hover:bg-primary-container transition-colors"
-            >
-              + Add Bot
-            </button>
-          )}
+      {error && <ErrorAlert message={error} action={<Button variant="outline" size="sm" onClick={refresh}>Retry</Button>} />}
+
+      {loading && !bots ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-52 rounded-xl" />
+          ))}
         </div>
+      ) : bots && bots.length === 0 ? (
+        <EmptyState
+          icon={Bot}
+          title="No voicebots yet"
+          description="Add one to attach it to a process agent."
+          action={
+            <Button onClick={openCreate}>
+              <Plus /> Add Voicebot
+            </Button>
+          }
+        />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {bots?.map((bot) => (
+            <BotCard key={bot.id} bot={bot} onEdit={() => openEdit(bot)} onRemove={() => setRemovingBot(bot)} />
+          ))}
+        </div>
+      )}
 
-        {error && <p className="text-xs text-bad">{error}</p>}
+      <BotDialog open={dialogOpen} bot={editingBot} onOpenChange={setDialogOpen} onSaved={refresh} />
 
-        {loading && !bots ? (
-          <div className="h-24 bg-surface-container rounded-lg animate-pulse" />
-        ) : bots && bots.length === 0 && !adding ? (
-          <p className="text-sm text-text-muted">No bots yet — add one to attach it to a process agent.</p>
-        ) : (
-          <div className="space-y-3">
-            {bots?.map((bot) => (
-              <BotRow key={bot.id} bot={bot} onSaved={refresh} onDeleted={refresh} />
-            ))}
-          </div>
-        )}
-
-        {adding && (
-          <div className="rounded-lg border border-dashed border-border p-4 space-y-3">
-            {createError && <p className="text-xs text-bad">{createError}</p>}
-            <BotForm draft={newDraft} onChange={setNewDraft} />
-            <SaveCancelButtons
-              onSave={handleCreate}
-              onCancel={() => setAdding(false)}
-              saving={creating}
-              saveLabel="Create Bot"
-            />
-          </div>
-        )}
-      </Card>
+      <AlertDialog open={removingBot !== null} onOpenChange={(o) => !o && !removing && setRemovingBot(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {removingBot ? botTitle(removingBot) : "bot"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes the bot identity. It can&apos;t be removed while a process agent still uses it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removing}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleRemove();
+              }}
+              disabled={removing}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {removing && <Spinner />}
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
+

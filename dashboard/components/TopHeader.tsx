@@ -1,33 +1,41 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { Calendar } from "lucide-react";
 import { domainConfig } from "@/lib/domainConfig";
-import { RiSettings3Line } from "react-icons/ri";
 import { useSidebar } from "@/context/SidebarContext";
 
 export function TopHeader() {
   const { isOpen } = useSidebar();
-  const initial = domainConfig.brand?.[0]?.toUpperCase() ?? "A";
+
+  // Formatted client-side only, so the server-rendered markup never disagrees
+  // with the browser's date/locale.
+  const [today, setToday] = useState<string | null>(null);
+  useEffect(() => {
+    setToday(new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }));
+  }, []);
 
   return (
     <header
-      className={`fixed top-0 right-0 h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 z-10 transition-all duration-300 ${
+      className={`fixed top-0 right-0 h-16 bg-surface border-b border-border flex items-center justify-between px-6 z-10 transition-all duration-300 ${
         isOpen ? "left-56" : "left-16"
       }`}
     >
       {/* Greeting */}
-      <p className="text-base font-semibold text-gray-800">
-        Hello, {domainConfig.brand}
-      </p>
+      <div className="min-w-0">
+        <p className="text-base font-semibold text-on-surface truncate">Hello, {domainConfig.brand}</p>
+        <p className="text-xs text-text-muted truncate">
+          Here&apos;s what&apos;s happening with your agentic voicebots today.
+        </p>
+      </div>
 
       {/* Right side */}
-      <div className="flex items-center gap-4">
-        {/* <button className="p-2 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors">
-          <RiSettings3Line className="w-5 h-5" />
-        </button>
-        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold">
-          {initial}
-        </div> */}
-      </div>
+      {today && (
+        <div className="hidden sm:flex items-center gap-2 text-sm text-on-surface shrink-0">
+          <Calendar className="w-4 h-4 text-text-muted" />
+          <span>{today}</span>
+        </div>
+      )}
     </header>
   );
 }

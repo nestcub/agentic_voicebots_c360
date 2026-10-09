@@ -1,5 +1,10 @@
-import { Card, CardHeader } from "@/components/Card";
-import { StatusBadge } from "@/components/StatusBadge";
+import { ChartColumn, Inbox } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { ExecutionStatusBadge, ToneBadge } from "@/components/StatusBadge";
 import type { ProcessAgentAnalytics, ProcessAgentDetail } from "@/lib/types";
 
 // Wizard Analytics step's "Dispositions / Variables" — shows the value Chat360's
@@ -31,28 +36,27 @@ export function AnalyticsTab({
   error: string | null;
 }) {
   if (loading) {
-    return <div className="h-32 bg-surface-container rounded-xl animate-pulse" />;
+    return <Skeleton className="h-40 rounded-xl" />;
   }
   if (error) {
-    return <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-4 py-3">{error}</div>;
+    return <ErrorAlert message={error} />;
   }
   if (!data || data.variable_keys.length === 0) {
     return (
-      <Card className="p-8 text-center">
-        <p className="text-sm text-text-muted">
-          No dispositions / variables configured for this process — add some in the wizard&apos;s Analytics
-          step.
-        </p>
-      </Card>
+      <EmptyState
+        icon={ChartColumn}
+        title="No dispositions configured"
+        description="Add dispositions / variables in the wizard's Analytics step."
+      />
     );
   }
   if (data.rows.length === 0) {
     return (
-      <Card className="p-8 text-center">
-        <p className="text-sm text-text-muted">
-          No executions yet — values populate once Chat360 posts a call outcome back.
-        </p>
-      </Card>
+      <EmptyState
+        icon={Inbox}
+        title="No executions yet"
+        description="Values populate once Chat360 posts a call outcome back."
+      />
     );
   }
 
@@ -62,50 +66,51 @@ export function AnalyticsTab({
   const labelByKey = new Map(agent.variables.map((v) => [v.key, v.label || v.key]));
 
   return (
-    <Card className="p-0 overflow-hidden">
-      <CardHeader
-        title="Dispositions / Variables"
-        hint={`${data.variable_keys.length} variable${data.variable_keys.length === 1 ? "" : "s"} · ${
-          data.rows.length
-        } execution${data.rows.length === 1 ? "" : "s"}`}
-      />
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-text-muted uppercase tracking-wide border-t border-border">
-              <th className="px-5 py-2 font-medium sticky left-0 bg-surface">Lead</th>
-              <th className="px-5 py-2 font-medium">Status</th>
-              {data.variable_keys.map((key) => (
-                <th key={key} className="px-5 py-2 font-medium whitespace-nowrap" title={key}>
-                  {labelByKey.get(key) ?? key}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {data.rows.map((row) => (
-              <tr key={row.execution_id}>
-                <td className="px-5 py-2.5 text-on-surface sticky left-0 bg-surface">{row.lead_id}</td>
-                <td className="px-5 py-2.5">
-                  <StatusBadge status={row.status} />
-                </td>
-                {data.variable_keys.map((key) => {
-                  const formatted = formatCellValue(row.values[key]);
-                  return (
-                    <td key={key} className="px-5 py-2.5 whitespace-nowrap">
-                      {formatted ? (
-                        <span className="text-text-muted">{formatted}</span>
-                      ) : (
-                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-warn/15 text-warn">missing</span>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <Card className="gap-0 py-0 overflow-hidden">
+      <div className="px-5 py-4 border-b border-border">
+        <p className="font-semibold text-foreground">Dispositions / Variables</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {data.variable_keys.length} variable{data.variable_keys.length === 1 ? "" : "s"} · {data.rows.length}{" "}
+          execution{data.rows.length === 1 ? "" : "s"}
+        </p>
       </div>
+      <Table>
+        <TableHeader className="bg-muted">
+          <TableRow>
+            <TableHead className="px-5 sticky left-0 bg-muted">Lead</TableHead>
+            <TableHead>Status</TableHead>
+            {data.variable_keys.map((key) => (
+              <TableHead key={key} title={key}>
+                {labelByKey.get(key) ?? key}
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {data.rows.map((row) => (
+            <TableRow key={row.execution_id}>
+              <TableCell className="px-5 font-medium sticky left-0 bg-card">{row.lead_id}</TableCell>
+              <TableCell>
+                <ExecutionStatusBadge status={row.status} />
+              </TableCell>
+              {data.variable_keys.map((key) => {
+                const formatted = formatCellValue(row.values[key]);
+                return (
+                  <TableCell key={key}>
+                    {formatted ? (
+                      <span className="text-muted-foreground">{formatted}</span>
+                    ) : (
+                      <ToneBadge tone="warn" className="normal-case">
+                        missing
+                      </ToneBadge>
+                    )}
+                  </TableCell>
+                );
+              })}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </Card>
   );
 }

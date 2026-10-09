@@ -2,8 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Card, CardHeader } from "@/components/Card";
+import { ArrowRight, CircleCheck, CircleX, Hourglass, ListFilter, Upload, Users } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { UploadCampaignModal } from "@/components/leads/UploadCampaignModal";
+import { PageHeader } from "@/components/common/PageHeader";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { ExecutionStatusBadge, executionStatusTone } from "@/components/StatusBadge";
 import {
   listChannels,
   listProcessAgents,
@@ -14,33 +24,39 @@ import type { Channel, ProcessAgentSummary, CampaignSummary, CampaignLead } from
 
 const POLL_MS = 2500;
 
-// Execution.status is a free string (currently only ever "pending" — no dispatch
-// engine exists yet). It doesn't belong to the shared lead-status vocabulary in
-// lib/domainConfig.ts (StatusBadge), so — same judgment call as ProcessStatusPill
-// in app/process-agents/[id]/page.tsx — this is a small local, component-scoped pill
-// instead of forcing a mismatch with that vocabulary.
-type Tone = "ok" | "warn" | "bad" | "muted";
-
-const TONE_CLASSES: Record<Tone, string> = {
-  ok: "bg-ok/10 text-ok border border-ok/20",
-  warn: "bg-warn/10 text-warn border border-warn/20",
-  bad: "bg-bad/10 text-bad border border-bad/20",
-  muted: "bg-surface-container text-text-muted border border-border",
-};
-
-function executionStatusTone(status: string): Tone {
-  const s = status.toLowerCase();
-  if (s === "completed" || s === "connected" || s === "booked") return "ok";
-  if (s === "calling" || s === "dispatching" || s === "retry_pending") return "warn";
-  if (s === "failed") return "bad";
-  return "muted";
+// Counts the leads already loaded for the selected campaign — no extra request.
+function summarize(leads: CampaignLead[]) {
+  let completed = 0;
+  let failed = 0;
+  for (const l of leads) {
+    const tone = executionStatusTone(l.status);
+    if (tone === "ok") completed += 1;
+    else if (tone === "bad") failed += 1;
+  }
+  return { total: leads.length, completed, failed, inProgress: leads.length - completed - failed };
 }
 
-function ExecutionStatusPill({ status }: { status: string }) {
+function SummaryTile({
+  label,
+  value,
+  icon: Icon,
+  className,
+}: {
+  label: string;
+  value: number;
+  icon: React.ComponentType<{ className?: string }>;
+  className: string;
+}) {
   return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${TONE_CLASSES[executionStatusTone(status)]}`}>
-      {status}
-    </span>
+    <Card className="p-4 flex-row items-center gap-3">
+      <div className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center ${className}`}>
+        <Icon className="w-4 h-4" />
+      </div>
+      <div>
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-lg font-bold text-foreground tabular-nums">{value}</p>
+      </div>
+    </Card>
   );
 }
 
@@ -219,7 +235,6 @@ export default function LeadsPage() {
     if (result.processAgentId !== selectedProcessAgentId) {
       // Modal launched against a different process agent than the one currently
       // selected here (e.g. it re-asked). Follow the user's new selection.
-      setSelectedChannelId((prev) => prev); // channel selector stays as-is; only process changes
       setSelectedProcessAgentId(result.processAgentId);
       setSelectedCampaignId(result.campaignId);
       return;
@@ -234,190 +249,226 @@ export default function LeadsPage() {
   ).filter((k) => k !== "to_number");
 
   const selectedProcessAgent = processAgents.find((p) => p.id === selectedProcessAgentId) ?? null;
+  const summary = summarize(leads);
+
+  const uploadButton = (
+    <Button onClick={() => setModalOpen(true)}>
+      <Upload /> Upload Campaign
+    </Button>
+  );
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-on-surface">Leads</h1>
-        <p className="text-xs text-text-muted mt-0.5">Upload campaigns and track leads through a process</p>
-      </div>
+      <PageHeader
+        icon={Users}
+        title="Leads"
+        description="Upload campaigns and track leads through a process"
+        actions={uploadButton}
+      />
 
-      {/* Channel / Process Agent selectors */}
-      <Card className="p-4">
+      {/* Channel / Process / Campaign filter bar */}
+      <Card className="p-4 gap-3">
         <div className="flex flex-wrap items-end gap-4">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-text-muted">Channel</span>
-            <select
+          <ListFilter className="w-4 h-4 text-muted-foreground mb-2.5 hidden sm:block" />
+          <div className="space-y-1.5 w-full sm:w-52">
+            <Label htmlFor="leads-channel" className="text-xs text-muted-foreground">
+              Channel
+            </Label>
+            <NativeSelect
+              id="leads-channel"
               value={selectedChannelId ?? ""}
               onChange={(e) => setSelectedChannelId(e.target.value ? Number(e.target.value) : null)}
               disabled={channelsLoading}
-              className="min-w-50 px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
             >
-              <option value="">{channelsLoading ? "Loading…" : "Select a channel"}</option>
+              <NativeSelectOption value="">{channelsLoading ? "Loading…" : "Select a channel"}</NativeSelectOption>
               {channels.map((d) => (
-                <option key={d.id} value={d.id}>
+                <NativeSelectOption key={d.id} value={d.id}>
                   {d.name}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
-          </label>
+            </NativeSelect>
+          </div>
 
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-text-muted">Process</span>
-            <select
+          <div className="space-y-1.5 w-full sm:w-56">
+            <Label htmlFor="leads-process" className="text-xs text-muted-foreground">
+              Process
+            </Label>
+            <NativeSelect
+              id="leads-process"
               value={selectedProcessAgentId ?? ""}
               onChange={(e) => setSelectedProcessAgentId(e.target.value ? Number(e.target.value) : null)}
               disabled={selectedChannelId === null || processAgentsLoading}
-              className="min-w-55 px-3 py-2 rounded-lg border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
             >
-              <option value="">
+              <NativeSelectOption value="">
                 {selectedChannelId === null
                   ? "Select a channel first"
                   : processAgentsLoading
                     ? "Loading…"
                     : "Select an agent"}
-              </option>
+              </NativeSelectOption>
               {processAgents.map((p) => (
-                <option key={p.id} value={p.id}>
+                <NativeSelectOption key={p.id} value={p.id}>
                   {p.name}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
-          </label>
+            </NativeSelect>
+          </div>
+
+          <div className="space-y-1.5 w-full sm:w-64">
+            <Label htmlFor="leads-campaign" className="text-xs text-muted-foreground">
+              Campaign
+            </Label>
+            <NativeSelect
+              id="leads-campaign"
+              value={selectedCampaignId ?? ""}
+              onChange={(e) => setSelectedCampaignId(e.target.value || null)}
+              disabled={campaigns.length === 0}
+            >
+              {campaigns.length === 0 && (
+                <NativeSelectOption value="">
+                  {selectedProcessAgentId === null
+                    ? "Select a process first"
+                    : campaignsLoading
+                      ? "Loading…"
+                      : "No campaigns yet"}
+                </NativeSelectOption>
+              )}
+              {campaigns.map((c) => (
+                <NativeSelectOption key={c.campaign_id} value={c.campaign_id}>
+                  {c.campaign_id} ({c.lead_count} leads)
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+
+          {selectedProcessAgentId !== null && (
+            <Button variant="link" asChild className="sm:ml-auto px-0">
+              <Link href={`/process-agents/${selectedProcessAgentId}`}>
+                View {selectedProcessAgent?.name ?? "Agent"} <ArrowRight />
+              </Link>
+            </Button>
+          )}
         </div>
 
-        {channelsError && <p className="text-xs text-bad mt-2">{channelsError}</p>}
-        {processAgentsError && <p className="text-xs text-bad mt-2">{processAgentsError}</p>}
+        {channelsError && <p className="text-xs text-bad">{channelsError}</p>}
+        {processAgentsError && <p className="text-xs text-bad">{processAgentsError}</p>}
       </Card>
 
       {/* Nothing selected yet */}
       {selectedProcessAgentId === null && (
-        <Card className="p-10 flex flex-col items-center justify-center text-center">
-          <p className="text-sm text-text-muted">
-            Select a channel and process above to view its campaigns and leads.
-          </p>
-        </Card>
+        <EmptyState
+          icon={ListFilter}
+          title="Pick a process"
+          description="Select a channel and process above to view its campaigns and leads."
+        />
       )}
 
       {selectedProcessAgentId !== null && (
         <>
-          {/* Header row: process name, upload button, view process link */}
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-sm font-semibold text-on-surface">
-              {selectedProcessAgent?.name ?? `Process #${selectedProcessAgentId}`}
-            </p>
-            <div className="flex items-center gap-3">
-              <Link
-                href={`/process-agents/${selectedProcessAgentId}`}
-                className="text-sm font-medium text-primary hover:underline"
-              >
-                View Agent →
-              </Link>
-              <button
-                onClick={() => setModalOpen(true)}
-                className="px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container transition-colors"
-              >
-                + Upload Campaign
-              </button>
-            </div>
-          </div>
-
-          {campaignsLoading && <p className="text-sm text-text-muted">Loading campaigns…</p>}
+          {campaignsLoading && <Skeleton className="h-40 rounded-xl" />}
 
           {campaignsError && (
-            <Card className="p-4 border-bad/40 bg-bad/5">
-              <p className="text-sm text-bad font-medium">{campaignsError}</p>
-              <button
-                onClick={() => loadCampaigns(selectedProcessAgentId)}
-                className="text-xs text-bad underline mt-1"
-              >
-                Retry
-              </button>
-            </Card>
+            <ErrorAlert
+              message={campaignsError}
+              action={
+                <Button variant="outline" size="sm" onClick={() => loadCampaigns(selectedProcessAgentId)}>
+                  Retry
+                </Button>
+              }
+            />
           )}
 
           {!campaignsLoading && !campaignsError && campaigns.length === 0 && (
-            <Card className="p-10 flex flex-col items-center justify-center text-center">
-              <p className="text-sm text-text-muted mb-3">Upload a campaign to see leads here.</p>
-              <button
-                onClick={() => setModalOpen(true)}
-                className="px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container transition-colors"
-              >
-                + Upload Campaign
-              </button>
-            </Card>
-          )}
-
-          {!campaignsLoading && !campaignsError && campaigns.length > 0 && (
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-text-muted uppercase tracking-wide">Campaign</label>
-              <select
-                value={selectedCampaignId ?? ""}
-                onChange={(e) => setSelectedCampaignId(e.target.value || null)}
-                className="text-sm border border-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary bg-surface text-on-surface"
-              >
-                {campaigns.map((c) => (
-                  <option key={c.campaign_id} value={c.campaign_id}>
-                    {c.campaign_id} ({c.lead_count} leads)
-                  </option>
-                ))}
-              </select>
-            </div>
+            <EmptyState
+              icon={Upload}
+              title="No campaigns yet"
+              description="Upload a campaign to see leads here."
+              action={uploadButton}
+            />
           )}
 
           {selectedCampaignId && (
-            <Card className="p-0 overflow-hidden">
-              <CardHeader title="Campaign Leads" hint={`${leads.length} leads`} />
-              <div className="overflow-x-auto">
-                {leadsLoading ? (
-                  <p className="px-5 py-8 text-center text-text-muted text-sm">Loading…</p>
-                ) : leadsError ? (
-                  <p className="px-5 py-8 text-center text-bad text-sm">{leadsError}</p>
-                ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-xs uppercase tracking-wide text-text-muted border-y border-border">
-                        <th className="px-5 py-2.5 font-medium">Lead ID</th>
-                        <th className="px-5 py-2.5 font-medium">To Number</th>
-                        {variableKeys.map((key) => (
-                          <th key={key} className="px-5 py-2.5 font-medium">{key}</th>
-                        ))}
-                        <th className="px-5 py-2.5 font-medium">Status</th>
-                        <th className="px-5 py-2.5 font-medium">Current Node</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {leads.map((l) => (
-                        <tr key={l.id} className="hover:bg-surface-container">
-                          <td className="px-5 py-2.5 font-medium text-on-surface">{l.lead_id}</td>
-                          <td className="px-5 py-2.5 text-on-surface">
-                            {typeof l.variables?.to_number === "string" || typeof l.variables?.to_number === "number"
-                              ? String(l.variables.to_number)
-                              : "—"}
-                          </td>
-                          {variableKeys.map((key) => (
-                            <td key={key} className="px-5 py-2.5 text-text-muted">
-                              {l.variables?.[key] !== undefined && l.variables?.[key] !== null
-                                ? String(l.variables[key])
-                                : "—"}
-                            </td>
-                          ))}
-                          <td className="px-5 py-2.5"><ExecutionStatusPill status={l.status} /></td>
-                          <td className="px-5 py-2.5 text-text-muted">{l.current_node || "—"}</td>
-                        </tr>
-                      ))}
-                      {leads.length === 0 && (
-                        <tr>
-                          <td colSpan={4 + variableKeys.length} className="px-5 py-8 text-center text-text-muted">
-                            No leads found for this campaign.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                )}
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <SummaryTile label="Leads" value={summary.total} icon={Users} className="bg-accent text-primary" />
+                <SummaryTile label="In progress" value={summary.inProgress} icon={Hourglass} className="bg-warn/10 text-warn" />
+                <SummaryTile label="Completed" value={summary.completed} icon={CircleCheck} className="bg-ok/10 text-ok" />
+                <SummaryTile label="Failed / DND" value={summary.failed} icon={CircleX} className="bg-bad/10 text-bad" />
               </div>
-            </Card>
+
+              <Card className="gap-0 py-0 overflow-hidden">
+                <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border">
+                  <div>
+                    <p className="font-semibold text-foreground">Campaign Leads</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{selectedCampaignId}</p>
+                  </div>
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="relative flex w-2 h-2">
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-ok opacity-60 animate-ping" />
+                      <span className="relative inline-flex w-2 h-2 rounded-full bg-ok" />
+                    </span>
+                    Live
+                  </span>
+                </div>
+                {leadsLoading ? (
+                  <div className="p-5 space-y-3">
+                    {[0, 1, 2, 3].map((i) => (
+                      <Skeleton key={i} className="h-8" />
+                    ))}
+                  </div>
+                ) : leadsError ? (
+                  <div className="p-5">
+                    <ErrorAlert message={leadsError} />
+                  </div>
+                ) : (
+                  <div className="max-h-[60vh] overflow-auto">
+                    <Table>
+                      <TableHeader className="sticky top-0 z-10 bg-muted">
+                        <TableRow>
+                          <TableHead className="px-5">Lead ID</TableHead>
+                          <TableHead>To Number</TableHead>
+                          {variableKeys.map((key) => (
+                            <TableHead key={key}>{key}</TableHead>
+                          ))}
+                          <TableHead>Status</TableHead>
+                          <TableHead className="pr-5">Current Node</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {leads.map((l) => (
+                          <TableRow key={l.id}>
+                            <TableCell className="px-5 font-medium">{l.lead_id}</TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {typeof l.variables?.to_number === "string" || typeof l.variables?.to_number === "number"
+                                ? String(l.variables.to_number)
+                                : "—"}
+                            </TableCell>
+                            {variableKeys.map((key) => (
+                              <TableCell key={key} className="text-muted-foreground">
+                                {l.variables?.[key] !== undefined && l.variables?.[key] !== null
+                                  ? String(l.variables[key])
+                                  : "—"}
+                              </TableCell>
+                            ))}
+                            <TableCell>
+                              <ExecutionStatusBadge status={l.status} />
+                            </TableCell>
+                            <TableCell className="pr-5 text-muted-foreground">{l.current_node || "—"}</TableCell>
+                          </TableRow>
+                        ))}
+                        {leads.length === 0 && (
+                          <TableRow>
+                            <TableCell colSpan={4 + variableKeys.length} className="py-10 text-center text-muted-foreground">
+                              No leads found for this campaign.
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </Card>
+            </>
           )}
         </>
       )}

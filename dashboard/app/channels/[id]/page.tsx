@@ -3,48 +3,18 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { ArrowLeft, ArrowRight, Clock, Phone, PhoneCall, Plus, Target, Workflow } from "lucide-react";
 import { getChannel, getProcessAgentStats } from "@/lib/telehubApi";
 import type { ChannelDetail, ChannelNestedProcessAgent, ProcessAgentStats } from "@/lib/types";
-import { Card } from "@/components/Card";
-import { StatusBadge } from "@/components/StatusBadge";
-
-// Process Agent `status` values (draft/active/…) aren't part of the shared
-// lead-status vocabulary in lib/domainConfig.ts, so StatusBadge can't color
-// them meaningfully (it'd fall back to grey for both), so this page keeps a
-// component-local vocab that doesn't belong in domainConfig.
-type Tone = "ok" | "warn" | "bad" | "muted";
-
-const TONE_CLASSES: Record<Tone, string> = {
-  ok: "bg-ok/10 text-ok border border-ok/20",
-  warn: "bg-warn/10 text-warn border border-warn/20",
-  bad: "bg-bad/10 text-bad border border-bad/20",
-  muted: "bg-surface-container text-text-muted border border-border",
-};
-
-function processStatusTone(status: string): Tone {
-  const s = status.toLowerCase();
-  if (s === "active" || s === "published" || s === "live") return "ok";
-  if (s === "draft") return "warn";
-  if (s === "archived" || s === "disabled" || s === "paused") return "bad";
-  return "muted";
-}
-
-function ProcessStatusPill({ status }: { status: string }) {
-  return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${TONE_CLASSES[processStatusTone(status)]}`}>
-      {status}
-    </span>
-  );
-}
-
-function ActiveDot({ active }: { active: boolean }) {
-  return (
-    <span
-      className={`inline-block w-2 h-2 rounded-full ${active ? "bg-ok" : "bg-bad"}`}
-      title={active ? "Active" : "Inactive"}
-    />
-  );
-}
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/common/PageHeader";
+import { EmptyState } from "@/components/common/EmptyState";
+import { KpiCard } from "@/components/common/KpiCard";
+import { channelIcon, DEFAULT_CHANNEL_COLOR } from "@/components/common/ChannelIcon";
+import { ActiveBadge, ProcessStatusBadge } from "@/components/StatusBadge";
+import { formatDuration, formatPercent } from "@/lib/format";
 
 function formatSeconds(seconds: number | null): string {
   if (seconds === null) return "—";
@@ -56,18 +26,8 @@ function formatSeconds(seconds: number | null): string {
 function StatPill({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] uppercase tracking-wide text-text-muted">{label}</span>
-      <span className="text-sm font-semibold text-on-surface">{value}</span>
-    </div>
-  );
-}
-
-function SkeletonCard() {
-  return (
-    <div className="bg-white border border-gray-100 rounded-xl p-5 animate-pulse">
-      <div className="h-4 bg-gray-200 rounded w-2/3 mb-3" />
-      <div className="h-3 bg-gray-100 rounded w-1/4 mb-4" />
-      <div className="h-3 bg-gray-100 rounded w-1/3" />
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="text-sm font-semibold text-foreground">{value}</span>
     </div>
   );
 }
@@ -140,18 +100,24 @@ export default function ChannelDetailPage() {
     };
   }, [channel]);
 
-  // Loading state
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="animate-pulse space-y-2">
-          <div className="h-3 bg-gray-100 rounded w-24" />
-          <div className="h-6 bg-gray-200 rounded w-64" />
-          <div className="h-3 bg-gray-100 rounded w-96" />
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-40" />
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-11 w-11 rounded-xl" />
+            <Skeleton className="h-6 w-64" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-28 rounded-xl" />
+          ))}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[1, 2, 3].map((i) => (
-            <SkeletonCard key={i} />
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-36 rounded-xl" />
           ))}
         </div>
       </div>
@@ -161,90 +127,118 @@ export default function ChannelDetailPage() {
   // Error state (e.g. channel not found)
   if (error || !channel) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <p className="text-sm font-semibold text-gray-800 mb-1">Channel not found</p>
-        <p className="text-xs text-text-muted mb-4 max-w-sm">
-          This channel may have been deleted, or the link you followed is incorrect.
-          {error ? ` (${error})` : ""}
-        </p>
-        <Link href="/channels" className="text-primary text-sm font-medium hover:underline">
-          ← Back to Channels
-        </Link>
-      </div>
+      <EmptyState
+        icon={Workflow}
+        title="Channel not found"
+        description={`This channel may have been deleted, or the link you followed is incorrect.${error ? ` (${error})` : ""}`}
+        action={
+          <Button variant="outline" asChild>
+            <Link href="/channels">
+              <ArrowLeft /> Back to Channels
+            </Link>
+          </Button>
+        }
+        className="py-24"
+      />
     );
   }
 
   const processAgents: ChannelNestedProcessAgent[] = channel.process_agents ?? [];
+  const allStats = Object.values(statsByAgent);
+  const calls = allStats.reduce((sum, s) => sum + s.calls, 0);
+  const connected = allStats.reduce((sum, s) => sum + s.connected, 0);
+  // Weighted by connected calls, same as the Dashboard's channel overview.
+  const durationWeighted = allStats.reduce(
+    (acc, s) => (s.avg_duration_seconds !== null ? acc + s.avg_duration_seconds * s.connected : acc),
+    0,
+  );
+  const avgDuration = connected > 0 && durationWeighted > 0 ? durationWeighted / connected : null;
+  const statsReady = processAgents.length === 0 || allStats.length > 0;
+  const show = (value: string) => (statsReady ? value : "…");
+
+  const addAgentButton = (
+    <Button asChild>
+      <Link href={`/process-agents/new?channel=${channel.id}`}>
+        <Plus /> Add Agent
+      </Link>
+    </Button>
+  );
 
   return (
     <div className="space-y-6">
-      {/* Back link */}
-      <Link href="/channels" className="text-xs text-text-muted hover:text-primary transition-colors">
-        ← Back to Channels
-      </Link>
+      <PageHeader
+        breadcrumbs={[{ label: "Channels", href: "/channels" }, { label: channel.name }]}
+        icon={channelIcon(channel.icon)}
+        iconColor={channel.color || DEFAULT_CHANNEL_COLOR}
+        title={channel.name}
+        badges={<ActiveBadge active={channel.is_active} />}
+        description={channel.description || undefined}
+        actions={addAgentButton}
+      />
 
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-lg font-semibold text-gray-800">{channel.name}</h1>
-            <StatusBadge status={channel.is_active ? "active" : "inactive"} />
-          </div>
-          {channel.description && (
-            <p className="text-sm text-text-muted mt-1 max-w-2xl">{channel.description}</p>
-          )}
-        </div>
-        <Link
-          href={`/process-agents/new?channel=${channel.id}`}
-          className="shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container transition-colors"
-        >
-          <span className="text-base leading-none">+</span>
-          Add Agent
-        </Link>
-      </div>
-
-      {/* Empty state */}
-      {processAgents.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-20 text-center border border-dashed border-border rounded-xl">
-          <p className="text-gray-600 text-sm font-medium mb-1">This channel has no agents yet</p>
-          <p className="text-xs text-text-muted mb-4 max-w-md">
-            e.g. &ldquo;Free Service 1&rdquo;, &ldquo;Test Drive&rdquo;, &ldquo;Insurance Renewal&rdquo;
-          </p>
-          <Link
-            href={`/process-agents/new?channel=${channel.id}`}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:bg-primary-container transition-colors"
-          >
-            <span className="text-base leading-none">+</span>
-            Add Agent
-          </Link>
+      {processAgents.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <KpiCard label="Total Calls" value={show(String(calls))} icon={Phone} tone="blue" />
+          <KpiCard label="Connected" value={show(String(connected))} icon={PhoneCall} tone="green" />
+          <KpiCard
+            label="Connect Rate"
+            value={show(formatPercent(calls > 0 ? connected / calls : null))}
+            hint="Connected ÷ total calls"
+            icon={Target}
+            tone="purple"
+          />
+          <KpiCard
+            label="Avg. Duration"
+            value={show(formatDuration(avgDuration))}
+            hint="Across connected calls"
+            icon={Clock}
+            tone="orange"
+          />
         </div>
       )}
 
-      {/* Process Agent grid */}
+      {processAgents.length === 0 && (
+        <EmptyState
+          icon={Workflow}
+          title="This channel has no agents yet"
+          description={<>e.g. &ldquo;Free Service 1&rdquo;, &ldquo;Test Drive&rdquo;, &ldquo;Insurance Renewal&rdquo;</>}
+          action={addAgentButton}
+        />
+      )}
+
       {processAgents.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {processAgents.map((pa) => {
-            const stats = statsByAgent[pa.id];
-            return (
-              <Link key={pa.id} href={`/process-agents/${pa.id}`}>
-                <Card className="p-5 hover:shadow-md hover:border-gray-200 transition-all cursor-pointer h-full">
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <p className="text-sm font-semibold text-gray-800 truncate">{pa.name}</p>
-                    <ActiveDot active={pa.is_active} />
-                  </div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <ProcessStatusPill status={pa.status} />
-                    <span className="text-xs text-text-muted">v{pa.version}</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-gray-100">
-                    <StatPill label="Calls" value={stats ? stats.calls : "—"} />
-                    <StatPill label="Connected" value={stats ? stats.connected : "—"} />
-                    <StatPill label="Avg" value={stats ? formatSeconds(stats.avg_duration_seconds) : "—"} />
-                  </div>
-                </Card>
-              </Link>
-            );
-          })}
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-foreground">Process Agents</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {processAgents.map((pa) => {
+              const stats = statsByAgent[pa.id];
+              return (
+                <Link key={pa.id} href={`/process-agents/${pa.id}`} className="group">
+                  <Card className="h-full gap-0 p-5 transition-all group-hover:shadow-md group-hover:-translate-y-0.5">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-9 h-9 shrink-0 rounded-lg bg-accent text-primary flex items-center justify-center">
+                          <Workflow className="w-4 h-4" />
+                        </span>
+                        <p className="text-sm font-semibold text-foreground truncate">{pa.name}</p>
+                      </div>
+                      <ArrowRight className="w-4 h-4 mt-2.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mb-4">
+                      <ProcessStatusBadge status={pa.status} />
+                      <ActiveBadge active={pa.is_active} />
+                      <span className="text-xs text-muted-foreground">v{pa.version}</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 pt-3 mt-auto border-t border-border">
+                      <StatPill label="Calls" value={stats ? stats.calls : "—"} />
+                      <StatPill label="Connected" value={stats ? stats.connected : "—"} />
+                      <StatPill label="Avg" value={stats ? formatSeconds(stats.avg_duration_seconds) : "—"} />
+                    </div>
+                  </Card>
+                </Link>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

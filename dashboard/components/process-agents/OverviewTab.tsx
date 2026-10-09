@@ -1,31 +1,35 @@
 import Link from "next/link";
-import { Card } from "@/components/Card";
-import { StatusBadge } from "@/components/StatusBadge";
-import { StatCard } from "@/components/StatCard";
+import { CalendarClock, CalendarPlus, Clock, Flame, Network, Phone, PhoneCall, RefreshCw, Star, Target } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { KpiCard, MiniStat } from "@/components/common/KpiCard";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
 import type { ProcessAgentDetail, ProcessAgentStats } from "@/lib/types";
+import { formatDuration, formatPercent, formatScore } from "@/lib/format";
 import { formatDate } from "./shared";
-
-function formatSeconds(seconds: number | null): string {
-  if (seconds === null || seconds === undefined) return "—";
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
-}
 
 function formatCount(value: number | null): string {
   return value === null || value === undefined ? "—" : String(value);
 }
 
-function formatScore(value: number | null): string {
-  return value === null || value === undefined ? "—" : value.toFixed(1);
-}
-
-function InfoCard({ label, value }: { label: string; value: React.ReactNode }) {
+function InfoItem({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: React.ReactNode;
+}) {
   return (
-    <Card className="p-4">
-      <p className="text-xs font-medium text-text-muted uppercase tracking-wide">{label}</p>
-      <div className="mt-1 text-sm font-semibold text-on-surface">{value}</div>
-    </Card>
+    <div className="flex items-center gap-3 min-w-0">
+      <span className="w-9 h-9 shrink-0 rounded-lg bg-muted text-muted-foreground flex items-center justify-center">
+        <Icon className="w-4 h-4" />
+      </span>
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <div className="text-sm font-medium text-foreground truncate">{value}</div>
+      </div>
+    </div>
   );
 }
 
@@ -40,61 +44,65 @@ export function OverviewTab({
   statsLoading: boolean;
   statsError: string | null;
 }) {
+  const show = (value: string) => (statsLoading ? "…" : value);
+  const calls = stats?.calls ?? null;
+  const connected = stats?.connected ?? null;
+  const connectRate = calls !== null && connected !== null && calls > 0 ? connected / calls : null;
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <InfoCard label="Status" value={<StatusBadge status={agent.status} />} />
-        <InfoCard label="Version" value={`v${agent.version}`} />
-        <InfoCard label="Active" value={agent.is_active ? "Yes" : "No"} />
-        <InfoCard
-          label="Channel"
-          value={
-            <Link href={`/channels/${agent.channel}`} className="text-primary hover:underline">
-              {agent.channel_name}
-            </Link>
-          }
-        />
-        <InfoCard label="Created" value={formatDate(agent.created_at)} />
-        <InfoCard label="Updated" value={formatDate(agent.updated_at)} />
-      </div>
-
-      <div>
-        <div className="flex items-end justify-between mb-3">
-          <h2 className="text-sm font-semibold text-on-surface">Performance</h2>
+      <Card className="p-5 gap-0">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+          <InfoItem
+            icon={Network}
+            label="Channel"
+            value={
+              <Link href={`/channels/${agent.channel}`} className="text-primary hover:underline">
+                {agent.channel_name}
+              </Link>
+            }
+          />
+          <InfoItem icon={CalendarPlus} label="Created" value={formatDate(agent.created_at)} />
+          <InfoItem icon={RefreshCw} label="Updated" value={formatDate(agent.updated_at)} />
         </div>
+      </Card>
+
+      <div className="space-y-3">
+        <h2 className="text-sm font-semibold text-foreground">Performance</h2>
         {statsError ? (
-          <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-4 py-3">
-            {statsError}
-          </div>
+          <ErrorAlert message={statsError} />
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <StatCard label="Calls" value={statsLoading ? "…" : formatCount(stats?.calls ?? null)} />
-            <StatCard
-              label="Connected"
-              value={statsLoading ? "…" : formatCount(stats?.connected ?? null)}
-            />
-            <StatCard
-              label="Avg Duration"
-              value={statsLoading ? "…" : formatSeconds(stats?.avg_duration_seconds ?? null)}
-            />
-            <StatCard
-              label="QA Score"
-              value={statsLoading ? "…" : formatScore(stats?.qa_score ?? null)}
-            />
-            <StatCard
-              label="Hot Leads"
-              value={statsLoading ? "…" : formatCount(stats?.hot_leads ?? null)}
-            />
-            <StatCard
-              label="Callback Requests"
-              value={statsLoading ? "…" : formatCount(stats?.callback_requests ?? null)}
-            />
-          </div>
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              <KpiCard label="Calls" value={show(formatCount(calls))} icon={Phone} tone="blue" />
+              <KpiCard label="Connected" value={show(formatCount(connected))} icon={PhoneCall} tone="green" />
+              <KpiCard
+                label="Connect Rate"
+                value={show(formatPercent(connectRate))}
+                hint="Connected ÷ total calls"
+                icon={Target}
+                tone="purple"
+              />
+              <KpiCard
+                label="Avg. Duration"
+                value={show(formatDuration(stats?.avg_duration_seconds ?? null))}
+                icon={Clock}
+                tone="orange"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <MiniStat label="QA Score" value={show(formatScore(stats?.qa_score ?? null))} icon={Star} />
+              <MiniStat label="Hot Leads" value={show(formatCount(stats?.hot_leads ?? null))} icon={Flame} />
+              <MiniStat
+                label="Callback Requests"
+                value={show(formatCount(stats?.callback_requests ?? null))}
+                icon={CalendarClock}
+              />
+            </div>
+          </>
         )}
         {!statsLoading && stats?.calls === 0 && (
-          <p className="text-xs text-text-muted mt-2">
-            Populates once this process starts running calls.
-          </p>
+          <p className="text-xs text-muted-foreground">Populates once this process starts running calls.</p>
         )}
       </div>
     </div>

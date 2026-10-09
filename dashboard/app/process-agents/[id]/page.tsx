@@ -3,7 +3,25 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { StatusBadge } from "@/components/StatusBadge";
+import {
+  ArrowLeft,
+  ChartColumn,
+  ClipboardCheck,
+  GitBranch,
+  History,
+  LayoutGrid,
+  PhoneCall,
+  Settings,
+  Workflow,
+  type LucideIcon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PageHeader } from "@/components/common/PageHeader";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ErrorAlert } from "@/components/common/ErrorAlert";
+import { ActiveBadge, ProcessStatusBadge, ToneBadge } from "@/components/StatusBadge";
 import {
   getProcessAgent,
   getProcessAgentJourney,
@@ -34,6 +52,16 @@ import { QaTab } from "@/components/process-agents/QaTab";
 import { CallsTab } from "@/components/process-agents/CallsTab";
 import { AnalyticsTab } from "@/components/process-agents/AnalyticsTab";
 import { SettingsTab } from "@/components/process-agents/SettingsTab";
+
+const TAB_ICONS: Record<TabKey, LucideIcon> = {
+  overview: LayoutGrid,
+  journey: GitBranch,
+  runs: History,
+  calls: PhoneCall,
+  qa: ClipboardCheck,
+  analytics: ChartColumn,
+  settings: Settings,
+};
 
 export default function ProcessAgentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -323,26 +351,34 @@ export default function ProcessAgentDetailPage() {
 
   if (!validId || notFound) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <p className="text-lg font-semibold text-on-surface mb-1">Agent not found</p>
-        <p className="text-sm text-text-muted mb-4">
-          This agent doesn&apos;t exist or may have been removed.
-        </p>
-        <Link href="/channels" className="text-sm text-primary hover:underline">
-          ← Back to Channels
-        </Link>
-      </div>
+      <EmptyState
+        icon={Workflow}
+        title="Agent not found"
+        description="This agent doesn't exist or may have been removed."
+        action={
+          <Button variant="outline" asChild>
+            <Link href="/channels">
+              <ArrowLeft /> Back to Channels
+            </Link>
+          </Button>
+        }
+        className="py-24"
+      />
     );
   }
 
   if (agentLoading) {
     return (
       <div className="space-y-6">
-        <div className="h-6 w-64 bg-surface-container rounded animate-pulse" />
-        <div className="h-4 w-40 bg-surface-container rounded animate-pulse" />
+        <Skeleton className="h-4 w-48" />
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-11 w-11 rounded-xl" />
+          <Skeleton className="h-6 w-64" />
+        </div>
+        <Skeleton className="h-9 w-full max-w-xl" />
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-24 bg-surface-container rounded-xl animate-pulse" />
+            <Skeleton key={i} className="h-24 rounded-xl" />
           ))}
         </div>
       </div>
@@ -351,61 +387,54 @@ export default function ProcessAgentDetailPage() {
 
   if (agentError || !agent) {
     return (
-      <div className="space-y-3">
-        <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-4 py-3">
-          {agentError ?? "Failed to load process agent."}
-        </div>
-        <button
-          onClick={loadAgent}
-          className="text-sm text-primary hover:underline"
-        >
-          Retry
-        </button>
-      </div>
+      <ErrorAlert
+        message={agentError ?? "Failed to load process agent."}
+        action={
+          <Button variant="outline" size="sm" onClick={loadAgent}>
+            Retry
+          </Button>
+        }
+      />
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="space-y-1">
-        <Link
-          href={`/channels/${agent.channel}`}
-          className="text-xs text-text-muted hover:text-primary hover:underline"
-        >
-          ← {agent.channel_name}
-        </Link>
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold text-on-surface">{agent.name}</h1>
-          <StatusBadge status={agent.status} />
-          <span className="text-xs text-text-muted">v{agent.version}</span>
-          {!agent.is_active && (
-            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-text-muted/15 text-text-muted">
-              Inactive
-            </span>
-          )}
-        </div>
-        {agent.description && (
-          <p className="text-sm text-text-muted max-w-2xl">{agent.description}</p>
-        )}
-      </div>
+      <PageHeader
+        breadcrumbs={[
+          { label: "Channels", href: "/channels" },
+          { label: agent.channel_name, href: `/channels/${agent.channel}` },
+          { label: agent.name },
+        ]}
+        icon={Workflow}
+        title={agent.name}
+        badges={
+          <>
+            <ProcessStatusBadge status={agent.status} />
+            <ActiveBadge active={agent.is_active} />
+            <ToneBadge tone="muted" className="normal-case">
+              v{agent.version}
+            </ToneBadge>
+          </>
+        }
+        description={agent.description || undefined}
+      />
 
-      {/* Tab bar */}
-      <div className="border-b border-border flex gap-1 overflow-x-auto">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              tab === t.key
-                ? "border-primary text-primary"
-                : "border-transparent text-text-muted hover:text-on-surface"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)}>
+        <div className="overflow-x-auto pb-1">
+          <TabsList className="h-10">
+            {TABS.map((t) => {
+              const Icon = TAB_ICONS[t.key];
+              return (
+                <TabsTrigger key={t.key} value={t.key} className="px-3">
+                  <Icon />
+                  {t.label}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </div>
+      </Tabs>
 
       {/* Tab content */}
       {tab === "overview" && (
