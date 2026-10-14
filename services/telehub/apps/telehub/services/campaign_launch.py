@@ -44,7 +44,9 @@ def launch_campaign(process_agent, payload: dict) -> dict:
     if leads:
         lead_source = process_agent.lead_sources.order_by("-created_at").first()
         if lead_source is None:
-            lead_source = LeadSource(process_agent=process_agent, type="upload")
+            lead_source = LeadSource(
+                process_agent=process_agent, organization=process_agent.organization, type="upload"
+            )
         lead_source.configuration = {**lead_source.configuration, "leads": leads}
         if "field_mapping" in payload:
             lead_source.field_mapping = payload["field_mapping"]
@@ -92,6 +94,7 @@ def launch_campaign(process_agent, payload: dict) -> dict:
         executions.append(
             Execution(
                 process_agent=process_agent,
+                organization=process_agent.organization,
                 lead_id=lead_id,
                 status="pending",
                 current_node=NODE_NAME_LEAD_RECEIVED,

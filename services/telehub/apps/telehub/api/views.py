@@ -3,7 +3,8 @@ from django.db.models import Count, Min, Prefetch
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework import status, viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from ..models import (
@@ -27,6 +28,7 @@ from ..services.process_agent import (
     create_process_agent_from_wizard,
     sync_voice_bot_to_communication_nodes,
 )
+from .tenancy import OrgScopedViewSetMixin
 from .serializers import (
     BotJourneySerializer,
     CallRowSerializer,
@@ -96,7 +98,7 @@ OMNICHANNEL_WRITABLE_FIELDS = (
 MAX_WHATSAPP_BATCH = 50
 
 
-class VoiceBotViewSet(viewsets.ModelViewSet):
+class VoiceBotViewSet(OrgScopedViewSetMixin, viewsets.ModelViewSet):
     """
     Global CRUD for VoiceBot — the dashboard's /bots page. A VoiceBot is no
     longer owned by any one ProcessAgent (see models.VoiceBot); any
@@ -123,7 +125,7 @@ class VoiceBotViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class DepartmentViewSet(viewsets.ModelViewSet):
+class DepartmentViewSet(OrgScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
 
@@ -133,7 +135,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         return DepartmentSerializer
 
 
-class IntegrationViewSet(viewsets.ModelViewSet):
+class IntegrationViewSet(OrgScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Integration.objects.all()
     serializer_class = IntegrationSerializer
 
@@ -143,7 +145,7 @@ class NodeTemplateViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NodeTemplateSerializer
 
 
-class ProcessAgentViewSet(viewsets.ModelViewSet):
+class ProcessAgentViewSet(OrgScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = ProcessAgent.objects.select_related("department").all()
 
     def get_queryset(self):
@@ -161,7 +163,11 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         return ProcessAgentDetailSerializer
 
     def create(self, request, *args, **kwargs):
-        agent = create_process_agent_from_wizard(request.data)
+        try:
+            agent = create_process_agent_from_wizard(request.data, request.organization)
+        except (ValidationError, KeyError) as exc:
+            message = exc.messages[0] if isinstance(exc, ValidationError) else f"Missing field: {exc}"
+            return Response({"error": message}, status=status.HTTP_400_BAD_REQUEST)
         serializer = ProcessAgentDetailSerializer(agent)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -409,7 +415,9 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
         """
         agent = self.get_object()
         integration_id = request.data.get("integration")
-        if not integration_id or not Integration.objects.filter(pk=integration_id).exists():
+        if not integration_id or not Integration.objects.for_org(request.organization).filter(
+            pk=integration_id
+        ).exists():
             return Response(
                 {"error": "A valid integration id is required"}, status=status.HTTP_400_BAD_REQUEST
             )
@@ -452,7 +460,7 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
             return Response(LeadSourceSerializer(obj).data)
 
         if obj is None:
-            obj = LeadSource(process_agent=agent)
+            obj = LeadSource(process_agent=agent, organization=agent.organization)
         for field in ("type", "configuration", "field_mapping"):
             if field in request.data:
                 setattr(obj, field, request.data[field])
@@ -698,6 +706,8 @@ class ProcessAgentViewSet(viewsets.ModelViewSet):
 
 
 @api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
 def webhook_intake(request, secret):
     """
     Minimal webhook intake: the real, mounted endpoint that

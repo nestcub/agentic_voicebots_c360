@@ -81,6 +81,7 @@ def record_inbound_call(process_agent, payload: dict):
         now = timezone.now()
         execution = Execution.objects.create(
             process_agent=process_agent,
+            organization=process_agent.organization,
             current_bot_journey=process_agent.bot_journeys.order_by("order", "id").first(),
             lead_id=caller_number or "inbound",
             campaign_id=INBOUND_CAMPAIGN_ID,

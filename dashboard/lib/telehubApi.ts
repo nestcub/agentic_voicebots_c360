@@ -35,17 +35,29 @@ import type {
   VoiceBot,
 } from "./types";
 
+import { authHeaders, redirectToLogin, refreshAccessToken } from "./auth";
+
 const BASE = process.env.NEXT_PUBLIC_TELEHUB_API_URL || "http://localhost:8000";
 const API = `${BASE}/api/telehub`;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
+  const send = () =>
+    fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...authHeaders(),
+        ...init?.headers,
+      },
+    });
+  let res = await send();
+  if (res.status === 401) {
+    // Expired access token: refresh once and retry; otherwise the session is over.
+    if (await refreshAccessToken()) res = await send();
+    if (res.status === 401) {
+      redirectToLogin();
+    }
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`TelehubApi ${init?.method ?? "GET"} ${path} failed: ${res.status} ${res.statusText} ${body}`);

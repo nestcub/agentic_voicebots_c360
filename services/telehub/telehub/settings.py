@@ -6,9 +6,11 @@ Postgres (Supabase) backend, no Redis, no auth.
 
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import dj_database_url
+from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
 
 # BASE_DIR is the outer services/telehub/ directory (contains manage.py),
@@ -48,6 +50,7 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "corsheaders",
     "rest_framework",
+    "rest_framework_simplejwt",
     "apps.telehub",
 ]
 
@@ -160,6 +163,25 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+# The dashboard sends a bearer token and the org slug on every API call.
+CORS_ALLOW_HEADERS = [*default_headers, "authorization", "x-organization"]
+
+# Tenancy / auth (docs/superpowers/plans/schema_revamp_phase0_tenancy.md). While False the API
+# stays open as before and requests without a token act in X-Organization or the default org,
+# so the backend can deploy ahead of the dashboard login. Flip to True at cut-over.
+TELEHUB_AUTH_REQUIRED = os.environ.get("TELEHUB_AUTH_REQUIRED", "false").lower() == "true"
+TELEHUB_DEFAULT_ORG_SLUG = os.environ.get("TELEHUB_DEFAULT_ORG_SLUG", "excell-autovista")
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework_simplejwt.authentication.JWTAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["apps.telehub.api.tenancy.IsAuthenticatedWhenRequired"],
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+}
+
 # Needed for Django admin login over HTTPS on the deployed host.
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()

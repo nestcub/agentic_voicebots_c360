@@ -1,7 +1,11 @@
 import secrets
 
+from django.core.exceptions import ValidationError
+from django.db import transaction
+
 from ..models import (
     BotJourney,
+    Department,
     Integration,
     LeadSource,
     OmnichannelConfig,
@@ -78,7 +82,8 @@ def _apply_wizard_node_configs(
         node.save()
 
 
-def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
+@transaction.atomic
+def create_process_agent_from_wizard(payload: dict, organization) -> "ProcessAgent":
     """
     Create a ProcessAgent (and its related rows) from a wizard payload. Every
     nested section is optional — a minimal payload of just
@@ -91,8 +96,27 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
     omnichannel = payload.get("omnichannel", {}) or {}
     integration_ids = payload.get("integrations", []) or []
 
+    # Every ID below comes straight from the request, so each is resolved
+    # within `organization` — an ID from another org is a validation error,
+    # never a cross-tenant link. Checked up front so nothing is half-created.
+    department = Department.objects.for_org(organization).filter(pk=payload.get("department")).first()
+    if department is None:
+        raise ValidationError("A valid department id is required")
+    voice_bot_id = voice.get("voice_bot_id")
+    voice_bot = None
+    if voice_bot_id:
+        voice_bot = VoiceBot.objects.for_org(organization).filter(pk=voice_bot_id).first()
+        if voice_bot is None:
+            raise ValidationError(f"Unknown voice bot id: {voice_bot_id}")
+    valid_integration_ids = []
+    for integration_id in integration_ids:
+        if not Integration.objects.for_org(organization).filter(pk=integration_id).exists():
+            raise ValidationError(f"Unknown integration id: {integration_id}")
+        valid_integration_ids.append(integration_id)
+
     agent = ProcessAgent.objects.create(
-        department_id=payload["department"],
+        organization=organization,
+        department=department,
         name=payload["name"],
         description=payload.get("description", ""),
         status="active",
@@ -107,8 +131,6 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
     )
     generate_journey(bot_journey)
 
-    voice_bot_id = voice.get("voice_bot_id")
-    voice_bot = VoiceBot.objects.filter(pk=voice_bot_id).first() if voice_bot_id else None
     bot_journey.voice_bot = voice_bot
     bot_journey.save()
 
@@ -122,6 +144,7 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
     lead_source = payload.get("lead_source", {}) or {}
     if lead_source:
         LeadSource.objects.create(
+            organization=organization,
             process_agent=agent,
             type=lead_source.get("type", ""),
             configuration=lead_source.get("configuration", {}),
@@ -152,9 +175,7 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
             source=source,
         )
 
-    for integration_id in integration_ids:
-        if not Integration.objects.filter(pk=integration_id).exists():
-            continue
+    for integration_id in valid_integration_ids:
         ProcessIntegration.objects.create(
             process_agent=agent, integration_id=integration_id
         )
@@ -175,6 +196,7 @@ def create_process_agent_from_wizard(payload: dict) -> "ProcessAgent":
     if communication_type == "voice_inbound" or (communication_type.startswith("voice") and webhook_schema):
         secret = secrets.token_hex(16)
         WebhookDefinition.objects.create(
+            organization=organization,
             process_agent=agent,
             name=f"{agent.name} Callback",
             # Stable relative path — a real view is mounted at this path (see

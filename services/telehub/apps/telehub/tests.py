@@ -41,12 +41,21 @@ from .services.outcome_routing import route_webhook_outcome
 from .services.retry_backoff import schedule_retry
 from .services.seed_node_templates import seed_node_templates
 from .management.commands.run_scheduler import tick
+from .models import Organization
+
+
+def make_org(slug="excell-autovista", name=None):
+    """The org every fixture row lives in unless a test is deliberately cross-tenant."""
+    org, _ = Organization.objects.get_or_create(
+        slug=slug, defaults={"name": name or slug.replace("-", " ").title()}
+    )
+    return org
 
 
 class DepartmentProcessAgentNodeInstanceChainTests(TestCase):
     def test_relationships_resolve(self):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Test Drive"
         )
         node_template = NodeTemplate.objects.create(
@@ -66,8 +75,8 @@ class DepartmentProcessAgentNodeInstanceChainTests(TestCase):
 
 class NodeConnectionTests(TestCase):
     def test_source_and_target_resolve(self):
-        department = Department.objects.create(name="Healthcare")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Healthcare")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Appointment"
         )
         node_template = NodeTemplate.objects.create(
@@ -91,11 +100,11 @@ class NodeConnectionTests(TestCase):
 
 class ProcessIntegrationUniqueTogetherTests(TestCase):
     def test_duplicate_process_integration_raises(self):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Free Service 1"
         )
-        integration = Integration.objects.create(name="Chat360", type="crm")
+        integration = Integration.objects.create(organization=make_org(), name="Chat360", type="crm")
         ProcessIntegration.objects.create(
             process_agent=process_agent, integration=integration
         )
@@ -109,8 +118,8 @@ class ProcessIntegrationUniqueTogetherTests(TestCase):
 
 class VariableUniqueTogetherTests(TestCase):
     def test_duplicate_variable_key_per_process_agent_raises(self):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Insurance Renewal"
         )
         Variable.objects.create(process_agent=process_agent, key="customer_name")
@@ -122,11 +131,11 @@ class VariableUniqueTogetherTests(TestCase):
 
 class QAResultOneToOneTests(TestCase):
     def test_second_qa_result_for_same_execution_raises(self):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Appointment Reminder"
         )
-        execution = Execution.objects.create(process_agent=process_agent, lead_id="lead-1")
+        execution = Execution.objects.create(organization=make_org(), process_agent=process_agent, lead_id="lead-1")
         QAResult.objects.create(execution=execution)
 
         self.assertEqual(execution.qa_result.execution, execution)
@@ -138,8 +147,8 @@ class QAResultOneToOneTests(TestCase):
 
 class JourneyGenerationTests(TestCase):
     def _make_process_agent(self):
-        department = Department.objects.create(name="Automobile")
-        return ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        return ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Free Service Reminder"
         )
 
@@ -227,7 +236,7 @@ def _full_wizard_payload(department_id, name="Free Service 1", voice_bot_id=None
     if voice_bot_id is None:
         # "Full" payload implies a bot is attached — callers that want no bot
         # attached should build their own minimal payload instead.
-        voice_bot_id = VoiceBot.objects.create(
+        voice_bot_id = VoiceBot.objects.create(organization=make_org(),
             communication_type="voice_outbound",
             webhook_schema={"summary": "", "transcript": "", "sentiment": "", "outcome": ""},
         ).id
@@ -281,11 +290,11 @@ def _full_wizard_payload(department_id, name="Free Service 1", voice_bot_id=None
 class ProcessAgentWizardCreateTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def test_full_wizard_payload_creates_agent_with_nodes_and_related_rows(self):
         webhook_schema = {"summary": "", "transcript": "", "sentiment": "", "outcome": ""}
-        voice_bot = VoiceBot.objects.create(
+        voice_bot = VoiceBot.objects.create(organization=make_org(),
             communication_type="voice_outbound",
             bot_name="Sales Bot",
             bot_id="bot-1",
@@ -348,7 +357,7 @@ class ProcessAgentWizardCreateTests(TestCase):
 class ProcessAgentJourneyEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def test_journey_endpoint_returns_nine_nodes_and_ten_edges(self):
         payload = _full_wizard_payload(self.department.id)
@@ -420,7 +429,7 @@ class DepartmentApiTests(TestCase):
         self.assertEqual(retrieve_response.data["process_agents"], [])
 
     def test_retrieve_includes_nested_process_agents_with_correct_count(self):
-        department = Department.objects.create(name="Automobile")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
 
         for name in ("Free Service 1", "Free Service 2"):
             payload = _full_wizard_payload(department.id, name=name)
@@ -561,7 +570,7 @@ class NgrokPublicBaseUrlTests(TestCase):
 class WebhookIntakeTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def _create_agent_with_webhook(self):
         payload = _full_wizard_payload(self.department.id)
@@ -572,7 +581,7 @@ class WebhookIntakeTests(TestCase):
 
     def test_valid_secret_and_dlr_id_routes_outcome(self):
         agent_id, webhook = self._create_agent_with_webhook()
-        execution = Execution.objects.create(process_agent_id=agent_id, lead_id="lead-1")
+        execution = Execution.objects.create(organization=make_org(), process_agent_id=agent_id, lead_id="lead-1")
 
         response = self.client.post(
             f"/api/telehub/webhooks/{webhook.secret}/",
@@ -613,7 +622,7 @@ class WebhookIntakeTests(TestCase):
         only contact_no, in whatever format the bot captured it.
         """
         agent_id, webhook = self._create_agent_with_webhook()
-        execution = Execution.objects.create(
+        execution = Execution.objects.create(organization=make_org(),
             process_agent_id=agent_id,
             lead_id="lead-1",
             variables={"to_number": "9876543210"},
@@ -632,7 +641,7 @@ class WebhookIntakeTests(TestCase):
 
     def test_contact_no_match_ignores_already_completed_executions(self):
         agent_id, webhook = self._create_agent_with_webhook()
-        Execution.objects.create(
+        Execution.objects.create(organization=make_org(),
             process_agent_id=agent_id,
             lead_id="lead-1",
             status="completed",
@@ -652,7 +661,7 @@ class WebhookIntakeTests(TestCase):
 class ProcessAgentStatsTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
         payload = _full_wizard_payload(self.department.id)
         response = self.client.post("/api/telehub/process-agents/", payload, format="json")
         self.agent_id = response.data["id"]
@@ -666,12 +675,12 @@ class ProcessAgentStatsTests(TestCase):
         self.assertIsNone(response.data["qa_score"])
 
     def test_connected_and_avg_duration_from_variables(self):
-        Execution.objects.create(
+        Execution.objects.create(organization=make_org(),
             process_agent_id=self.agent_id,
             lead_id="connected-1",
             variables={"call_duration": "40"},
         )
-        Execution.objects.create(
+        Execution.objects.create(organization=make_org(),
             process_agent_id=self.agent_id,
             lead_id="not-connected-1",
             variables={"outcome": "no_answer"},
@@ -684,7 +693,7 @@ class ProcessAgentStatsTests(TestCase):
         self.assertEqual(response.data["avg_duration_seconds"], 40.0)
 
     def test_hot_leads_and_callback_requests_counted(self):
-        execution = Execution.objects.create(
+        execution = Execution.objects.create(organization=make_org(),
             process_agent_id=self.agent_id, lead_id="hot-1", status="callback_scheduled"
         )
         QAResult.objects.create(execution=execution, hot_lead=True, lead_score=8)
@@ -699,7 +708,7 @@ class ProcessAgentStatsTests(TestCase):
 class WebhookPublicUrlSerializationTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def test_public_url_none_when_ngrok_not_running(self):
         payload = _full_wizard_payload(self.department.id)
@@ -735,7 +744,7 @@ class WebhookPublicUrlSerializationTests(TestCase):
 class CampaignLaunchServiceTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def _create_agent(self, name="Free Service 1"):
         payload = _full_wizard_payload(self.department.id, name=name)
@@ -828,7 +837,7 @@ class CampaignLaunchServiceTests(TestCase):
 
     def test_omitted_leads_falls_back_to_stored_lead_source(self):
         agent = self._create_agent()
-        LeadSource.objects.create(
+        LeadSource.objects.create(organization=make_org(),
             process_agent=agent,
             type="upload",
             configuration={"leads": [{"to_number": "+922222222222", "params": {"name": "Bob"}}]},
@@ -842,7 +851,7 @@ class CampaignLaunchServiceTests(TestCase):
 
     def test_omitted_leads_falls_back_to_single_source_number(self):
         agent = self._create_agent()
-        LeadSource.objects.create(
+        LeadSource.objects.create(organization=make_org(),
             process_agent=agent,
             type="single_source",
             configuration={"number": "+919999999999"},
@@ -859,7 +868,7 @@ class CampaignLaunchServiceTests(TestCase):
 class CampaignLaunchApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def _create_agent(self, name="Free Service 1"):
         payload = _full_wizard_payload(self.department.id, name=name)
@@ -989,7 +998,7 @@ class CampaignLaunchApiTests(TestCase):
 class LeadSourceEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def _create_agent(self, name="Free Service 1"):
         payload = _full_wizard_payload(self.department.id, name=name)
@@ -1008,7 +1017,7 @@ class LeadSourceEndpointTests(TestCase):
         self.assertIn("type", response.data)
 
     def test_get_returns_empty_object_when_no_lead_source_exists(self):
-        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
         response = self.client.get(f"/api/telehub/process-agents/{agent.id}/lead-source/")
 
@@ -1033,7 +1042,7 @@ class LeadSourceEndpointTests(TestCase):
         )
 
     def test_patch_creates_lead_source_when_none_exists(self):
-        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
         response = self.client.patch(
             f"/api/telehub/process-agents/{agent.id}/lead-source/",
@@ -1049,7 +1058,7 @@ class LeadSourceEndpointTests(TestCase):
 class QaConfigEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def _create_agent(self, name="Free Service 1"):
         payload = _full_wizard_payload(self.department.id, name=name)
@@ -1067,7 +1076,7 @@ class QaConfigEndpointTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_get_returns_empty_object_when_no_journey_exists(self):
-        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
         response = self.client.get(f"/api/telehub/process-agents/{agent.id}/qa-config/")
 
@@ -1099,7 +1108,7 @@ class QaConfigEndpointTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_patch_400s_when_no_journey_exists(self):
-        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
         response = self.client.patch(
             f"/api/telehub/process-agents/{agent.id}/qa-config/",
@@ -1113,10 +1122,10 @@ class QaConfigEndpointTests(TestCase):
 class AnalyticsStatsConfigEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def test_get_returns_empty_dict_by_default(self):
-        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
         response = self.client.get(f"/api/telehub/process-agents/{agent.id}/analytics-stats/")
 
@@ -1124,7 +1133,7 @@ class AnalyticsStatsConfigEndpointTests(TestCase):
         self.assertEqual(response.data, {})
 
     def test_patch_merges_toggles(self):
-        agent = ProcessAgent.objects.create(
+        agent = ProcessAgent.objects.create(organization=make_org(),
             department=self.department, name="Bare Agent", analytics_stats={"initiated_calls": True}
         )
 
@@ -1142,7 +1151,7 @@ class AnalyticsStatsConfigEndpointTests(TestCase):
         self.assertEqual(agent.analytics_stats["completed_calls"], True)
 
     def test_patch_rejects_unknown_key(self):
-        agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
         response = self.client.patch(
             f"/api/telehub/process-agents/{agent.id}/analytics-stats/",
@@ -1156,8 +1165,8 @@ class AnalyticsStatsConfigEndpointTests(TestCase):
 class VariableEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
     def test_get_lists_variables(self):
         Variable.objects.create(process_agent=self.agent, key="customer_name")
@@ -1235,11 +1244,11 @@ class VariableEndpointTests(TestCase):
 class WebhookDetailEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
     def test_patch_updates_editable_fields_only(self):
-        webhook = WebhookDefinition.objects.create(
+        webhook = WebhookDefinition.objects.create(organization=make_org(),
             process_agent=self.agent,
             name="Old Name",
             url="/api/telehub/webhooks/abc123/",
@@ -1273,8 +1282,8 @@ class WebhookDetailEndpointTests(TestCase):
 class OmnichannelConfigEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
     def test_get_returns_empty_object_when_none_exists(self):
         response = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/omnichannel/")
@@ -1312,9 +1321,9 @@ class OmnichannelConfigEndpointTests(TestCase):
 class IntegrationAttachDetachEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
-        self.integration = Integration.objects.create(name="CRM X", type="crm")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
+        self.integration = Integration.objects.create(organization=make_org(), name="CRM X", type="crm")
 
     def test_post_attaches_integration(self):
         response = self.client.post(
@@ -1380,11 +1389,11 @@ class VoiceBotEndpointTests(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=self.department, name="Bare Agent")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Bare Agent")
 
     def test_get_lists_voice_bots(self):
-        VoiceBot.objects.create(bot_name="Sales Bot")
+        VoiceBot.objects.create(organization=make_org(), bot_name="Sales Bot")
 
         response = self.client.get("/api/telehub/voice-bots/")
 
@@ -1405,7 +1414,7 @@ class VoiceBotEndpointTests(TestCase):
         self.assertIsNone(BotJourney.objects.filter(voice_bot=voice_bot).first())
 
     def test_patch_updates_voice_bot_and_syncs_attached_journey_node(self):
-        voice_bot = VoiceBot.objects.create(bot_name="Old Name", api_url="https://old/")
+        voice_bot = VoiceBot.objects.create(organization=make_org(), bot_name="Old Name", api_url="https://old/")
         bot_journey = BotJourney.objects.create(process_agent=self.agent, name="Sales Journey", order=0)
         generate_journey(bot_journey)
         bot_journey.voice_bot = voice_bot
@@ -1435,7 +1444,7 @@ class VoiceBotEndpointTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_delete_removes_unattached_voice_bot(self):
-        voice_bot = VoiceBot.objects.create(bot_name="Unused Bot")
+        voice_bot = VoiceBot.objects.create(organization=make_org(), bot_name="Unused Bot")
 
         response = self.client.delete(f"/api/telehub/voice-bots/{voice_bot.id}/")
 
@@ -1443,7 +1452,7 @@ class VoiceBotEndpointTests(TestCase):
         self.assertEqual(VoiceBot.objects.filter(pk=voice_bot.id).count(), 0)
 
     def test_delete_rejects_voice_bot_in_use_by_a_journey(self):
-        voice_bot = VoiceBot.objects.create(bot_name="In Use Bot")
+        voice_bot = VoiceBot.objects.create(organization=make_org(), bot_name="In Use Bot")
         BotJourney.objects.create(
             process_agent=self.agent, voice_bot=voice_bot, name="Sales Journey", order=0
         )
@@ -1463,8 +1472,8 @@ class DispatcherTests(TestCase):
         dids=None,
         variables=None,
     ):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Dispatch Test"
         )
         generate_journey(process_agent)
@@ -1476,7 +1485,7 @@ class DispatcherTests(TestCase):
         }
         communication_node.save()
 
-        voice_bot = VoiceBot.objects.create(
+        voice_bot = VoiceBot.objects.create(organization=make_org(),
             bot_id=bot_id,
             bot_name=bot_name,
             dids=dids if dids is not None else [],
@@ -1485,7 +1494,7 @@ class DispatcherTests(TestCase):
         bot_journey.voice_bot = voice_bot
         bot_journey.save()
 
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             status="pending",
@@ -1641,8 +1650,8 @@ class DispatcherTests(TestCase):
 
 class RetryBackoffTests(TestCase):
     def _make_execution(self, retry_config=None, attempt_count=0, set_retry_node=True):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Retry Test"
         )
         generate_journey(process_agent)
@@ -1652,7 +1661,7 @@ class RetryBackoffTests(TestCase):
             retry_node.config = retry_config if retry_config is not None else {}
             retry_node.save()
 
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             status="dispatch_failed",
@@ -1742,8 +1751,8 @@ class RetryBackoffTests(TestCase):
 
 class CallbackScheduleTests(TestCase):
     def _make_execution(self, callback_config=None, variables=None):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Callback Test"
         )
         generate_journey(process_agent)
@@ -1752,7 +1761,7 @@ class CallbackScheduleTests(TestCase):
         callback_node.config = callback_config if callback_config is not None else {}
         callback_node.save()
 
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             status="dispatched",
@@ -1843,13 +1852,13 @@ class CallbackScheduleTests(TestCase):
 
 class DispatcherRedirectTests(TestCase):
     def _make_execution(self, api_url="https://example.com/outbound"):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(department=department, name="Redirect Test")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Redirect Test")
         generate_journey(process_agent)
         communication_node = process_agent.nodes.get(name="Communication")
         communication_node.config = {"api_url": api_url, "bot_id": "bot-1", "bot_name": "Bot One"}
         communication_node.save()
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             status="pending",
@@ -1907,8 +1916,8 @@ class DispatcherRedirectTests(TestCase):
 
 class GatingTests(TestCase):
     def _make_process_agent(self, business_hours_config=None, dnd_config=None):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Gating Test"
         )
         generate_journey(process_agent)
@@ -1926,7 +1935,7 @@ class GatingTests(TestCase):
         return process_agent
 
     def _make_execution(self, process_agent):
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-gating",
             current_bot_journey=process_agent.bot_journeys.first(),
@@ -1981,7 +1990,7 @@ class GatingTests(TestCase):
 
     def test_dnd_suppressed_only_when_node_enabled_and_execution_variable_truthy(self):
         process_agent = self._make_process_agent(dnd_config={"enabled": True})
-        execution = Execution.objects.create(
+        execution = Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             variables={"dnd": "true"},
@@ -1991,7 +2000,7 @@ class GatingTests(TestCase):
 
     def test_dnd_not_suppressed_when_node_disabled(self):
         process_agent = self._make_process_agent(dnd_config={"enabled": False})
-        execution = Execution.objects.create(
+        execution = Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             variables={"dnd": "true"},
@@ -2001,7 +2010,7 @@ class GatingTests(TestCase):
 
     def test_dnd_not_suppressed_when_execution_variable_falsy(self):
         process_agent = self._make_process_agent(dnd_config={"enabled": True})
-        execution = Execution.objects.create(
+        execution = Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             variables={"dnd": "no"},
@@ -2011,7 +2020,7 @@ class GatingTests(TestCase):
 
     def test_missing_dnd_config_fails_open(self):
         process_agent = self._make_process_agent(dnd_config={})
-        execution = Execution.objects.create(
+        execution = Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             variables={"dnd": "true"},
@@ -2027,8 +2036,8 @@ class SchedulerTickTests(TestCase):
         next_execution=None,
         api_url="https://example.com/outbound",
     ):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Scheduler Test"
         )
         generate_journey(process_agent)
@@ -2040,7 +2049,7 @@ class SchedulerTickTests(TestCase):
         }
         communication_node.save()
 
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             status=status,
@@ -2140,8 +2149,8 @@ class SchedulerTickTests(TestCase):
 
 class OutcomeRoutingTests(TestCase):
     def _make_execution(self, callback_config=None, retry_config=None, variables=None):
-        department = Department.objects.create(name="Automobile")
-        process_agent = ProcessAgent.objects.create(
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        process_agent = ProcessAgent.objects.create(organization=make_org(),
             department=department, name="Outcome Routing Test"
         )
         generate_journey(process_agent)
@@ -2154,7 +2163,7 @@ class OutcomeRoutingTests(TestCase):
         retry_node.config = retry_config if retry_config is not None else {}
         retry_node.save()
 
-        return Execution.objects.create(
+        return Execution.objects.create(organization=make_org(),
             process_agent=process_agent,
             lead_id="lead-1",
             status="dispatched",
@@ -2221,13 +2230,13 @@ class OutcomeRoutingTests(TestCase):
         self.assertEqual(QAResult.objects.filter(execution=execution).count(), 1)
 
     def test_full_http_round_trip_creates_qa_result(self):
-        department = Department.objects.create(name="Automobile")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
         payload = _full_wizard_payload(department.id)
         client = APIClient()
         create_response = client.post("/api/telehub/process-agents/", payload, format="json")
         agent_id = create_response.data["id"]
         webhook = WebhookDefinition.objects.get(process_agent_id=agent_id)
-        execution = Execution.objects.create(process_agent_id=agent_id, lead_id="lead-http")
+        execution = Execution.objects.create(organization=make_org(), process_agent_id=agent_id, lead_id="lead-http")
 
         response = client.post(
             f"/api/telehub/webhooks/{webhook.secret}/",
@@ -2263,8 +2272,8 @@ INBOUND_PAYLOAD = {
 class InboundCallTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.department = Department.objects.create(name="Automobile")
-        voice_bot = VoiceBot.objects.create(communication_type="voice_inbound")
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        voice_bot = VoiceBot.objects.create(organization=make_org(), communication_type="voice_inbound")
         response = self.client.post(
             "/api/telehub/process-agents/",
             {"department": self.department.id, "name": "Inbound", "voice": {"voice_bot_id": voice_bot.id}},
@@ -2345,14 +2354,14 @@ def _sent_body(mock_send):
 class WhatsAppSendTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
         # Pre-POC single curl: still read as T1's.
         OmnichannelConfig.objects.create(
             process_agent=self.agent, channel="whatsapp", whatsapp_curl=INBOUND_WHATSAPP_CURL
         )
         variables = {k.lstrip("@"): v for k, v in INBOUND_PAYLOAD.items()}
-        self.execution = Execution.objects.create(
+        self.execution = Execution.objects.create(organization=make_org(),
             process_agent=self.agent, lead_id="x", status="completed", variables=variables
         )
 
@@ -2453,11 +2462,11 @@ class WhatsAppSendTests(TestCase):
 
 class HyundaiTemplatePickTests(TestCase):
     def setUp(self):
-        department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
 
     def _pick(self, **variables):
-        execution = Execution(process_agent=self.agent, lead_id="x", variables=variables)
+        execution = Execution(organization=make_org(), process_agent=self.agent, lead_id="x", variables=variables)
         return hyundai_whatsapp.pick_template(execution)
 
     def test_full_appointment_is_t1_even_on_drop_off(self):
@@ -2507,8 +2516,8 @@ class HyundaiTemplatePickTests(TestCase):
 class HyundaiAutoSendTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        department = Department.objects.create(name="Automobile")
-        voice_bot = VoiceBot.objects.create(communication_type="voice_inbound")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        voice_bot = VoiceBot.objects.create(organization=make_org(), communication_type="voice_inbound")
         response = self.client.post(
             "/api/telehub/process-agents/",
             {"department": department.id, "name": "Hyundai", "voice": {"voice_bot_id": voice_bot.id}},
@@ -2639,8 +2648,8 @@ class HyundaiAutoSendTests(TestCase):
 class OmnichannelTemplatesEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        department = Department.objects.create(name="Automobile")
-        self.agent = ProcessAgent.objects.create(department=department, name="Inbound")
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
         self.url = f"/api/telehub/process-agents/{self.agent.id}/omnichannel/"
 
     def test_patch_curls_and_auto_send_and_read_back_summary(self):
@@ -2661,3 +2670,259 @@ class OmnichannelTemplatesEndpointTests(TestCase):
     def test_unknown_template_key_400s(self):
         response = self.client.patch(self.url, {"whatsapp_curls": {"T7": "curl x"}}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 — tenancy
+# ---------------------------------------------------------------------------
+
+from io import StringIO
+
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import override_settings
+
+from .models import Membership
+from .services.tenancy import find_violations
+
+
+def _tenant_fixture(org):
+    """One of everything an org owns, all linked consistently."""
+    department = Department.objects.create(organization=org, name=f"{org.slug} dept")
+    bot = VoiceBot.objects.create(organization=org, label=f"{org.slug} bot")
+    integration = Integration.objects.create(organization=org, name=f"{org.slug} crm", type="crm")
+    agent = ProcessAgent.objects.create(organization=org, department=department, name=f"{org.slug} agent")
+    journey = BotJourney.objects.create(process_agent=agent, voice_bot=bot, name="J", order=0)
+    ProcessIntegration.objects.create(process_agent=agent, integration=integration)
+    return {
+        "department": department, "bot": bot, "integration": integration,
+        "agent": agent, "journey": journey,
+    }
+
+
+@override_settings(TELEHUB_AUTH_REQUIRED=True)
+class OrgResolutionTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.org_a = make_org("org-a")
+        self.org_b = make_org("org-b")
+        self.one = User.objects.create_user("one", password="pw")
+        Membership.objects.create(user=self.one, organization=self.org_a)
+        self.two = User.objects.create_user("two", password="pw")
+        Membership.objects.create(user=self.two, organization=self.org_a)
+        Membership.objects.create(user=self.two, organization=self.org_b)
+        self.staff = User.objects.create_user("staff", password="pw", is_staff=True)
+        _tenant_fixture(self.org_a)
+        _tenant_fixture(self.org_b)
+
+    def _get(self, user, header=None):
+        client = APIClient()
+        if user is not None:
+            client.force_authenticate(user=user)
+        extra = {"HTTP_X_ORGANIZATION": header} if header else {}
+        return client.get("/api/telehub/departments/", **extra)
+
+    def test_unauthenticated_is_rejected(self):
+        self.assertEqual(self._get(None).status_code, 401)
+
+    def test_missing_header_single_membership_ok(self):
+        response = self._get(self.one)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    def test_missing_header_multiple_memberships_is_400(self):
+        self.assertEqual(self._get(self.two).status_code, 400)
+
+    def test_non_member_is_403(self):
+        self.assertEqual(self._get(self.one, "org-b").status_code, 403)
+
+    def test_member_with_header_ok(self):
+        self.assertEqual(self._get(self.two, "org-b").status_code, 200)
+
+    def test_staff_can_act_in_any_org(self):
+        self.assertEqual(self._get(self.staff, "org-b").status_code, 200)
+
+    def test_token_and_me_endpoints(self):
+        client = APIClient()
+        token = client.post("/api/auth/token/", {"username": "two", "password": "pw"}, format="json")
+        self.assertEqual(token.status_code, 200)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.json()['access']}")
+        me = client.get("/api/auth/me/").json()
+        self.assertEqual(me["username"], "two")
+        self.assertEqual({o["slug"] for o in me["organizations"]}, {"org-a", "org-b"})
+
+
+@override_settings(TELEHUB_AUTH_REQUIRED=True)
+class CrossTenantIsolationTests(TestCase):
+    ROUTES = [
+        ("departments", "department"), ("voice-bots", "bot"),
+        ("integrations", "integration"), ("process-agents", "agent"),
+    ]
+
+    def setUp(self):
+        self.org_a = make_org("org-a")
+        self.org_b = make_org("org-b")
+        self.a = _tenant_fixture(self.org_a)
+        self.b = _tenant_fixture(self.org_b)
+        user = get_user_model().objects.create_user("a-user", password="pw")
+        Membership.objects.create(user=user, organization=self.org_a)
+        self.client = APIClient()
+        self.client.force_authenticate(user=user)
+
+    def test_list_excludes_other_org(self):
+        for route, key in self.ROUTES:
+            ids = {row["id"] for row in self.client.get(f"/api/telehub/{route}/").json()}
+            self.assertIn(self.a[key].pk, ids, route)
+            self.assertNotIn(self.b[key].pk, ids, route)
+
+    def test_other_org_objects_are_404(self):
+        for route, key in self.ROUTES:
+            url = f"/api/telehub/{route}/{self.b[key].pk}/"
+            self.assertEqual(self.client.get(url).status_code, 404, route)
+            self.assertEqual(self.client.patch(url, {"name": "x"}, format="json").status_code, 404, route)
+            self.assertEqual(self.client.delete(url).status_code, 404, route)
+
+    def test_agent_actions_on_other_org_agent_are_404(self):
+        url = f"/api/telehub/process-agents/{self.b['agent'].pk}/launch-campaign/"
+        response = self.client.post(url, {"leads": [{"to_number": "9999999999"}]}, format="json")
+        self.assertEqual(response.status_code, 404)
+
+    def test_create_ignores_client_supplied_organization(self):
+        response = self.client.post(
+            "/api/telehub/departments/", {"name": "New", "organization": self.org_b.pk}, format="json"
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Department.objects.get(pk=response.json()["id"]).organization, self.org_a)
+
+    def test_wizard_rejects_other_org_ids_and_creates_nothing(self):
+        before = ProcessAgent.objects.count()
+        payloads = [
+            {"department": self.b["department"].pk, "name": "X"},
+            {"department": self.a["department"].pk, "name": "X",
+             "voice": {"voice_bot_id": self.b["bot"].pk}},
+            {"department": self.a["department"].pk, "name": "X",
+             "integrations": [self.b["integration"].pk]},
+        ]
+        for payload in payloads:
+            response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+            self.assertEqual(response.status_code, 400, payload)
+        self.assertEqual(ProcessAgent.objects.count(), before)
+
+    def test_wizard_stamps_org_on_created_rows(self):
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": self.a["department"].pk, "name": "Ok",
+             "voice": {"voice_bot_id": self.a["bot"].pk},
+             "lead_source": {"type": "upload"}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        agent = ProcessAgent.objects.get(pk=response.json()["id"])
+        self.assertEqual(agent.organization, self.org_a)
+        self.assertEqual({ls.organization for ls in agent.lead_sources.all()}, {self.org_a})
+
+    def test_attach_other_org_integration_is_400(self):
+        response = self.client.post(
+            f"/api/telehub/process-agents/{self.a['agent'].pk}/integrations/",
+            {"integration": self.b["integration"].pk},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_webhook_intake_is_unauthenticated_and_routes_in_webhooks_org(self):
+        webhook = WebhookDefinition.objects.create(
+            organization=self.org_b, process_agent=self.b["agent"], name="cb", secret="s3cret"
+        )
+        execution = Execution.objects.create(
+            organization=self.org_b, process_agent=self.b["agent"], lead_id="1", status="pending",
+            variables={"to_number": "+911234567890"},
+        )
+        response = APIClient().post(
+            f"/api/telehub/webhooks/{webhook.secret}/",
+            {"dlr_id": str(execution.id), "marker": "seen"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        execution.refresh_from_db()
+        self.assertEqual(execution.variables.get("marker"), "seen")
+        self.assertEqual(execution.organization, self.org_b)
+
+    def test_launch_campaign_stamps_execution_org(self):
+        launch_campaign(self.b["agent"], {"campaign_id": "c", "leads": [{"to_number": "9999999999"}]})
+        execution = Execution.objects.get(process_agent=self.b["agent"])
+        self.assertEqual(execution.organization, self.org_b)
+
+    def test_duplicate_webhook_secret_rejected(self):
+        WebhookDefinition.objects.create(
+            organization=self.org_a, process_agent=self.a["agent"], name="x", secret="dup"
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            WebhookDefinition.objects.create(
+                organization=self.org_a, process_agent=self.a["agent"], name="y", secret="dup"
+            )
+        # blank secrets are exempt
+        WebhookDefinition.objects.create(organization=self.org_a, process_agent=self.a["agent"], name="p")
+        WebhookDefinition.objects.create(organization=self.org_a, process_agent=self.a["agent"], name="q")
+
+
+class AuthFlagOffTests(TestCase):
+    @override_settings(TELEHUB_AUTH_REQUIRED=False)
+    def test_unauthenticated_requests_use_default_org(self):
+        default = make_org("excell-autovista")
+        other = make_org("org-b")
+        mine = Department.objects.create(organization=default, name="mine")
+        Department.objects.create(organization=other, name="theirs")
+        response = APIClient().get("/api/telehub/departments/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.json()], [mine.pk])
+
+
+class TenancyCommandTests(TestCase):
+    def setUp(self):
+        self.default = make_org("excell-autovista")
+        self.a = _tenant_fixture(self.default)
+
+    def _assign(self, dry_run):
+        call_command(
+            "assign_org", org="hyundai-poc", org_name="", departments=[self.a["department"].pk],
+            dry_run=dry_run, stdout=StringIO(),
+        )
+
+    def test_check_tenancy_clean(self):
+        self.assertEqual(find_violations(), [])
+
+    def test_check_tenancy_detects_mismatched_bot(self):
+        other = make_org("org-b")
+        foreign_bot = VoiceBot.objects.create(organization=other, label="foreign")
+        self.a["journey"].voice_bot = foreign_bot
+        self.a["journey"].save()
+        rules = [rule for rule, _ in find_violations()]
+        self.assertTrue(any(rule.startswith("BotJourney.voice_bot") for rule in rules))
+        with self.assertRaises(CommandError):
+            call_command("check_tenancy", stdout=StringIO())
+
+    def test_assign_org_moves_whole_tree(self):
+        Execution.objects.create(
+            organization=self.default, process_agent=self.a["agent"], lead_id="1", status="pending"
+        )
+        self._assign(dry_run=True)
+        self.assertFalse(Organization.objects.filter(slug="hyundai-poc").exists())
+
+        self._assign(dry_run=False)
+        hyundai = Organization.objects.get(slug="hyundai-poc")
+        for obj in (self.a["department"], self.a["agent"], self.a["bot"], self.a["integration"]):
+            obj.refresh_from_db()
+            self.assertEqual(obj.organization, hyundai)
+        self.assertEqual(Execution.objects.get(process_agent=self.a["agent"]).organization, hyundai)
+        self.assertEqual(find_violations(), [])
+
+    def test_assign_org_refuses_bot_shared_with_staying_agent(self):
+        staying_dept = Department.objects.create(organization=self.default, name="stay")
+        staying_agent = ProcessAgent.objects.create(
+            organization=self.default, department=staying_dept, name="stay"
+        )
+        BotJourney.objects.create(process_agent=staying_agent, voice_bot=self.a["bot"], name="J", order=0)
+        with self.assertRaises(CommandError):
+            self._assign(dry_run=False)
+        self.a["department"].refresh_from_db()
+        self.assertEqual(self.a["department"].organization, self.default)

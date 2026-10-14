@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { SidebarProvider, useSidebar } from "@/context/SidebarContext";
 import { Sidebar } from "./Sidebar";
 import { TopHeader } from "./TopHeader";
@@ -22,6 +23,8 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
+  // The login page is the one screen outside the app chrome.
+  if (usePathname() === "/login") return <>{children}</>;
   return (
     <SidebarProvider>
       <Shell>{children}</Shell>

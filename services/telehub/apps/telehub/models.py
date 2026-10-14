@@ -1,9 +1,60 @@
+from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 
 
+class TenantQuerySet(models.QuerySet):
+    """Explicit org scoping — no implicit "current org" filtering (see Phase 0 plan §3.5)."""
+
+    def for_org(self, org):
+        return self.filter(organization=org)
+
+
+def _org_fk(related_name):
+    return models.ForeignKey(
+        "Organization", on_delete=models.PROTECT, related_name=related_name, db_index=True
+    )
+
+
+class Organization(models.Model):
+    """A tenant (e.g. Excell Autovista, Hyundai POC). Created by platform staff only."""
+
+    name = models.CharField(max_length=128)
+    slug = models.SlugField(unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Membership(models.Model):
+    ROLE_ADMIN = "admin"
+    ROLE_MEMBER = "member"
+    ROLE_CHOICES = [(ROLE_ADMIN, "Admin"), (ROLE_MEMBER, "Member")]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships"
+    )
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="memberships"
+    )
+    role = models.CharField(max_length=16, choices=ROLE_CHOICES, default=ROLE_MEMBER)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("user", "organization")]
+
+    def __str__(self):
+        return f"{self.user_id} @ {self.organization_id} ({self.role})"
+
+
 class Department(models.Model):
     """A business department (e.g. Automobile > Sales, Healthcare > Billing)."""
+
+    organization = _org_fk("departments")
+    objects = TenantQuerySet.as_manager()
 
     name = models.CharField(max_length=128)
     description = models.TextField(blank=True, default="")
@@ -19,6 +70,9 @@ class Department(models.Model):
 
 class ProcessAgent(models.Model):
     """The core entity of the platform — one Process == one AI agent."""
+
+    organization = _org_fk("process_agents")
+    objects = TenantQuerySet.as_manager()
 
     department = models.ForeignKey(
         Department, on_delete=models.CASCADE, related_name="process_agents"
@@ -67,6 +121,9 @@ class VoiceBot(models.Model):
     several process agents. See BotJourney for how a VoiceBot is wired into
     the call flow.
     """
+
+    organization = _org_fk("voice_bots")
+    objects = TenantQuerySet.as_manager()
 
     label = models.CharField(max_length=128, blank=True, default="")
     communication_type = models.CharField(max_length=32, blank=True, default="")
@@ -162,6 +219,9 @@ class NodeConnection(models.Model):
 class LeadSource(models.Model):
     """Where leads for a ProcessAgent come from (Meta, Webhook, CRM, ...)."""
 
+    organization = _org_fk("lead_sources")
+    objects = TenantQuerySet.as_manager()
+
     process_agent = models.ForeignKey(
         ProcessAgent, on_delete=models.CASCADE, related_name="lead_sources"
     )
@@ -176,6 +236,9 @@ class LeadSource(models.Model):
 
 class Integration(models.Model):
     """An external system (CRM, WhatsApp, REST API, Google Sheets, ...)."""
+
+    organization = _org_fk("integrations")
+    objects = TenantQuerySet.as_manager()
 
     name = models.CharField(max_length=128)
     type = models.CharField(max_length=64)
@@ -207,6 +270,9 @@ class ProcessIntegration(models.Model):
 
 class Execution(models.Model):
     """A single run of a ProcessAgent for a lead."""
+
+    organization = _org_fk("executions")
+    objects = TenantQuerySet.as_manager()
 
     process_agent = models.ForeignKey(
         ProcessAgent, on_delete=models.CASCADE, related_name="executions"
@@ -409,6 +475,9 @@ class WhatsAppSend(models.Model):
 class WebhookDefinition(models.Model):
     """An auto-generated webhook (voice bot callbacks, CRM callbacks, ...)."""
 
+    organization = _org_fk("webhooks")
+    objects = TenantQuerySet.as_manager()
+
     process_agent = models.ForeignKey(
         ProcessAgent, on_delete=models.CASCADE, related_name="webhooks"
     )
@@ -418,6 +487,15 @@ class WebhookDefinition(models.Model):
     schema = models.JSONField(default=dict)
     status = models.CharField(max_length=32, default="active")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["secret"],
+                condition=~models.Q(secret=""),
+                name="unique_webhook_secret",
+            )
+        ]
 
     def __str__(self):
         return self.name
