@@ -15,8 +15,8 @@ always ack 200, so nothing here raises.
 """
 from django.utils import timezone
 
-from ..models import Execution
-from . import hyundai_whatsapp, outcome_routing
+from ..models import Execution, ExecutionEvent
+from . import handoff, numbers, omnichannel, outcome_routing
 
 INBOUND_COMMUNICATION_TYPE = "voice_inbound"
 INBOUND_CAMPAIGN_ID = "inbound"
@@ -49,10 +49,16 @@ def normalize_payload(payload: dict) -> dict:
 
 def _is_duplicate(process_agent, payload: dict) -> bool:
     """
-    The inbound payload carries no session_id, so a resend is recognised by
-    the same caller_number + call_start_time. Without a call_start_time
-    there's nothing reliable to dedupe on, so the call is always recorded.
+    A resend is recognised by session_id when the payload carries one (real
+    inbound payloads do). Older payloads without it fall back to the same
+    caller_number + call_start_time — a time with no date, so it can collide
+    across days, which is why session_id is preferred. Without either there's
+    nothing reliable to dedupe on, so the call is always recorded.
     """
+    session_id = payload.get("session_id")
+    if session_id:
+        return process_agent.executions.filter(variables__session_id=session_id).exists()
+
     caller_number = payload.get("caller_number")
     call_start_time = payload.get("call_start_time")
     if not caller_number or not call_start_time:
@@ -79,6 +85,10 @@ def record_inbound_call(process_agent, payload: dict):
 
         caller_number = str(payload.get("caller_number") or "")
         now = timezone.now()
+        # Customers dial a specific DID; one that isn't among this agent's inbound
+        # numbers is still recorded, but flagged so rules and the Calls tab can see it.
+        callee_check = numbers.check_callee(process_agent, payload)
+        extra_variables = {"did_mismatch": True} if callee_check["mismatch"] else {}
         execution = Execution.objects.create(
             process_agent=process_agent,
             organization=process_agent.organization,
@@ -92,11 +102,18 @@ def record_inbound_call(process_agent, payload: dict):
             duration=_parse_duration(payload.get("call_duration")),
             # to_number mirrors the outbound convention so anything that
             # re-contacts the lead (WhatsApp, a follow-up dial) finds it there.
-            variables={**payload, "to_number": caller_number},
+            variables={**payload, **extra_variables, "to_number": caller_number},
             next_execution=None,
         )
+        if callee_check["mismatch"]:
+            ExecutionEvent.objects.create(
+                execution=execution,
+                event_type="did_mismatch",
+                payload={"callee_number": callee_check["callee"], "expected": callee_check["expected"]},
+            )
         outcome_routing.record_completion(execution, payload)
-        hyundai_whatsapp.on_call_completed(execution)
+        omnichannel.on_call_completed(execution)
+        handoff.run_completed_transitions(execution)
         return execution
     except Exception:
         return None

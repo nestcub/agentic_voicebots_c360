@@ -5,6 +5,7 @@ from ...models import (
     Department,
     Execution,
     Integration,
+    PhoneNumber,
     LeadSource,
     Organization,
     ProcessAgent,
@@ -90,5 +91,6 @@ class Command(BaseCommand):
             LeadSource.objects.filter(process_agent_id__in=agent_ids).update(organization=target)
             WebhookDefinition.objects.filter(process_agent_id__in=agent_ids).update(organization=target)
             VoiceBot.objects.filter(pk__in=bot_ids).update(organization=target)
+            PhoneNumber.objects.filter(voice_bot_id__in=bot_ids).update(organization=target)
             Integration.objects.filter(pk__in=integration_ids).update(organization=target)
         self.stdout.write(self.style.SUCCESS("Done. Now run: manage.py check_tenancy"))

@@ -19,6 +19,12 @@ import type {
   Execution,
   CallRow,
   WhatsAppPreview,
+  ChannelRule,
+  ChannelRuleCheck,
+  ChannelParamEntry,
+  ChannelTemplate,
+  ChannelTemplateList,
+  WhatsAppFillResult,
   WhatsAppSendResult,
   QaResult,
   ProcessAgentStats,
@@ -32,6 +38,7 @@ import type {
   WebhookDefinition,
   ProcessAgentIntegration,
   BotJourney,
+  JourneyTransition,
   VoiceBot,
 } from "./types";
 
@@ -208,6 +215,15 @@ export function sendWhatsApp(
   });
 }
 
+/** Fills the empty variables a blocked WhatsApp send is waiting on and sends it right away. */
+export function fillWhatsAppSend(
+  id: number,
+  sendId: number,
+  values: Record<string, string>,
+): Promise<WhatsAppFillResult> {
+  return post<WhatsAppFillResult>(`/process-agents/${id}/whatsapp-sends/${sendId}/fill/`, { values });
+}
+
 export function getProcessAgentQaResults(id: number): Promise<QaResult[]> {
   return get<QaResult[]>(`/process-agents/${id}/qa_results/`);
 }
@@ -220,10 +236,59 @@ export function getProcessAgentAnalytics(id: number): Promise<ProcessAgentAnalyt
   return get<ProcessAgentAnalytics>(`/process-agents/${id}/analytics/`);
 }
 
-// A ProcessAgent's BotJourney(s), created by the wizard — read-only here.
+// A ProcessAgent's voicebot stages (BotJourneys): the wizard creates the first, more are added below.
 // Used to resolve bot_journey_id for the Runs/QA tabs' dispatch actions.
 export function getProcessAgentBotJourneys(id: number): Promise<BotJourney[]> {
   return get<BotJourney[]>(`/process-agents/${id}/journeys/`);
+}
+
+export interface StageWrite {
+  name?: string;
+  voice_bot?: number;
+  /** Ids of the bot's numbers this stage uses; [] = all of them. */
+  numbers?: number[];
+  order?: number;
+}
+
+export function createStage(id: number, data: StageWrite): Promise<BotJourney> {
+  return post<BotJourney>(`/process-agents/${id}/journeys/`, data);
+}
+
+export function updateStage(id: number, stageId: number, data: StageWrite): Promise<BotJourney> {
+  return patch<BotJourney>(`/process-agents/${id}/journeys/${stageId}/`, data);
+}
+
+export function deleteStage(id: number, stageId: number): Promise<void> {
+  return del(`/process-agents/${id}/journeys/${stageId}/`);
+}
+
+export interface JourneyTransitionWrite {
+  from_journey?: number;
+  to_journey?: number;
+  on?: "completed" | "retries_exhausted";
+  priority?: number;
+  match?: "all" | "any";
+  checks?: ChannelRuleCheck[];
+}
+
+export function listJourneyTransitions(id: number): Promise<JourneyTransition[]> {
+  return get<JourneyTransition[]>(`/process-agents/${id}/journey-transitions/`);
+}
+
+export function createJourneyTransition(id: number, data: JourneyTransitionWrite): Promise<JourneyTransition> {
+  return post<JourneyTransition>(`/process-agents/${id}/journey-transitions/`, data);
+}
+
+export function updateJourneyTransition(
+  id: number,
+  transitionId: number,
+  data: JourneyTransitionWrite,
+): Promise<JourneyTransition> {
+  return patch<JourneyTransition>(`/process-agents/${id}/journey-transitions/${transitionId}/`, data);
+}
+
+export function deleteJourneyTransition(id: number, transitionId: number): Promise<void> {
+  return del(`/process-agents/${id}/journey-transitions/${transitionId}/`);
 }
 
 // ── Bots (global VoiceBot library — dashboard's /bots page) ─────────────
@@ -280,7 +345,10 @@ export function updateProcessAgentAnalyticsStats(
 }
 
 export type ProcessAgentVariableWrite = Partial<
-  Pick<ProcessAgentVariable, "key" | "type" | "default_value" | "label" | "required" | "source">
+  Pick<
+    ProcessAgentVariable,
+    "key" | "type" | "default_value" | "label" | "required" | "source" | "use_in_qa" | "use_in_analytics"
+  >
 >;
 
 export function createProcessAgentVariable(
@@ -324,6 +392,65 @@ export function updateProcessAgentOmnichannel(
   data: OmnichannelConfigWrite,
 ): Promise<OmnichannelConfigWrite> {
   return patch<OmnichannelConfigWrite>(`/process-agents/${id}/omnichannel/`, data);
+}
+
+// Omnichannel: WhatsApp templates (curl write-only) and the rules that pick between them.
+
+export interface ChannelTemplateWrite {
+  name?: string;
+  /** Required on create; omit or leave blank on update to keep the stored curl. */
+  curl?: string;
+  missing_fill?: string;
+  is_active?: boolean;
+  param_map?: Record<string, ChannelParamEntry>;
+}
+
+export function listChannelTemplates(id: number): Promise<ChannelTemplateList> {
+  return get<ChannelTemplateList>(`/process-agents/${id}/channel-templates/`);
+}
+
+export function createChannelTemplate(id: number, data: ChannelTemplateWrite): Promise<ChannelTemplate> {
+  return post<ChannelTemplate>(`/process-agents/${id}/channel-templates/`, data);
+}
+
+export function updateChannelTemplate(
+  id: number,
+  templateId: number,
+  data: ChannelTemplateWrite,
+): Promise<ChannelTemplate> {
+  return patch<ChannelTemplate>(`/process-agents/${id}/channel-templates/${templateId}/`, data);
+}
+
+export function deleteChannelTemplate(id: number, templateId: number): Promise<void> {
+  return del(`/process-agents/${id}/channel-templates/${templateId}/`);
+}
+
+export interface ChannelRuleWrite {
+  action?: "send" | "skip";
+  template?: number | null;
+  match?: "all" | "any";
+  checks?: ChannelRuleCheck[];
+  reason?: string;
+}
+
+export function listChannelRules(id: number): Promise<ChannelRule[]> {
+  return get<ChannelRule[]>(`/process-agents/${id}/channel-rules/`);
+}
+
+export function createChannelRule(id: number, data: ChannelRuleWrite): Promise<ChannelRule> {
+  return post<ChannelRule>(`/process-agents/${id}/channel-rules/`, data);
+}
+
+export function updateChannelRule(id: number, ruleId: number, data: ChannelRuleWrite): Promise<ChannelRule> {
+  return patch<ChannelRule>(`/process-agents/${id}/channel-rules/${ruleId}/`, data);
+}
+
+export function deleteChannelRule(id: number, ruleId: number): Promise<void> {
+  return del(`/process-agents/${id}/channel-rules/${ruleId}/`);
+}
+
+export function reorderChannelRules(id: number, order: number[]): Promise<ChannelRule[]> {
+  return post<ChannelRule[]>(`/process-agents/${id}/channel-rules/reorder/`, { order });
 }
 
 export function attachProcessAgentIntegration(

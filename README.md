@@ -86,3 +86,8 @@ cd services/telehub
 ../../venv/bin/python manage.py test apps.telehub -v 2          # add --keepdb --noinput after an interrupted run
 cd ../../dashboard && npx tsc --noEmit                          # the dashboard's only check
 ```
+
+django admin panel
+username: admin
+password: admin123
+

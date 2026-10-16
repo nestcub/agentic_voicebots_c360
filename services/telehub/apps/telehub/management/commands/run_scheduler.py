@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.telehub.models import Execution
-from apps.telehub.services import dispatcher, gating, hyundai_whatsapp
+from apps.telehub.services import dispatcher, gating, omnichannel
 
 POLLABLE_STATUSES = ["pending", "retry_scheduled", "callback_scheduled"]
 
@@ -43,7 +43,7 @@ def tick() -> int:
 def run_once() -> tuple:
     """One scheduler tick: due outbound calls, then due automatic WhatsApp sends."""
     calls = tick()
-    messages = hyundai_whatsapp.process_due_sends()
+    messages = omnichannel.process_due_sends()
     return calls, messages
 
 

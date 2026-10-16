@@ -7,14 +7,25 @@ from ..models import (
     Department,
     Execution,
     Integration,
+    JourneyTransition,
     LeadSource,
+    PhoneNumber,
     ProcessAgent,
     ProcessIntegration,
     VoiceBot,
     WebhookDefinition,
 )
 
-TENANT_MODELS = [Department, ProcessAgent, VoiceBot, Integration, LeadSource, WebhookDefinition, Execution]
+TENANT_MODELS = [
+    Department,
+    ProcessAgent,
+    VoiceBot,
+    PhoneNumber,
+    Integration,
+    LeadSource,
+    WebhookDefinition,
+    Execution,
+]
 
 
 def find_violations():
@@ -43,6 +54,26 @@ def find_violations():
         (
             "Execution.organization != process_agent.organization",
             Execution.objects.exclude(organization=F("process_agent__organization")),
+        ),
+        (
+            "PhoneNumber.organization != voice_bot.organization",
+            PhoneNumber.objects.exclude(organization=F("voice_bot__organization")),
+        ),
+        (
+            "BotJourney.numbers includes a number of a different voice bot",
+            BotJourney.numbers.through.objects.exclude(phonenumber__voice_bot=F("botjourney__voice_bot")),
+        ),
+        (
+            "JourneyTransition stages belong to a different process agent",
+            JourneyTransition.objects.exclude(
+                from_journey__process_agent=F("process_agent"), to_journey__process_agent=F("process_agent")
+            ),
+        ),
+        (
+            "Execution.parent_execution belongs to a different process agent",
+            Execution.objects.filter(parent_execution__isnull=False).exclude(
+                parent_execution__process_agent=F("process_agent")
+            ),
         ),
         (
             "LeadSource.organization != process_agent.organization",

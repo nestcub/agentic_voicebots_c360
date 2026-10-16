@@ -1,6 +1,6 @@
 """
 Sends a Chat360 WhatsApp template to one Execution's lead, using a pasted curl
-command (one per template, see hyundai_whatsapp.template_curl) as the request
+command (one per template, see omnichannel.template_curl) as the request
 template — URL, headers and JSON body are all taken from it verbatim, then
 filled in per lead:
 
@@ -33,6 +33,7 @@ RESPONSE_BODY_TRUNCATE_LEN = 500
 
 EVENT_SENT = "whatsapp_sent"
 EVENT_FAILED = "whatsapp_failed"
+EVENT_BLOCKED = "whatsapp_blocked"
 
 _HEADER_FLAGS = {"-H", "--header"}
 _DATA_FLAGS = {"-d", "--data", "--data-raw", "--data-binary"}
@@ -93,14 +94,24 @@ def _receiver_number(execution: "Execution") -> str:
     return _normalize_phone(variables.get("caller_number") or variables.get("to_number"))
 
 
-def build_request(execution: "Execution", curl: str, missing_fill=None, variables=None) -> dict:
+def build_request(
+    execution: "Execution", curl: str, missing_fill=None, variables=None, param_map=None
+) -> dict:
     """
     Fills `curl` in for this execution. Returns {"url", "headers", "body",
-    "receiver_number", "template_title", "params", "missing", "error"} —
-    "error" is set (and the rest may be empty) when the curl is empty or
-    unusable. With missing_fill, empty variable params are sent as that text
-    and are not reported in "missing". `variables` overrides
-    execution.variables (e.g. with aliases applied). Never raises.
+    "receiver_number", "template_title", "params", "missing",
+    "missing_variables", "error"} — "error" is set (and the rest may be empty)
+    when the curl is empty or unusable. With missing_fill, empty variable
+    params are sent as that text and are not reported in "missing". `variables`
+    overrides execution.variables (e.g. with aliases applied). Never raises.
+
+    `param_map` ({param key: entry}, ChannelTemplate.param_map) says where a
+    param's value comes from: {"variable": name[, "fallback": other_name]}
+    reads that variable, {"fixed": text} sends that text. A param with no
+    entry is resolved the old way, by the curl's own placeholder text (a bare
+    name, "@name", or the param key itself). "missing" lists the empty
+    params' keys; "missing_variables" the variable names behind them, which
+    is what someone has to fill in to unblock the send.
     """
     result = {
         "url": "",
@@ -110,6 +121,7 @@ def build_request(execution: "Execution", curl: str, missing_fill=None, variable
         "template_title": "",
         "params": {},
         "missing": [],
+        "missing_variables": [],
         "error": None,
     }
     if not (curl or "").strip():
@@ -139,13 +151,30 @@ def build_request(execution: "Execution", curl: str, missing_fill=None, variable
         if not isinstance(param_data, dict):
             continue
         for key, placeholder in param_data.items():
-            name = placeholder.lstrip("@") if isinstance(placeholder, str) else None
-            is_variable = name is not None and (name == key or placeholder.startswith("@") or name in variables)
+            entry = (param_map or {}).get(key)
+            entry = entry if isinstance(entry, dict) else {}
+            if "fixed" in entry:
+                param_data[key] = str(entry["fixed"])
+                result["params"][key] = param_data[key]
+                continue
+
+            fallback = None
+            if entry.get("variable"):
+                name, is_variable, fallback = str(entry["variable"]), True, entry.get("fallback")
+            else:
+                name = placeholder.lstrip("@") if isinstance(placeholder, str) else None
+                is_variable = name is not None and (
+                    name == key or placeholder.startswith("@") or name in variables
+                )
             if is_variable:
                 value = variables.get(name)
+                if (value is None or str(value).strip() == "") and fallback:
+                    value = variables.get(fallback)
                 if value is None or str(value).strip() == "":
                     if missing_fill is None:
                         result["missing"].append(key)
+                        if name not in result["missing_variables"]:
+                            result["missing_variables"].append(name)
                         value = ""
                     else:
                         value = missing_fill
@@ -159,32 +188,43 @@ def build_request(execution: "Execution", curl: str, missing_fill=None, variable
     return result
 
 
-def preview(execution: "Execution", curl: str, missing_fill=None, variables=None) -> dict:
+def preview(execution: "Execution", curl: str, missing_fill=None, variables=None, param_map=None) -> dict:
     """What a send would deliver — no headers (they carry the API key)."""
-    request = build_request(execution, curl, missing_fill, variables)
+    request = build_request(execution, curl, missing_fill, variables, param_map)
     return {
         "execution_id": execution.id,
         "receiver_number": request["receiver_number"],
         "template_title": request["template_title"],
         "params": request["params"],
         "missing": request["missing"],
+        "missing_variables": request["missing_variables"],
         "error": request["error"],
     }
 
 
 def send_whatsapp(
-    execution: "Execution", curl: str, missing_fill=None, variables=None, template_key: str = ""
+    execution: "Execution",
+    curl: str,
+    missing_fill=None,
+    variables=None,
+    template_key: str = "",
+    param_map=None,
 ) -> dict:
     """
     POSTs the filled-in template. Returns {"execution_id", "success",
-    "status_code", "error", "retryable"} — retryable is True only for a
-    network error or a 5xx (a 4xx, bad curl or missing values won't get
-    better by resending). Never raises.
+    "status_code", "error", "retryable", "blocked", "missing"} — retryable is
+    True only for a network error or a 5xx (a 4xx or bad curl won't get better
+    by resending). "blocked" is True when the only problem is empty variables
+    someone can fill in; "missing" then lists those variable names. A missing
+    receiver number is a plain failure, not blocked: there is no variable to
+    fill. Nothing is sent when blocked. Never raises.
     """
-    request = build_request(execution, curl, missing_fill, variables)
+    request = build_request(execution, curl, missing_fill, variables, param_map)
     error = request["error"]
+    blocked = False
     if not error and request["missing"]:
         error = "missing values for: " + ", ".join(request["missing"])
+        blocked = "receiver_number" not in request["missing"]
 
     status_code, response_body, retryable = None, "", False
     if not error:
@@ -200,13 +240,15 @@ def send_whatsapp(
             error = str(exc)
             retryable = True
 
-    if error:
+    if blocked:
+        logger.info("whatsapp send blocked: execution=%s template=%s %s", execution.id, template_key, error)
+    elif error:
         logger.error("whatsapp send failed: execution=%s template=%s %s", execution.id, template_key, error)
 
     try:
         ExecutionEvent.objects.create(
             execution=execution,
-            event_type=EVENT_FAILED if error else EVENT_SENT,
+            event_type=EVENT_BLOCKED if blocked else (EVENT_FAILED if error else EVENT_SENT),
             payload={
                 "template_key": template_key,
                 "receiver_number": request["receiver_number"],
@@ -226,4 +268,6 @@ def send_whatsapp(
         "status_code": status_code,
         "error": error,
         "retryable": retryable,
+        "blocked": blocked,
+        "missing": request["missing_variables"] if blocked else [],
     }

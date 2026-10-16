@@ -42,7 +42,7 @@ import {
   type VoiceBotWrite,
 } from "@/lib/telehubApi";
 import type { VoiceBot } from "@/lib/types";
-import { COMMUNICATION_TYPE_LABELS, errorMessage } from "@/components/process-agents/shared";
+import { COMMUNICATION_TYPE_LABELS, apiErrorText, errorMessage } from "@/components/process-agents/shared";
 
 // Trailing slash required — without it Chat360 307-redirects here (see
 // services/telehub/apps/telehub/services/dispatcher.py, which follows it
@@ -210,7 +210,7 @@ function BotDialog({
       onSaved();
       onOpenChange(false);
     } catch (e) {
-      setError(errorMessage(e, bot ? "Failed to update bot" : "Failed to create bot"));
+      setError(apiErrorText(e, errorMessage(e, bot ? "Failed to update bot" : "Failed to create bot")));
     } finally {
       setSaving(false);
     }

@@ -12,15 +12,19 @@ from rest_framework.test import APIClient
 
 from .models import (
     BotJourney,
+    ChannelRule,
+    ChannelTemplate,
     Department,
     Execution,
     ExecutionEvent,
     Integration,
+    JourneyTransition,
     LeadSource,
     NodeConnection,
     NodeInstance,
     NodeTemplate,
     OmnichannelConfig,
+    PhoneNumber,
     ProcessAgent,
     Variable,
     VoiceBot,
@@ -29,7 +33,8 @@ from .models import (
     ProcessIntegration,
     QAResult,
 )
-from .services import hyundai_whatsapp
+from .services import conditions, handoff, omnichannel, omnichannel_seed, outcome_routing
+from .services import numbers as numbers_service
 from .services.callback_schedule import schedule_callback
 from .services.callback_time import parse_call_back_time
 from .services.campaign_launch import launch_campaign
@@ -289,7 +294,10 @@ def _full_wizard_payload(department_id, name="Free Service 1", voice_bot_id=None
 
 class ProcessAgentWizardCreateTests(TestCase):
     def setUp(self):
+        user = get_user_model().objects.create_user("wizard", password="pw")
+        Membership.objects.create(user=user, organization=make_org())
         self.client = APIClient()
+        self.client.force_authenticate(user=user)
         self.department = Department.objects.create(organization=make_org(), name="Automobile")
 
     def test_full_wizard_payload_creates_agent_with_nodes_and_related_rows(self):
@@ -335,6 +343,65 @@ class ProcessAgentWizardCreateTests(TestCase):
         variable = agent.variables.get()
         self.assertEqual(variable.key, "customer_name")
         self.assertTrue(variable.required)
+
+    def _bot_with_dids(self, dids):
+        from .services.numbers import sync_bot_numbers
+
+        bot = VoiceBot.objects.create(
+            organization=self.department.organization, communication_type="voice_inbound", dids=dids
+        )
+        sync_bot_numbers(bot)
+        return bot
+
+    def test_wizard_assigns_the_chosen_number_to_the_first_stage(self):
+        bot = self._bot_with_dids(["917965311524", "917965311525"])
+        number = bot.numbers.get(did="917965311525")
+        payload = {
+            "department": self.department.id,
+            "name": "X",
+            "voice": {"voice_bot_id": bot.id, "numbers": [number.id]},
+        }
+
+        response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        journey = ProcessAgent.objects.get(id=response.data["id"]).bot_journeys.get()
+        self.assertEqual([n.id for n in journey.numbers.all()], [number.id])
+
+    def test_wizard_without_numbers_leaves_the_stage_automatic(self):
+        bot = self._bot_with_dids(["917965311524"])
+        payload = {"department": self.department.id, "name": "X", "voice": {"voice_bot_id": bot.id}}
+
+        response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(ProcessAgent.objects.get(id=response.data["id"]).bot_journeys.get().numbers.count(), 0)
+
+    def test_wizard_rejects_a_number_of_another_bot_and_creates_nothing(self):
+        bot = self._bot_with_dids(["917965311524"])
+        other = self._bot_with_dids(["917965311599"])
+        payload = {
+            "department": self.department.id,
+            "name": "X",
+            "voice": {"voice_bot_id": bot.id, "numbers": [other.numbers.get().id]},
+        }
+
+        response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertFalse(ProcessAgent.objects.filter(name="X").exists())
+
+    def test_wizard_rejects_more_than_one_number(self):
+        bot = self._bot_with_dids(["917965311524", "917965311525"])
+        payload = {
+            "department": self.department.id,
+            "name": "X",
+            "voice": {"voice_bot_id": bot.id, "numbers": [n.id for n in bot.numbers.all()]},
+        }
+
+        response = self.client.post("/api/telehub/process-agents/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
 
     def test_minimal_payload_still_creates_nine_nodes_with_no_related_rows(self):
         payload = {"department": self.department.id, "name": "X"}
@@ -2322,6 +2389,125 @@ class InboundCallTests(TestCase):
         self.assertEqual(response.data[0]["variables"]["model_name"], "Brezza")
         self.assertIsNone(response.data[0]["whatsapp"])
 
+    def test_session_id_resend_is_ignored_even_when_start_time_differs(self):
+        self._post_call({**INBOUND_PAYLOAD, "session_id": "s-1"})
+        self._post_call({**INBOUND_PAYLOAD, "session_id": "s-1", "@call_start_time": "2026-10-07 09:00:00"})
+        self.assertEqual(Execution.objects.filter(process_agent=self.agent).count(), 1)
+
+    def test_same_start_time_with_different_session_ids_are_two_calls(self):
+        self._post_call({**INBOUND_PAYLOAD, "session_id": "s-1"})
+        self._post_call({**INBOUND_PAYLOAD, "session_id": "s-2"})
+        self.assertEqual(Execution.objects.filter(process_agent=self.agent).count(), 2)
+
+
+class VariableDiscoveryTests(TestCase):
+    def setUp(self):
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        voice_bot = VoiceBot.objects.create(organization=make_org(), communication_type="voice_inbound")
+        self.client = APIClient()
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": department.id, "name": "Inbound", "voice": {"voice_bot_id": voice_bot.id}},
+            format="json",
+        )
+        self.agent = ProcessAgent.objects.get(pk=response.data["id"])
+        self.webhook = WebhookDefinition.objects.get(process_agent=self.agent)
+
+    def _post(self, payload):
+        return self.client.post(f"/api/telehub/webhooks/{self.webhook.secret}/", payload, format="json")
+
+    def test_webhook_creates_unticked_discovered_variables(self):
+        self._post({"complaint_query": "engine noise", "workshop": "Andheri"})
+
+        variable = self.agent.variables.get(key="complaint_query")
+        self.assertTrue(variable.discovered)
+        self.assertFalse(variable.use_in_qa)
+        self.assertFalse(variable.use_in_analytics)
+        self.assertEqual(variable.sample_value, "engine noise")
+        self.assertIsNotNone(variable.last_seen_at)
+        self.assertTrue(self.agent.variables.filter(key="workshop").exists())
+
+    def test_platform_keys_are_not_discovered(self):
+        self._post({**INBOUND_PAYLOAD, "session_id": "s-1", "is_test": "False", "date": "14-10-2026"})
+
+        keys = set(self.agent.variables.values_list("key", flat=True))
+        self.assertIn("customer_name", keys)  # "@customer_name" is stripped to a plain key
+        for ignored in ("session_id", "caller_number", "callee_number", "call_start_time", "call_duration", "is_test", "date"):
+            self.assertNotIn(ignored, keys)
+
+    def test_rediscovery_keeps_user_ticks_and_refreshes_sample(self):
+        self._post({"complaint_query": "engine noise"})
+        variable = self.agent.variables.get(key="complaint_query")
+        variable.use_in_qa = True
+        variable.save()
+
+        self._post({"complaint_query": "brake issue"})
+
+        variable.refresh_from_db()
+        self.assertEqual(self.agent.variables.filter(key="complaint_query").count(), 1)
+        self.assertTrue(variable.use_in_qa)
+        self.assertEqual(variable.sample_value, "brake issue")
+
+    def test_empty_value_does_not_blank_the_sample(self):
+        self._post({"complaint_query": "engine noise"})
+        self._post({"complaint_query": ""})
+
+        self.assertEqual(self.agent.variables.get(key="complaint_query").sample_value, "engine noise")
+
+    def test_declared_variable_is_not_marked_discovered(self):
+        Variable.objects.create(process_agent=self.agent, key="customer_name", label="Name")
+        self._post({"customer_name": "Ravi"})
+
+        variable = self.agent.variables.get(key="customer_name")
+        self.assertFalse(variable.discovered)
+        self.assertTrue(variable.use_in_qa)
+        self.assertEqual(variable.label, "Name")
+        self.assertEqual(variable.sample_value, "Ravi")
+
+    def test_non_ascii_values_are_kept(self):
+        self._post({"workshop_spoken": "मारुति अंधेरी"})
+
+        self.assertEqual(self.agent.variables.get(key="workshop_spoken").sample_value, "मारुति अंधेरी")
+
+    def test_overlong_sample_is_truncated_and_overlong_key_skipped(self):
+        self._post({"note": "x" * 1000, "k" * 100: "v"})
+
+        self.assertEqual(len(self.agent.variables.get(key="note").sample_value), 255)
+        self.assertEqual(self.agent.variables.count(), 1)
+
+    def test_analytics_endpoint_lists_only_ticked_variables(self):
+        self._post({"complaint_query": "engine noise", "workshop": "Andheri"})
+        self.agent.variables.filter(key="workshop").update(use_in_analytics=True)
+
+        response = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/analytics/")
+
+        self.assertEqual(response.data["variable_keys"], ["workshop"])
+
+    def test_qa_missing_variables_only_checks_ticked_variables(self):
+        self.agent.variables.create(key="workshop", use_in_qa=True)
+        self.agent.variables.create(key="complaint_query", use_in_qa=False)
+        execution = Execution.objects.create(
+            organization=self.agent.organization, process_agent=self.agent, lead_id="x", variables={}
+        )
+
+        self.assertEqual(outcome_routing._missing_variables(execution), ["workshop"])
+
+    def test_patching_ticks_via_api(self):
+        self._post({"complaint_query": "engine noise"})
+        variable = self.agent.variables.get(key="complaint_query")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{self.agent.id}/variables/{variable.id}/",
+            {"use_in_qa": True, "use_in_analytics": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        variable.refresh_from_db()
+        self.assertTrue(variable.use_in_qa)
+        self.assertTrue(variable.use_in_analytics)
+        self.assertTrue(response.data["discovered"])
+
 
 def _text_only_curl(template_title):
     """A T2/T3-style curl: text template, no variable params."""
@@ -2420,8 +2606,7 @@ class WhatsAppSendTests(TestCase):
         self.assertIn("receiver_number", response.data["results"][0]["error"])
 
     def test_explicit_template_key_uses_that_templates_curl(self):
-        self.agent.omnichannel.whatsapp_curls = {"T3": _text_only_curl("hyundai_agentic_sorry_followup")}
-        self.agent.omnichannel.save()
+        self.agent.channel_templates.filter(name="T3").update(curl=_text_only_curl("hyundai_agentic_sorry_followup"))
 
         with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
             self._send(template_key="T3")
@@ -2464,10 +2649,11 @@ class HyundaiTemplatePickTests(TestCase):
     def setUp(self):
         department = Department.objects.create(organization=make_org(), name="Automobile")
         self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
+        omnichannel_seed.sync_agent(ChannelTemplate, ChannelRule, self.agent, {})
 
     def _pick(self, **variables):
         execution = Execution(organization=make_org(), process_agent=self.agent, lead_id="x", variables=variables)
-        return hyundai_whatsapp.pick_template(execution)
+        return omnichannel.pick_template(execution)
 
     def test_full_appointment_is_t1_even_on_drop_off(self):
         self.assertEqual(
@@ -2542,7 +2728,7 @@ class HyundaiAutoSendTests(TestCase):
 
     def _tick(self, response=(200, "{}", None), now=None):
         with patch("apps.telehub.services.whatsapp._send_once", return_value=response) as mock_send:
-            count = hyundai_whatsapp.process_due_sends(now=now)
+            count = omnichannel.process_due_sends(now=now)
         return count, mock_send
 
     def test_inbound_call_queues_and_scheduler_sends_t1(self):
@@ -2587,15 +2773,14 @@ class HyundaiAutoSendTests(TestCase):
         self.assertEqual(self._tick()[0], 0)
 
     def test_unconfigured_template_is_skipped(self):
-        self.config.whatsapp_curls = {"T1": INBOUND_WHATSAPP_CURL}
-        self.config.save()
+        ChannelTemplate.objects.filter(process_agent=self.agent, name="T3").update(curl="")
         execution = self._post_call({"@caller_number": "+919876543210", "@call_start_time": "10:00:00"})
         send = WhatsAppSend.objects.get(execution=execution)
         self.assertEqual((send.status, send.last_error), ("skipped", "T3 not configured"))
 
     def test_only_one_automatic_send_per_call(self):
         execution = self._post_call()
-        hyundai_whatsapp.on_call_completed(execution)
+        omnichannel.on_call_completed(execution)
         self.assertEqual(WhatsAppSend.objects.filter(execution=execution).count(), 1)
 
     def test_5xx_retries_then_fails(self):
@@ -2603,7 +2788,7 @@ class HyundaiAutoSendTests(TestCase):
         send = WhatsAppSend.objects.get(execution=execution)
 
         now = timezone.now()
-        for attempt, delay in enumerate(hyundai_whatsapp.RETRY_DELAYS_MINUTES, start=1):
+        for attempt, delay in enumerate(omnichannel.RETRY_DELAYS_MINUTES, start=1):
             self._tick(response=(502, "bad gateway", None), now=now)
             send.refresh_from_db()
             self.assertEqual((send.status, send.attempts), ("pending", attempt))
@@ -2631,7 +2816,7 @@ class HyundaiAutoSendTests(TestCase):
     def test_network_error_is_retried(self):
         execution = self._post_call()
         with patch("apps.telehub.services.whatsapp._send_once", side_effect=OSError("timed out")):
-            hyundai_whatsapp.process_due_sends()
+            omnichannel.process_due_sends()
         send = WhatsAppSend.objects.get(execution=execution)
         self.assertEqual(send.status, "pending")
         self.assertIn("timed out", send.last_error)
@@ -2670,6 +2855,1554 @@ class OmnichannelTemplatesEndpointTests(TestCase):
     def test_unknown_template_key_400s(self):
         response = self.client.patch(self.url, {"whatsapp_curls": {"T7": "curl x"}}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ConditionsTests(TestCase):
+    def _check(self, op, variables, **extra):
+        return conditions.check_passes({"variable": "x", "op": op, **extra}, variables)
+
+    def test_exists_and_not_exists(self):
+        self.assertTrue(self._check("exists", {"x": "a"}))
+        for blank in (None, "", "   "):
+            self.assertFalse(self._check("exists", {"x": blank}))
+            self.assertTrue(self._check("not_exists", {"x": blank}))
+        self.assertFalse(self._check("exists", {}))
+        self.assertTrue(self._check("not_exists", {}))
+        self.assertTrue(self._check("exists", {"x": 0}))
+
+    def test_equals_ignores_case_and_whitespace(self):
+        self.assertTrue(self._check("equals", {"x": " Required "}, value="required"))
+        self.assertFalse(self._check("equals", {"x": "not_required"}, value="required"))
+        self.assertFalse(self._check("equals", {}, value="required"))
+
+    def test_truthy_reads_string_false_as_false(self):
+        for value in (True, "true", "True", " YES ", "1", 1):
+            self.assertTrue(self._check("truthy", {"x": value}), value)
+        for value in (False, "False", "false", "0", "no", "", None, "maybe"):
+            self.assertFalse(self._check("truthy", {"x": value}), value)
+
+    def test_unknown_op_and_malformed_check_never_match(self):
+        self.assertFalse(self._check("greater_than", {"x": 5}))
+        self.assertFalse(conditions.check_passes("exists", {"x": 1}))
+
+    def test_all_any_and_empty(self):
+        checks = [{"variable": "a", "op": "exists"}, {"variable": "b", "op": "exists"}]
+        self.assertFalse(conditions.evaluate("all", checks, {"a": 1}))
+        self.assertTrue(conditions.evaluate("any", checks, {"a": 1}))
+        self.assertFalse(conditions.evaluate("any", checks, {}))
+        self.assertTrue(conditions.evaluate("all", [], {}))
+        self.assertTrue(conditions.evaluate("any", [], {}))
+
+    def test_validate_checks(self):
+        self.assertEqual(conditions.validate_checks([{"variable": "a", "op": "exists"}]), [])
+        self.assertTrue(conditions.validate_checks("nope"))
+        self.assertTrue(conditions.validate_checks([{"variable": "a", "op": "bogus"}]))
+        self.assertTrue(conditions.validate_checks([{"op": "exists"}]))
+        self.assertTrue(conditions.validate_checks([{"variable": "a", "op": "equals"}]))
+
+
+class ChannelRuleEngineTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
+
+    def _execution(self, **variables):
+        return Execution(organization=make_org(), process_agent=self.agent, lead_id="x", variables=variables)
+
+    def _template(self, name, curl=INBOUND_WHATSAPP_CURL, **extra):
+        return ChannelTemplate.objects.create(process_agent=self.agent, name=name, curl=curl, **extra)
+
+    def _rule(self, priority, template=None, action="send", match="all", checks=(), reason=""):
+        return ChannelRule.objects.create(
+            process_agent=self.agent,
+            priority=priority,
+            action=action,
+            template=template,
+            match=match,
+            checks=list(checks),
+            reason=reason,
+        )
+
+    def test_lowest_priority_matching_rule_wins(self):
+        promo, other = self._template("Promo"), self._template("Other")
+        self._rule(5, other)
+        self._rule(1, promo, checks=[{"variable": "vip", "op": "exists"}])
+        self._rule(2, other, checks=[{"variable": "vip", "op": "exists"}])
+
+        self.assertEqual(omnichannel.pick_template(self._execution(vip="y")), "Promo")
+        self.assertEqual(omnichannel.pick_template(self._execution()), "Other")
+
+    def test_no_rules_or_no_match_picks_nothing(self):
+        self.assertIsNone(omnichannel.pick_template(self._execution()))
+        self._rule(1, self._template("Promo"), checks=[{"variable": "vip", "op": "exists"}])
+        self.assertIsNone(omnichannel.pick_template(self._execution()))
+
+    def test_skip_rule_picks_no_template(self):
+        self._rule(0, action="skip", checks=[{"variable": "is_test", "op": "truthy"}], reason="test call")
+        self._rule(1, self._template("Promo"))
+
+        self.assertIsNone(omnichannel.pick_template(self._execution(is_test="true")))
+        self.assertEqual(omnichannel.pick_template(self._execution(is_test="False")), "Promo")
+
+    def test_param_map_fallback_feeds_rules(self):
+        promo = self._template(
+            "Promo", param_map={"model": {"variable": "model_name", "fallback": "model_of_interest"}}
+        )
+        self._rule(1, promo, checks=[{"variable": "model_name", "op": "exists"}])
+
+        self.assertEqual(omnichannel.pick_template(self._execution(model_of_interest="Creta")), "Promo")
+        self.assertIsNone(omnichannel.pick_template(self._execution()))
+
+    def test_custom_rule_queues_custom_template_on_completion(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp", auto_send=True)
+        ChannelRule.objects.all().delete()
+        promo = self._template("Promo")
+        self._rule(1, promo, checks=[{"variable": "vip", "op": "exists"}])
+        execution = Execution.objects.create(
+            organization=make_org(), process_agent=self.agent, lead_id="x", variables={"vip": "y"}
+        )
+
+        omnichannel.on_call_completed(execution)
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.template_key), ("pending", "Promo"))
+
+    def test_skip_rule_records_skipped_with_reason(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp", auto_send=True)
+        ChannelRule.objects.all().delete()
+        self._rule(0, action="skip", reason="vip handled by humans")
+        execution = Execution.objects.create(organization=make_org(), process_agent=self.agent, lead_id="x")
+
+        omnichannel.on_call_completed(execution)
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.last_error), ("skipped", "vip handled by humans"))
+
+    def test_no_matching_rule_records_nothing(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp", auto_send=True)
+        ChannelRule.objects.all().delete()
+        execution = Execution.objects.create(organization=make_org(), process_agent=self.agent, lead_id="x")
+
+        omnichannel.on_call_completed(execution)
+
+        self.assertFalse(WhatsAppSend.objects.exists())
+
+    def test_inactive_template_counts_as_not_configured(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp", auto_send=True)
+        ChannelRule.objects.all().delete()
+        promo = self._template("Promo", is_active=False)
+        self._rule(1, promo)
+        execution = Execution.objects.create(organization=make_org(), process_agent=self.agent, lead_id="x")
+
+        omnichannel.on_call_completed(execution)
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.last_error), ("skipped", "Promo not configured"))
+
+    def test_saving_omnichannel_config_creates_default_templates_and_rules(self):
+        OmnichannelConfig.objects.create(
+            process_agent=self.agent, channel="whatsapp", whatsapp_curls={"T2": "curl t2"}, whatsapp_curl="curl legacy"
+        )
+
+        names = list(self.agent.channel_templates.values_list("name", flat=True))
+        self.assertEqual(names, ["T1", "T2", "T3"])
+        self.assertEqual(self.agent.channel_templates.get(name="T1").curl, "curl legacy")
+        self.assertEqual(self.agent.channel_templates.get(name="T2").curl, "curl t2")
+        self.assertEqual(self.agent.channel_templates.get(name="T1").missing_fill, "unspecified")
+        self.assertEqual(self.agent.channel_rules.count(), len(omnichannel_seed.SEED_RULES))
+
+    def test_resaving_config_does_not_duplicate_or_wipe(self):
+        config = OmnichannelConfig.objects.create(
+            process_agent=self.agent, channel="whatsapp", whatsapp_curls={"T2": "curl t2"}
+        )
+        self.agent.channel_templates.filter(name="T3").update(curl="managed directly")
+
+        config.auto_send = True
+        config.save()
+
+        self.assertEqual(self.agent.channel_templates.count(), 3)
+        self.assertEqual(self.agent.channel_rules.count(), len(omnichannel_seed.SEED_RULES))
+        self.assertEqual(self.agent.channel_templates.get(name="T3").curl, "managed directly")
+
+    def test_existing_rules_are_not_replaced_by_sync(self):
+        self._rule(0, action="skip", reason="custom")
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp")
+        self.assertEqual(self.agent.channel_rules.count(), 1)
+
+    def test_data_migration_seeds_agents_that_have_a_config(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        OmnichannelConfig.objects.create(
+            process_agent=self.agent, channel="whatsapp", whatsapp_curls={"T1": INBOUND_WHATSAPP_CURL}
+        )
+        self.agent.channel_rules.all().delete()
+        self.agent.channel_templates.all().delete()
+
+        migration = importlib.import_module("apps.telehub.migrations.0018_seed_channel_templates")
+        migration.seed_channel_templates(django_apps, None)
+
+        self.assertEqual(self.agent.channel_templates.count(), 3)
+        self.assertEqual(self.agent.channel_rules.count(), len(omnichannel_seed.SEED_RULES))
+        self.assertEqual(self.agent.channel_templates.get(name="T1").curl, INBOUND_WHATSAPP_CURL)
+
+    def test_manual_send_accepts_any_of_the_agents_template_names(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp")
+        self._template("Promo")
+        execution = Execution.objects.create(
+            organization=make_org(), process_agent=self.agent, lead_id="x", variables={"caller_number": "9876543210"}
+        )
+        url = f"/api/telehub/process-agents/{self.agent.id}/whatsapp-preview/"
+
+        ok = self.client.post(url, {"execution_ids": [execution.id], "template_key": "Promo"}, format="json")
+        bad = self.client.post(url, {"execution_ids": [execution.id], "template_key": "Nope"}, format="json")
+
+        self.assertEqual(ok.status_code, status.HTTP_200_OK, ok.data)
+        self.assertEqual(ok.data[0]["template_key"], "Promo")
+        self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class WhatsAppParamMapAndBlockedTests(TestCase):
+    """Step 3: param_map drives the sent values; empty mapped values block the send until filled."""
+
+    ALL = {
+        "customer_name": "Ravi",
+        "model_name": "Creta",
+        "appointment_place": "Andheri",
+        "appointment_date": "2026-10-20",
+        "appointment_time": "11:00",
+    }
+
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp", auto_send=True)
+        self.agent.channel_rules.all().delete()
+        self.agent.channel_templates.all().delete()
+        self.template = ChannelTemplate.objects.create(
+            process_agent=self.agent, name="Promo", curl=INBOUND_WHATSAPP_CURL
+        )
+        ChannelRule.objects.create(process_agent=self.agent, priority=1, template=self.template)
+
+    def _call(self, **variables):
+        return Execution.objects.create(
+            organization=make_org(),
+            process_agent=self.agent,
+            lead_id="x",
+            status="completed",
+            variables={"caller_number": "+919876543210", **variables},
+        )
+
+    def _tick(self, response=(200, "{}", None)):
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=response) as mock_send:
+            count = omnichannel.process_due_sends()
+        return count, mock_send
+
+    def _fill_url(self, send, agent=None):
+        return f"/api/telehub/process-agents/{(agent or self.agent).id}/whatsapp-sends/{send.id}/fill/"
+
+    # ── param_map ──────────────────────────────────────────────────────────
+
+    def test_param_map_reads_a_differently_named_variable_and_sends_fixed_text(self):
+        self.template.param_map = {
+            "customer_name": {"variable": "cust"},
+            "link": {"fixed": "https://example.com/brochure.pdf"},
+        }
+        self.template.save()
+        execution = self._call(**{**self.ALL, "cust": "Asha"})
+
+        omnichannel.on_call_completed(execution)
+        _, mock_send = self._tick()
+
+        params = json.loads(mock_send.call_args.args[1])["task_body"][0]["template_data"]["param_data"]
+        self.assertEqual(params["customer_name"], "Asha")
+        self.assertEqual(params["link"], "https://example.com/brochure.pdf")
+        self.assertEqual(params["model_name"], "Creta")
+
+    def test_param_map_fallback_variable_is_used_when_primary_is_empty(self):
+        self.template.param_map = {"model_name": {"variable": "model_name", "fallback": "model_of_interest"}}
+        self.template.save()
+        variables = {**self.ALL, "model_of_interest": "Venue"}
+        variables.pop("model_name")
+        execution = self._call(**variables)
+
+        omnichannel.on_call_completed(execution)
+        _, mock_send = self._tick()
+
+        params = json.loads(mock_send.call_args.args[1])["task_body"][0]["template_data"]["param_data"]
+        self.assertEqual(params["model_name"], "Venue")
+
+    def test_send_records_the_template(self):
+        execution = self._call(**self.ALL)
+        omnichannel.on_call_completed(execution)
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual(send.template_id, self.template.id)
+        self.assertEqual(send.template_key, "Promo")
+
+    def test_template_names_longer_than_sixteen_characters_work(self):
+        long_name = "post_service_feedback_reminder"
+        template = ChannelTemplate.objects.create(
+            process_agent=self.agent, name=long_name, curl=INBOUND_WHATSAPP_CURL
+        )
+        self.agent.channel_rules.all().delete()
+        ChannelRule.objects.create(process_agent=self.agent, priority=1, template=template)
+        execution = self._call(**self.ALL)
+
+        omnichannel.on_call_completed(execution)
+
+        self.assertEqual(WhatsAppSend.objects.get(execution=execution).template_key, long_name)
+
+    # ── blocked ────────────────────────────────────────────────────────────
+
+    def test_empty_mapped_variables_block_the_send_and_nothing_is_sent(self):
+        execution = self._call(customer_name="Ravi")
+        omnichannel.on_call_completed(execution)
+
+        count, mock_send = self._tick()
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual(count, 1)
+        mock_send.assert_not_called()
+        self.assertEqual(send.status, "blocked")
+        self.assertEqual(send.attempts, 0)
+        self.assertIsNone(send.next_attempt_at)
+        self.assertEqual(
+            sorted(send.missing), ["appointment_date", "appointment_place", "appointment_time", "model_name"]
+        )
+        self.assertIn("missing values", send.last_error)
+        self.assertTrue(ExecutionEvent.objects.filter(execution=execution, event_type="whatsapp_blocked").exists())
+
+    def test_blocked_send_is_left_alone_by_later_ticks(self):
+        execution = self._call(customer_name="Ravi")
+        omnichannel.on_call_completed(execution)
+        self._tick()
+
+        count, mock_send = self._tick()
+
+        self.assertEqual(count, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(WhatsAppSend.objects.get(execution=execution).status, "blocked")
+
+    def test_missing_list_names_variables_not_param_keys(self):
+        self.template.param_map = {"model_name": {"variable": "vehicle"}}
+        self.template.save()
+        execution = self._call(**{k: v for k, v in self.ALL.items() if k != "model_name"})
+        omnichannel.on_call_completed(execution)
+        self._tick()
+
+        self.assertEqual(WhatsAppSend.objects.get(execution=execution).missing, ["vehicle"])
+
+    def test_missing_fill_text_means_the_send_is_never_blocked(self):
+        self.template.missing_fill = "unspecified"
+        self.template.save()
+        execution = self._call(customer_name="Ravi")
+        omnichannel.on_call_completed(execution)
+
+        _, mock_send = self._tick()
+
+        params = json.loads(mock_send.call_args.args[1])["task_body"][0]["template_data"]["param_data"]
+        self.assertEqual(params["model_name"], "unspecified")
+        self.assertEqual(WhatsAppSend.objects.get(execution=execution).status, "sent")
+
+    def test_missing_receiver_number_fails_instead_of_blocking(self):
+        execution = Execution.objects.create(
+            organization=make_org(), process_agent=self.agent, lead_id="x", status="completed", variables=self.ALL
+        )
+        omnichannel.on_call_completed(execution)
+
+        self._tick()
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual(send.status, "failed")
+        self.assertIn("receiver_number", send.last_error)
+
+    def test_manual_send_with_missing_values_records_a_blocked_send(self):
+        execution = self._call(customer_name="Ravi")
+
+        with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
+            result = omnichannel.send_manual(execution, "Promo")
+
+        mock_send.assert_not_called()
+        self.assertFalse(result["success"])
+        self.assertTrue(result["blocked"])
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.trigger, send.status), ("manual", "blocked"))
+        self.assertEqual(result["send_id"], send.id)
+        self.assertIn("model_name", send.missing)
+
+    def test_calls_endpoint_exposes_blocked_send_id_and_missing(self):
+        execution = self._call(customer_name="Ravi")
+        omnichannel.on_call_completed(execution)
+        self._tick()
+
+        row = self.client.get(f"/api/telehub/process-agents/{self.agent.id}/calls/").data[0]
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual(row["whatsapp"]["status"], "blocked")
+        self.assertEqual(row["whatsapp"]["id"], send.id)
+        self.assertIn("model_name", row["whatsapp"]["missing"])
+
+    # ── fill ───────────────────────────────────────────────────────────────
+
+    def _blocked_send(self, **variables):
+        execution = self._call(**variables)
+        omnichannel.on_call_completed(execution)
+        self._tick()
+        return WhatsAppSend.objects.get(execution=execution)
+
+    def test_filling_every_missing_value_sends_immediately(self):
+        send = self._blocked_send(customer_name="Ravi")
+        values = {name: f"{name}-value" for name in send.missing}
+
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
+            response = self.client.post(self._fill_url(send), {"values": values}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["status"], "sent")
+        send.refresh_from_db()
+        self.assertEqual((send.status, send.missing, send.attempts), ("sent", [], 1))
+        self.assertIsNotNone(send.sent_at)
+        params = json.loads(mock_send.call_args.args[1])["task_body"][0]["template_data"]["param_data"]
+        self.assertEqual(params["model_name"], "model_name-value")
+        self.assertEqual(params["customer_name"], "Ravi")
+        send.execution.refresh_from_db()
+        self.assertEqual(send.execution.variables["appointment_date"], "appointment_date-value")
+        event = ExecutionEvent.objects.get(execution=send.execution, event_type="whatsapp_filled")
+        self.assertEqual(event.payload["send_id"], send.id)
+
+    def test_partial_fill_keeps_the_send_blocked_with_a_shorter_list(self):
+        send = self._blocked_send(customer_name="Ravi")
+
+        with patch("apps.telehub.services.whatsapp._send_once") as mock_send:
+            response = self.client.post(
+                self._fill_url(send), {"values": {"model_name": "Creta"}}, format="json"
+            )
+
+        mock_send.assert_not_called()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "blocked")
+        self.assertNotIn("model_name", response.data["missing"])
+        send.refresh_from_db()
+        self.assertEqual(send.status, "blocked")
+        self.assertNotIn("model_name", send.missing)
+
+    def test_fill_rejects_unknown_blank_and_empty_values(self):
+        send = self._blocked_send(customer_name="Ravi")
+        url = self._fill_url(send)
+
+        for body in (
+            {"values": {"customer_name": "x"}},  # not missing
+            {"values": {"model_name": "   "}},  # blank
+            {"values": {}},
+            {},
+        ):
+            response = self.client.post(url, body, format="json")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, body)
+        send.execution.refresh_from_db()
+        self.assertNotIn("model_name", send.execution.variables)
+
+    def test_fill_rejects_a_send_that_is_not_blocked(self):
+        execution = self._call(**self.ALL)
+        omnichannel.on_call_completed(execution)
+        self._tick()
+        send = WhatsAppSend.objects.get(execution=execution)
+
+        response = self.client.post(self._fill_url(send), {"values": {"model_name": "x"}}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_fill_404s_for_another_agents_send(self):
+        send = self._blocked_send(customer_name="Ravi")
+        other = ProcessAgent.objects.create(
+            organization=make_org(), department=self.agent.department, name="Other"
+        )
+
+        response = self.client.post(
+            self._fill_url(send, agent=other), {"values": {"model_name": "x"}}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_fill_then_send_failure_on_auto_send_goes_back_to_retrying(self):
+        send = self._blocked_send(customer_name="Ravi")
+        values = {name: "v" for name in send.missing}
+
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(502, "bad gateway", None)):
+            self.client.post(self._fill_url(send), {"values": values}, format="json")
+
+        send.refresh_from_db()
+        self.assertEqual((send.status, send.attempts), ("pending", 1))
+        self.assertGreater(send.next_attempt_at, timezone.now())
+
+    def test_fill_then_send_failure_on_manual_send_is_final(self):
+        execution = self._call(customer_name="Ravi")
+        with patch("apps.telehub.services.whatsapp._send_once"):
+            omnichannel.send_manual(execution, "Promo")
+        send = WhatsAppSend.objects.get(execution=execution)
+        values = {name: "v" for name in send.missing}
+
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(502, "bad gateway", None)):
+            self.client.post(self._fill_url(send), {"values": values}, format="json")
+
+        send.refresh_from_db()
+        self.assertEqual(send.status, "failed")
+
+
+class ChannelConfigApiTests(TestCase):
+    """Step 4: the template / rule endpoints the dashboard's Settings tab uses."""
+
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.agent = ProcessAgent.objects.create(organization=make_org(), department=department, name="Inbound")
+        self.base = f"/api/telehub/process-agents/{self.agent.id}"
+
+    def _create_template(self, name="Promo", **extra):
+        return self.client.post(
+            f"{self.base}/channel-templates/",
+            {"name": name, "curl": INBOUND_WHATSAPP_CURL, **extra},
+            format="json",
+        )
+
+    def _create_rule(self, **body):
+        return self.client.post(f"{self.base}/channel-rules/", body, format="json")
+
+    # ── templates ──────────────────────────────────────────────────────────
+
+    def test_create_template_describes_the_curl_without_exposing_it(self):
+        response = self._create_template()
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["template_title"], "hyundai_agentic_temp")
+        self.assertEqual(
+            [p["key"] for p in response.data["params"]],
+            ["link", "customer_name", "model_name", "appointment_place", "appointment_date", "appointment_time"],
+        )
+        self.assertNotIn("curl", response.data)
+        self.assertNotIn("test-key", json.dumps(response.data))
+        listing = self.client.get(f"{self.base}/channel-templates/")
+        self.assertNotIn("test-key", json.dumps(listing.data))
+        self.assertNotIn("Authorization", json.dumps(listing.data))
+
+    def test_variables_sent_lists_variable_params_but_not_literal_text(self):
+        response = self._create_template(param_map={"link": {"fixed": "https://x.test"}})
+
+        self.assertEqual(
+            response.data["variables_sent"],
+            ["customer_name", "model_name", "appointment_place", "appointment_date", "appointment_time"],
+        )
+        listing = self.client.get(f"{self.base}/channel-templates/")
+        self.assertEqual(listing.data["variables_sent"], response.data["variables_sent"])
+
+    def test_param_map_variable_replaces_the_default_name_in_variables_sent(self):
+        response = self._create_template(param_map={"model_name": {"variable": "vehicle"}})
+        self.assertIn("vehicle", response.data["variables_sent"])
+        self.assertNotIn("model_name", response.data["variables_sent"])
+
+    def test_create_template_validation(self):
+        cases = [
+            ({"name": "", "curl": INBOUND_WHATSAPP_CURL}, "name"),
+            ({"name": "x" * 65, "curl": INBOUND_WHATSAPP_CURL}, "name"),
+            ({"name": "A"}, "curl"),
+            ({"name": "A", "curl": "not a curl"}, "curl"),
+            ({"name": "A", "curl": INBOUND_WHATSAPP_CURL, "channel": "sms"}, "channel"),
+            ({"name": "A", "curl": INBOUND_WHATSAPP_CURL, "param_map": {"nope": {"fixed": "x"}}}, "param_map"),
+            ({"name": "A", "curl": INBOUND_WHATSAPP_CURL, "param_map": {"link": {"fixed": "x", "variable": "y"}}}, "param_map"),
+            ({"name": "A", "curl": INBOUND_WHATSAPP_CURL, "param_map": {"link": {}}}, "param_map"),
+            ({"name": "A", "curl": INBOUND_WHATSAPP_CURL, "param_map": {"link": {"bogus": "x"}}}, "param_map"),
+            ({"name": "A", "curl": INBOUND_WHATSAPP_CURL, "param_map": []}, "param_map"),
+        ]
+        for body, field in cases:
+            response = self.client.post(f"{self.base}/channel-templates/", body, format="json")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, body)
+            self.assertIn(field, response.data["error"], body)
+        self.assertEqual(self.agent.channel_templates.count(), 0)
+
+    def test_duplicate_template_name_is_rejected(self):
+        self._create_template("Promo")
+        response = self._create_template("Promo")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("name", response.data["error"])
+
+    def test_patch_without_curl_keeps_the_stored_curl(self):
+        template_id = self._create_template().data["id"]
+
+        response = self.client.patch(
+            f"{self.base}/channel-templates/{template_id}/",
+            {"missing_fill": "n/a", "is_active": False, "param_map": {"customer_name": {"variable": "cust"}}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        template = ChannelTemplate.objects.get(pk=template_id)
+        self.assertEqual(template.curl, INBOUND_WHATSAPP_CURL)
+        self.assertEqual((template.missing_fill, template.is_active), ("n/a", False))
+        self.assertEqual(template.param_map, {"customer_name": {"variable": "cust"}})
+
+    def test_patch_with_a_new_curl_replaces_it_and_blank_curl_does_not(self):
+        template_id = self._create_template().data["id"]
+        new_curl = _text_only_curl("another_template")
+
+        self.client.patch(f"{self.base}/channel-templates/{template_id}/", {"curl": "   "}, format="json")
+        self.assertEqual(ChannelTemplate.objects.get(pk=template_id).curl, INBOUND_WHATSAPP_CURL)
+
+        response = self.client.patch(f"{self.base}/channel-templates/{template_id}/", {"curl": new_curl}, format="json")
+        self.assertEqual(response.data["template_title"], "another_template")
+        self.assertEqual(ChannelTemplate.objects.get(pk=template_id).curl, new_curl)
+
+    def test_patch_param_map_is_checked_against_the_stored_curl(self):
+        template_id = self._create_template().data["id"]
+        response = self.client.patch(
+            f"{self.base}/channel-templates/{template_id}/", {"param_map": {"nope": {"fixed": "x"}}}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rename_to_an_existing_name_is_rejected_but_keeping_own_name_is_fine(self):
+        self._create_template("A")
+        b = self._create_template("B").data["id"]
+
+        clash = self.client.patch(f"{self.base}/channel-templates/{b}/", {"name": "A"}, format="json")
+        same = self.client.patch(f"{self.base}/channel-templates/{b}/", {"name": "B"}, format="json")
+
+        self.assertEqual(clash.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(same.status_code, status.HTTP_200_OK)
+
+    def test_delete_template_is_refused_while_a_rule_uses_it(self):
+        template_id = self._create_template().data["id"]
+        rule_id = self._create_rule(template=template_id).data["id"]
+
+        refused = self.client.delete(f"{self.base}/channel-templates/{template_id}/")
+        self.client.delete(f"{self.base}/channel-rules/{rule_id}/")
+        allowed = self.client.delete(f"{self.base}/channel-templates/{template_id}/")
+
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(allowed.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(ChannelTemplate.objects.filter(pk=template_id).exists())
+
+    def test_another_agents_template_is_a_404(self):
+        template_id = self._create_template().data["id"]
+        other = ProcessAgent.objects.create(organization=make_org(), department=self.agent.department, name="Other")
+        url = f"/api/telehub/process-agents/{other.id}/channel-templates/{template_id}/"
+
+        self.assertEqual(self.client.patch(url, {"missing_fill": "x"}, format="json").status_code, 404)
+        self.assertEqual(self.client.delete(url).status_code, 404)
+
+    # ── rules ──────────────────────────────────────────────────────────────
+
+    def test_create_send_rule_defaults_to_the_end_of_the_order(self):
+        template_id = self._create_template().data["id"]
+
+        first = self._create_rule(template=template_id, checks=[{"variable": "vip", "op": "exists"}])
+        second = self._create_rule(template=template_id, match="any")
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED, first.data)
+        self.assertEqual((first.data["priority"], second.data["priority"]), (0, 1))
+        self.assertEqual(first.data["template_name"], "Promo")
+        self.assertEqual(second.data["match"], "any")
+
+    def test_create_skip_rule_needs_no_template(self):
+        response = self._create_rule(
+            action="skip", checks=[{"variable": "is_test", "op": "truthy"}], reason="test call"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertIsNone(response.data["template"])
+
+    def test_rule_validation(self):
+        template_id = self._create_template().data["id"]
+        other_agent = ProcessAgent.objects.create(organization=make_org(), department=self.agent.department, name="O")
+        foreign = ChannelTemplate.objects.create(process_agent=other_agent, name="Foreign", curl=INBOUND_WHATSAPP_CURL)
+        cases = [
+            ({"action": "send"}, "template"),
+            ({"action": "send", "template": 99999}, "template"),
+            ({"action": "send", "template": foreign.id}, "template"),
+            ({"action": "explode", "template": template_id}, "action"),
+            ({"template": template_id, "match": "some"}, "match"),
+            ({"template": template_id, "checks": "nope"}, "checks"),
+            ({"template": template_id, "checks": [{"variable": "a", "op": "bogus"}]}, "checks"),
+            ({"template": template_id, "checks": [{"variable": "a", "op": "equals"}]}, "checks"),
+            ({"template": template_id, "checks": [{"op": "exists"}]}, "checks"),
+            ({"template": template_id, "priority": "first"}, "priority"),
+        ]
+        for body, field in cases:
+            response = self._create_rule(**body)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, body)
+            self.assertIn(field, response.data["error"], body)
+        self.assertEqual(self.agent.channel_rules.count(), 0)
+
+    def test_checks_are_normalised(self):
+        template_id = self._create_template().data["id"]
+        response = self._create_rule(
+            template=template_id,
+            checks=[
+                {"variable": " callback_status ", "op": "equals", "value": "required", "junk": 1},
+                {"variable": "name", "op": "exists", "value": "ignored"},
+            ],
+        )
+        self.assertEqual(
+            response.data["checks"],
+            [
+                {"variable": "callback_status", "op": "equals", "value": "required"},
+                {"variable": "name", "op": "exists"},
+            ],
+        )
+
+    def test_patch_rule_switching_to_skip_clears_the_template_and_back_requires_one(self):
+        template_id = self._create_template().data["id"]
+        rule_id = self._create_rule(template=template_id).data["id"]
+        url = f"{self.base}/channel-rules/{rule_id}/"
+
+        to_skip = self.client.patch(url, {"action": "skip", "reason": "no thanks"}, format="json")
+        back_without = self.client.patch(url, {"action": "send"}, format="json")
+        back_with = self.client.patch(url, {"action": "send", "template": template_id}, format="json")
+
+        self.assertEqual((to_skip.status_code, to_skip.data["template"]), (200, None))
+        self.assertEqual(back_without.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual((back_with.status_code, back_with.data["template"]), (200, template_id))
+
+    def test_reorder_rules(self):
+        template_id = self._create_template().data["id"]
+        ids = [self._create_rule(template=template_id).data["id"] for _ in range(3)]
+
+        response = self.client.post(f"{self.base}/channel-rules/reorder/", {"order": ids[::-1]}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual([r["id"] for r in response.data], ids[::-1])
+        listing = self.client.get(f"{self.base}/channel-rules/")
+        self.assertEqual([r["id"] for r in listing.data], ids[::-1])
+
+    def test_reorder_must_list_every_rule_once(self):
+        template_id = self._create_template().data["id"]
+        ids = [self._create_rule(template=template_id).data["id"] for _ in range(2)]
+
+        for order in ([ids[0]], [ids[0], ids[0]], [ids[0], 99999], "nope", None):
+            response = self.client.post(f"{self.base}/channel-rules/reorder/", {"order": order}, format="json")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, order)
+
+    def test_another_agents_rule_is_a_404(self):
+        template_id = self._create_template().data["id"]
+        rule_id = self._create_rule(template=template_id).data["id"]
+        other = ProcessAgent.objects.create(organization=make_org(), department=self.agent.department, name="Other")
+        url = f"/api/telehub/process-agents/{other.id}/channel-rules/{rule_id}/"
+
+        self.assertEqual(self.client.patch(url, {"reason": "x"}, format="json").status_code, 404)
+        self.assertEqual(self.client.delete(url).status_code, 404)
+
+    # ── end to end + legacy interplay ──────────────────────────────────────
+
+    def test_configured_through_the_api_a_completed_call_sends_the_chosen_template(self):
+        template_id = self._create_template(
+            "Thanks", param_map={"link": {"fixed": "https://x.test"}}, missing_fill="-"
+        ).data["id"]
+        self._create_rule(template=template_id, checks=[{"variable": "customer_name", "op": "exists"}])
+        self.client.patch(f"{self.base}/omnichannel/", {"channel": "whatsapp", "auto_send": True}, format="json")
+        execution = Execution.objects.create(
+            organization=make_org(),
+            process_agent=self.agent,
+            lead_id="x",
+            status="completed",
+            variables={"caller_number": "+919876543210", "customer_name": "Ravi"},
+        )
+
+        omnichannel.on_call_completed(execution)
+        with patch("apps.telehub.services.whatsapp._send_once", return_value=(200, "{}", None)) as mock_send:
+            omnichannel.process_due_sends()
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.template_key, send.status), ("Thanks", "sent"))
+        params = json.loads(mock_send.call_args.args[1])["task_body"][0]["template_data"]["param_data"]
+        self.assertEqual((params["link"], params["customer_name"], params["model_name"]), ("https://x.test", "Ravi", "-"))
+
+    def test_enabling_whatsapp_on_a_new_agent_does_not_seed_hyundai_rules(self):
+        self.client.patch(f"{self.base}/omnichannel/", {"channel": "whatsapp", "auto_send": True}, format="json")
+
+        self.assertEqual(self.agent.channel_templates.count(), 0)
+        self.assertEqual(self.agent.channel_rules.count(), 0)
+
+    def test_sending_legacy_curls_through_the_omnichannel_endpoint_still_seeds(self):
+        self.client.patch(
+            f"{self.base}/omnichannel/",
+            {"channel": "whatsapp", "whatsapp_curls": {"T1": INBOUND_WHATSAPP_CURL}},
+            format="json",
+        )
+
+        self.assertEqual(self.agent.channel_templates.count(), 3)
+        self.assertEqual(self.agent.channel_rules.count(), len(omnichannel_seed.SEED_RULES))
+
+    def test_toggling_auto_send_does_not_overwrite_templates_edited_directly(self):
+        self.client.patch(
+            f"{self.base}/omnichannel/",
+            {"channel": "whatsapp", "whatsapp_curls": {"T1": INBOUND_WHATSAPP_CURL}},
+            format="json",
+        )
+        t1 = self.agent.channel_templates.get(name="T1")
+        edited = _text_only_curl("edited_in_the_new_editor")
+        self.client.patch(f"{self.base}/channel-templates/{t1.id}/", {"curl": edited}, format="json")
+
+        self.client.patch(f"{self.base}/omnichannel/", {"auto_send": True}, format="json")
+
+        self.assertEqual(self.agent.channel_templates.get(name="T1").curl, edited)
+
+
+class WizardOmnichannelTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+
+    def _create(self, omnichannel):
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": self.department.id, "name": "Wizard agent", "omnichannel": omnichannel},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return ProcessAgent.objects.get(pk=response.data["id"])
+
+    def test_wizard_curl_becomes_one_default_template_with_an_always_rule(self):
+        agent = self._create({"channel": "whatsapp", "whatsapp_curl": INBOUND_WHATSAPP_CURL})
+
+        template = agent.channel_templates.get()
+        self.assertEqual((template.name, template.curl), ("Default", INBOUND_WHATSAPP_CURL))
+        rule = agent.channel_rules.get()
+        self.assertEqual((rule.action, rule.template_id, rule.checks), ("send", template.id, []))
+        self.assertEqual(agent.omnichannel.whatsapp_curl, "")
+
+    def test_wizard_default_rule_sends_for_any_call(self):
+        agent = self._create({"channel": "whatsapp", "whatsapp_curl": INBOUND_WHATSAPP_CURL})
+        execution = Execution(organization=make_org(), process_agent=agent, lead_id="x", variables={})
+
+        self.assertEqual(omnichannel.pick_template(execution), "Default")
+
+    def test_wizard_without_a_curl_creates_no_templates_or_rules(self):
+        agent = self._create({"channel": "whatsapp"})
+
+        self.assertEqual(agent.channel_templates.count(), 0)
+        self.assertEqual(agent.channel_rules.count(), 0)
+        self.assertEqual(agent.omnichannel.channel, "whatsapp")
+
+
+class VoiceBotNumbersTests(TestCase):
+    """Step 5: a bot's DIDs are PhoneNumber rows, unique across every organisation."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _create_bot(self, dids, **extra):
+        return self.client.post("/api/telehub/voice-bots/", {"label": "Bot", "dids": dids, **extra}, format="json")
+
+    def test_dids_become_phone_numbers(self):
+        response = self._create_bot(["+917965311524", "7965311525"])
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual([n["did"] for n in response.data["numbers"]], ["+917965311524", "7965311525"])
+        bot = VoiceBot.objects.get(pk=response.data["id"])
+        self.assertEqual(
+            list(bot.numbers.values_list("did_key", flat=True)), ["7965311524", "7965311525"]
+        )
+
+    def test_the_same_number_can_be_on_several_bots(self):
+        # Calls reach an agent through its own webhook URL, so a DID never has to
+        # identify a bot - two bots may list the same number (even in another spelling).
+        first = self._create_bot(["+917965311524"])
+        second = self._create_bot(["7965311524"])
+        other = Organization.objects.create(name="Other", slug="other")
+        third = VoiceBot.objects.create(organization=other, label="Theirs")
+        PhoneNumber.objects.create(organization=other, voice_bot=third, did="917965311524")
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED, first.data)
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED, second.data)
+        self.assertEqual(PhoneNumber.objects.filter(did_key="7965311524").count(), 3)
+
+    def test_invalid_dids_are_rejected(self):
+        for bad in ("not a list", ["abc"], ["123"], [None, "12"]):
+            response = self._create_bot(bad)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, bad)
+
+    def test_duplicate_and_blank_entries_in_one_list_collapse(self):
+        response = self._create_bot(["+917965311524", "", "917965311524"])
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["dids"], ["+917965311524"])
+        self.assertEqual(len(response.data["numbers"]), 1)
+
+    def test_editing_dids_adds_removes_and_keeps_the_rest(self):
+        created = self._create_bot(["+917965311524", "7965311525"]).data
+        kept_id = created["numbers"][0]["id"]
+
+        response = self.client.patch(
+            f"/api/telehub/voice-bots/{created['id']}/", {"dids": ["+917965311524", "7965311526"]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual([n["did"] for n in response.data["numbers"]], ["+917965311524", "7965311526"])
+        self.assertEqual(response.data["numbers"][0]["id"], kept_id)
+        # The freed number can now be used by another bot.
+        self.assertEqual(self._create_bot(["7965311525"]).status_code, status.HTTP_201_CREATED)
+
+    def test_editing_other_fields_leaves_numbers_alone(self):
+        created = self._create_bot(["+917965311524"]).data
+
+        response = self.client.patch(f"/api/telehub/voice-bots/{created['id']}/", {"label": "Renamed"}, format="json")
+
+        self.assertEqual(response.data["numbers"], created["numbers"])
+
+    def test_a_bot_can_resubmit_its_own_numbers(self):
+        created = self._create_bot(["+917965311524"]).data
+        response = self.client.patch(
+            f"/api/telehub/voice-bots/{created['id']}/", {"dids": ["917965311524"]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    def test_a_number_is_unique_within_a_bot_by_digits_not_spelling(self):
+        org = make_org()
+        bot = VoiceBot.objects.create(organization=org, label="A")
+        other_bot = VoiceBot.objects.create(organization=org, label="B")
+        PhoneNumber.objects.create(organization=org, voice_bot=bot, did="+91 79653 11524")
+        PhoneNumber.objects.create(organization=org, voice_bot=other_bot, did="7965311524")  # another bot: fine
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                PhoneNumber.objects.create(organization=org, voice_bot=bot, did="7965311524")
+
+    def test_backfill_migration_registers_every_bots_dids_including_shared_ones(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        org = make_org()
+        first = VoiceBot.objects.create(organization=org, label="First", dids=["+917965311524", "7965311525"])
+        second = VoiceBot.objects.create(organization=org, label="Second", dids=["917965311524", "7965311526"])
+        repeated = VoiceBot.objects.create(organization=org, label="Repeated", dids=["917965311524", "+917965311524"])
+
+        migration = importlib.import_module("apps.telehub.migrations.0021_backfill_phone_numbers")
+        migration.backfill_phone_numbers(django_apps, None)
+
+        self.assertEqual(sorted(first.numbers.values_list("did_key", flat=True)), ["7965311524", "7965311525"])
+        self.assertEqual(sorted(second.numbers.values_list("did_key", flat=True)), ["7965311524", "7965311526"])
+        self.assertEqual(list(repeated.numbers.values_list("did_key", flat=True)), ["7965311524"])
+        self.assertEqual(second.dids, ["917965311524", "7965311526"])  # the legacy list is untouched
+
+    def test_backfill_migration_is_safe_to_run_twice(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        bot = VoiceBot.objects.create(organization=make_org(), label="A", dids=["7965311524"])
+        migration = importlib.import_module("apps.telehub.migrations.0021_backfill_phone_numbers")
+        migration.backfill_phone_numbers(django_apps, None)
+        migration.backfill_phone_numbers(django_apps, None)
+
+        self.assertEqual(bot.numbers.count(), 1)
+
+
+def _post_bot(client, **body):
+    response = client.post("/api/telehub/voice-bots/", body, format="json")
+    assert response.status_code == 201, response.data
+    return response.data
+
+
+class StageApiTests(TestCase):
+    """Step 5/6: stages (BotJourneys) with their bot and chosen numbers."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.inbound = _post_bot(
+            self.client, label="Inbound", communication_type="voice_inbound", dids=["+917965311524", "+917965311525"]
+        )
+        self.outbound = _post_bot(
+            self.client,
+            label="Outbound",
+            communication_type="voice_outbound",
+            api_url="https://example.com/outbound",
+            dids=["+917965314425", "+917965314426"],
+        )
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {
+                "department": self.department.id,
+                "name": "Two stage",
+                "voice": {"voice_bot_id": self.inbound["id"]},
+                "business_rules": {"retry": {"attempts": 5, "interval_minutes": 7}},
+            },
+            format="json",
+        )
+        self.agent = ProcessAgent.objects.get(pk=response.data["id"])
+        self.base = f"/api/telehub/process-agents/{self.agent.id}"
+
+    def _add_stage(self, **body):
+        return self.client.post(f"{self.base}/journeys/", {"name": "Follow-up", **body}, format="json")
+
+    def test_add_stage_wires_the_bot_and_copies_the_first_stages_rules(self):
+        response = self._add_stage(voice_bot=self.outbound["id"])
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["order"], 1)
+        journey = BotJourney.objects.get(pk=response.data["id"])
+        self.assertEqual(journey.nodes.count(), 9)
+        self.assertEqual(journey.nodes.get(name="Retry").config, {"attempts": 5, "interval_minutes": 7})
+        communication = journey.nodes.get(name="Communication").config
+        self.assertEqual(communication["api_url"], "https://example.com/outbound")
+        self.assertEqual(communication["communication_type"], "voice_outbound")
+        # The first stage's Communication node is untouched.
+        first = self.agent.bot_journeys.get(order=0)
+        self.assertEqual(first.nodes.get(name="Communication").config["communication_type"], "voice_inbound")
+
+    def test_a_stage_with_no_numbers_selected_uses_all_of_the_bots(self):
+        response = self._add_stage(voice_bot=self.outbound["id"])
+        self.assertEqual(response.data["numbers"], [])
+        self.assertEqual(response.data["active_dids"], ["+917965314425", "+917965314426"])
+
+    def test_a_stage_can_be_assigned_one_of_the_bots_numbers(self):
+        second = self.outbound["numbers"][1]["id"]
+
+        response = self._add_stage(voice_bot=self.outbound["id"], numbers=[second])
+
+        self.assertEqual([n["did"] for n in response.data["numbers"]], ["+917965314426"])
+        self.assertEqual(response.data["active_dids"], ["+917965314426"])
+
+    def test_a_stage_is_assigned_at_most_one_number(self):
+        both = [n["id"] for n in self.outbound["numbers"]]
+
+        response = self._add_stage(voice_bot=self.outbound["id"], numbers=both)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("numbers", response.data["error"])
+        self.assertEqual(self.agent.bot_journeys.count(), 1)
+
+    def test_two_stages_may_be_assigned_the_same_number(self):
+        number = self.outbound["numbers"][0]["id"]
+        first = self._add_stage(name="A", voice_bot=self.outbound["id"], numbers=[number])
+        second = self._add_stage(name="B", voice_bot=self.outbound["id"], numbers=[number])
+
+        self.assertEqual((first.status_code, second.status_code), (201, 201))
+
+    def test_stage_validation(self):
+        other_bots_number = self.inbound["numbers"][0]["id"]
+        cases = [
+            ({"voice_bot": None}, "voice_bot"),
+            ({"voice_bot": 99999}, "voice_bot"),
+            ({"voice_bot": self.outbound["id"], "name": ""}, "name"),
+            ({"voice_bot": self.outbound["id"], "numbers": [other_bots_number]}, "numbers"),
+            ({"voice_bot": self.outbound["id"], "numbers": "all"}, "numbers"),
+            ({"voice_bot": self.outbound["id"], "order": "second"}, "order"),
+        ]
+        for body, field in cases:
+            response = self._add_stage(**body)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, body)
+            self.assertIn(field, response.data["error"], body)
+        self.assertEqual(self.agent.bot_journeys.count(), 1)
+
+    def test_another_organisations_bot_cannot_be_used(self):
+        other = Organization.objects.create(name="Other", slug="other")
+        foreign = VoiceBot.objects.create(organization=other, label="Foreign")
+
+        response = self._add_stage(voice_bot=foreign.id)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_switching_the_bot_clears_numbers_and_rewires_dispatch(self):
+        stage = self._add_stage(voice_bot=self.outbound["id"], numbers=[self.outbound["numbers"][0]["id"]]).data
+        replacement = _post_bot(
+            self.client,
+            label="Replacement",
+            communication_type="voice_outbound",
+            api_url="https://example.com/other",
+            dids=["+917965314999"],
+        )
+
+        response = self.client.patch(
+            f"{self.base}/journeys/{stage['id']}/", {"voice_bot": replacement["id"]}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["numbers"], [])
+        self.assertEqual(response.data["active_dids"], ["+917965314999"])
+        journey = BotJourney.objects.get(pk=stage["id"])
+        self.assertEqual(journey.nodes.get(name="Communication").config["api_url"], "https://example.com/other")
+
+    def test_patch_numbers_and_rename(self):
+        stage = self._add_stage(voice_bot=self.outbound["id"]).data
+        number_id = self.outbound["numbers"][0]["id"]
+
+        response = self.client.patch(
+            f"{self.base}/journeys/{stage['id']}/", {"name": "Callbacks", "numbers": [number_id]}, format="json"
+        )
+
+        self.assertEqual((response.data["name"], [n["id"] for n in response.data["numbers"]]), ("Callbacks", [number_id]))
+        cleared = self.client.patch(f"{self.base}/journeys/{stage['id']}/", {"numbers": []}, format="json")
+        self.assertEqual(cleared.data["numbers"], [])
+
+    def test_removing_a_number_from_the_bot_drops_it_from_stages(self):
+        stage = self._add_stage(voice_bot=self.outbound["id"], numbers=[self.outbound["numbers"][0]["id"]]).data
+
+        self.client.patch(
+            f"/api/telehub/voice-bots/{self.outbound['id']}/", {"dids": ["+917965314426"]}, format="json"
+        )
+
+        journey = BotJourney.objects.get(pk=stage["id"])
+        self.assertEqual(journey.numbers.count(), 0)
+        self.assertEqual(numbers_service.journey_dids(journey), ["+917965314426"])
+
+    def test_delete_stage_cascades_transitions_but_the_last_stage_is_protected(self):
+        stage = self._add_stage(voice_bot=self.outbound["id"]).data
+        first = self.agent.bot_journeys.get(order=0)
+        self.client.post(
+            f"{self.base}/journey-transitions/", {"from_journey": first.id, "to_journey": stage["id"]}, format="json"
+        )
+
+        self.assertEqual(self.client.delete(f"{self.base}/journeys/{stage['id']}/").status_code, 204)
+        self.assertEqual(self.agent.journey_transitions.count(), 0)
+        self.assertEqual(self.client.delete(f"{self.base}/journeys/{first.id}/").status_code, 400)
+
+    def test_another_agents_stage_is_a_404(self):
+        stage = self._add_stage(voice_bot=self.outbound["id"]).data
+        other = ProcessAgent.objects.create(organization=make_org(), department=self.department, name="Other")
+
+        response = self.client.patch(
+            f"/api/telehub/process-agents/{other.id}/journeys/{stage['id']}/", {"name": "x"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    # ── dispatch uses the stage's numbers ──────────────────────────────────
+
+    def _dispatch_from(self, execution):
+        with patch("apps.telehub.services.dispatcher.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+            dispatch_execution(execution)
+        return json.loads(mock_urlopen.call_args[0][0].data.decode())["from"]
+
+    def test_outbound_dials_from_the_stages_selected_number(self):
+        stage = self._add_stage(voice_bot=self.outbound["id"], numbers=[self.outbound["numbers"][1]["id"]]).data
+        journey = BotJourney.objects.get(pk=stage["id"])
+        execution = Execution.objects.create(
+            organization=make_org(),
+            process_agent=self.agent,
+            lead_id="x",
+            current_bot_journey=journey,
+            variables={"to_number": "+911234567890"},
+        )
+
+        self.assertEqual(self._dispatch_from(execution), "+917965314426")
+
+    def test_outbound_without_a_selection_dials_from_the_bots_first_number(self):
+        journey = BotJourney.objects.get(pk=self._add_stage(voice_bot=self.outbound["id"]).data["id"])
+        execution = Execution.objects.create(
+            organization=make_org(),
+            process_agent=self.agent,
+            lead_id="x",
+            current_bot_journey=journey,
+            variables={"to_number": "+911234567890"},
+        )
+
+        self.assertEqual(self._dispatch_from(execution), "+917965314425")
+
+
+class SharedDidAcrossBotsTests(TestCase):
+    """Two bots listing the same DID (as in the live database) both keep working."""
+
+    def test_both_bots_dial_from_the_shared_number(self):
+        client = APIClient()
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        for label in ("Bot one", "Bot two"):
+            _post_bot(
+                client,
+                label=label,
+                communication_type="voice_outbound",
+                api_url="https://example.com/outbound",
+                dids=["917965314458"],
+            )
+        for bot in VoiceBot.objects.order_by("id"):
+            agent = ProcessAgent.objects.create(organization=make_org(), department=department, name=bot.label)
+            journey = BotJourney.objects.create(process_agent=agent, voice_bot=bot, name="J", order=0)
+            generate_journey(journey)
+            push_bot = __import__("apps.telehub.services.stages", fromlist=["x"]).push_bot_to_communication_node
+            push_bot(journey)
+            execution = Execution.objects.create(
+                organization=make_org(),
+                process_agent=agent,
+                lead_id="x",
+                current_bot_journey=journey,
+                variables={"to_number": "+911234567890"},
+            )
+            with patch("apps.telehub.services.dispatcher.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+                mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+                dispatch_execution(execution)
+            self.assertEqual(json.loads(mock_urlopen.call_args[0][0].data.decode())["from"], "917965314458")
+
+
+class InboundDidVerificationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.bot = _post_bot(
+            self.client, label="Inbound", communication_type="voice_inbound", dids=["+917965311524", "+917965311525"]
+        )
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": department.id, "name": "Inbound", "voice": {"voice_bot_id": self.bot["id"]}},
+            format="json",
+        )
+        self.agent = ProcessAgent.objects.get(pk=response.data["id"])
+        self.webhook = WebhookDefinition.objects.get(process_agent=self.agent)
+
+    def _call(self, **payload):
+        body = {"caller_number": "916359724704", "session_id": f"s-{ExecutionEvent.objects.count()}", **payload}
+        self.client.post(f"/api/telehub/webhooks/{self.webhook.secret}/", body, format="json")
+        return Execution.objects.filter(process_agent=self.agent).order_by("-id").first()
+
+    def test_dialing_one_of_the_agents_numbers_is_not_flagged(self):
+        execution = self._call(callee_number="917965311524")
+        self.assertNotIn("did_mismatch", execution.variables)
+
+    def test_the_number_is_compared_by_digits_not_spelling(self):
+        for spelling in ("7965311525", "+91 79653 11525", "917965311525"):
+            self.assertNotIn("did_mismatch", self._call(callee_number=spelling).variables, spelling)
+
+    def test_dialing_another_number_is_recorded_but_flagged(self):
+        execution = self._call(callee_number="919999999999", complaint="engine")
+
+        self.assertIs(execution.variables["did_mismatch"], True)
+        self.assertEqual(execution.status, "completed")
+        self.assertEqual(execution.variables["complaint"], "engine")
+        event = ExecutionEvent.objects.get(execution=execution, event_type="did_mismatch")
+        self.assertEqual(event.payload["callee_number"], "919999999999")
+        self.assertIn("+917965311524", event.payload["expected"])
+        self.assertTrue(hasattr(execution, "qa_result"))
+
+    def test_a_payload_without_a_dialed_number_is_not_flagged(self):
+        self.assertNotIn("did_mismatch", self._call().variables)
+
+    def test_a_stage_restricted_to_one_number_rejects_the_others(self):
+        journey = self.agent.bot_journeys.get()
+        journey.numbers.set([self.bot["numbers"][0]["id"]])
+
+        self.assertNotIn("did_mismatch", self._call(callee_number="917965311524").variables)
+        self.assertIs(self._call(callee_number="917965311525").variables["did_mismatch"], True)
+
+    def test_a_bot_with_no_numbers_is_never_flagged(self):
+        PhoneNumber.objects.filter(voice_bot_id=self.bot["id"]).delete()
+        VoiceBot.objects.filter(pk=self.bot["id"]).update(dids=[])
+
+        self.assertNotIn("did_mismatch", self._call(callee_number="919999999999").variables)
+
+    def test_a_rule_can_skip_whatsapp_for_mismatched_calls(self):
+        OmnichannelConfig.objects.create(process_agent=self.agent, channel="whatsapp", auto_send=True)
+        template = ChannelTemplate.objects.create(process_agent=self.agent, name="Hi", curl=INBOUND_WHATSAPP_CURL)
+        ChannelRule.objects.create(
+            process_agent=self.agent,
+            priority=0,
+            action="skip",
+            reason="wrong number dialed",
+            checks=[{"variable": "did_mismatch", "op": "truthy"}],
+        )
+        ChannelRule.objects.create(process_agent=self.agent, priority=1, template=template)
+
+        execution = self._call(callee_number="919999999999")
+
+        send = WhatsAppSend.objects.get(execution=execution)
+        self.assertEqual((send.status, send.last_error), ("skipped", "wrong number dialed"))
+
+
+class HandoffTests(TestCase):
+    """Step 6: a finished call's results start the lead's next stage as a new Execution."""
+
+    PAYLOAD = {
+        "caller_number": "916359724704",
+        "callee_number": "917965311524",
+        "call_start_time": "18:19:44",
+        "complaint_query": "engine noise",
+        "interested": "yes",
+    }
+
+    def setUp(self):
+        self.client = APIClient()
+        department = Department.objects.create(organization=make_org(), name="Automobile")
+        self.inbound = _post_bot(
+            self.client, label="Inbound", communication_type="voice_inbound", dids=["+917965311524"]
+        )
+        self.outbound = _post_bot(
+            self.client,
+            label="Outbound",
+            communication_type="voice_outbound",
+            api_url="https://example.com/outbound",
+            dids=["+917965314425"],
+        )
+        response = self.client.post(
+            "/api/telehub/process-agents/",
+            {"department": department.id, "name": "Sales", "voice": {"voice_bot_id": self.inbound["id"]}},
+            format="json",
+        )
+        self.agent = ProcessAgent.objects.get(pk=response.data["id"])
+        self.webhook = WebhookDefinition.objects.get(process_agent=self.agent)
+        self.base = f"/api/telehub/process-agents/{self.agent.id}"
+        self.first = self.agent.bot_journeys.get(order=0)
+        self.second = BotJourney.objects.get(
+            pk=self.client.post(
+                f"{self.base}/journeys/", {"name": "Follow-up", "voice_bot": self.outbound["id"]}, format="json"
+            ).data["id"]
+        )
+
+    def _transition(self, **body):
+        body = {"from_journey": self.first.id, "to_journey": self.second.id, **body}
+        response = self.client.post(f"{self.base}/journey-transitions/", body, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return response.data
+
+    def _inbound_call(self, **extra):
+        payload = {**self.PAYLOAD, "session_id": f"s-{Execution.objects.count()}", **extra}
+        self.client.post(f"/api/telehub/webhooks/{self.webhook.secret}/", payload, format="json")
+        return Execution.objects.filter(process_agent=self.agent, parent_execution__isnull=True).order_by("-id").first()
+
+    def _outbound_execution(self, journey=None, **variables):
+        return Execution.objects.create(
+            organization=make_org(),
+            process_agent=self.agent,
+            lead_id="lead-1",
+            status="dispatched",
+            current_bot_journey=journey or self.first,
+            variables={"to_number": "+916359724704", **variables},
+        )
+
+    # ── completed ──────────────────────────────────────────────────────────
+
+    def test_a_completed_call_starts_the_next_stage_as_a_new_execution(self):
+        self._transition(checks=[{"variable": "interested", "op": "equals", "value": "yes"}])
+
+        parent = self._inbound_call()
+
+        child = parent.children.get()
+        self.assertEqual(child.parent_execution_id, parent.id)
+        self.assertEqual(child.current_bot_journey_id, self.second.id)
+        self.assertEqual((child.status, child.current_node, child.attempt_count), ("pending", "Lead Received", 0))
+        self.assertLessEqual(child.next_execution, timezone.now())
+        self.assertEqual(child.organization_id, parent.organization_id)
+        self.assertEqual(child.variables["to_number"], "+916359724704")
+        self.assertEqual(child.variables["complaint_query"], "engine noise")
+        self.assertEqual(child.variables["interested"], "yes")
+        for per_call in ("session_id", "call_start_time", "call_duration"):
+            self.assertNotIn(per_call, child.variables)
+        self.assertEqual(parent.status, "completed")
+        self.assertTrue(ExecutionEvent.objects.filter(execution=parent, event_type="handed_off").exists())
+        self.assertTrue(ExecutionEvent.objects.filter(execution=child, event_type="created_by_handoff").exists())
+
+    def test_checks_decide_whether_the_lead_is_handed_on(self):
+        self._transition(checks=[{"variable": "interested", "op": "equals", "value": "yes"}])
+
+        parent = self._inbound_call(interested="no")
+
+        self.assertFalse(parent.children.exists())
+
+    def test_a_transition_without_checks_always_applies(self):
+        self._transition()
+        self.assertTrue(self._inbound_call(interested="no").children.exists())
+
+    def test_the_first_matching_transition_by_priority_wins(self):
+        third = BotJourney.objects.get(
+            pk=self.client.post(
+                f"{self.base}/journeys/", {"name": "Escalation", "voice_bot": self.outbound["id"]}, format="json"
+            ).data["id"]
+        )
+        self._transition(to_journey=third.id, priority=1)
+        self._transition(to_journey=self.second.id, priority=0)
+
+        parent = self._inbound_call()
+
+        self.assertEqual(parent.children.get().current_bot_journey_id, self.second.id)
+
+    def test_a_resent_webhook_does_not_fork_the_lead(self):
+        self._transition()
+        payload = {**self.PAYLOAD, "session_id": "same"}
+        for _ in range(3):
+            self.client.post(f"/api/telehub/webhooks/{self.webhook.secret}/", payload, format="json")
+
+        self.assertEqual(Execution.objects.filter(parent_execution__isnull=False).count(), 1)
+
+    def test_a_lead_is_handed_on_at_most_once_per_execution(self):
+        self._transition()
+        parent = self._inbound_call()
+
+        self.assertIsNone(handoff.run_completed_transitions(parent))
+        self.assertEqual(parent.children.count(), 1)
+
+    def test_each_stage_keeps_its_own_qa_result(self):
+        self._transition()
+        parent = self._inbound_call()
+        child = parent.children.get()
+
+        route_webhook_outcome(child, {"contact_no": "6359724704", "summary": "follow-up done", "outcome": "answered"})
+
+        self.assertEqual(QAResult.objects.filter(execution=parent).count(), 1)
+        self.assertEqual(child.qa_result.summary, "follow-up done")
+        self.assertNotEqual(parent.qa_result.pk, child.qa_result.pk)
+
+    def test_the_new_stage_is_picked_up_by_the_scheduler(self):
+        self._transition()
+        child = self._inbound_call().children.get()
+
+        with patch("apps.telehub.services.dispatcher.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"OK"
+            processed = tick()
+
+        self.assertEqual(processed, 1)
+        child.refresh_from_db()
+        self.assertEqual(child.status, "dispatched")
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        self.assertEqual(body["from"], "+917965314425")
+        self.assertEqual(body["to"], "+916359724704")
+        self.assertEqual(body["params"]["complaint_query"], "engine noise")
+
+    def test_a_stage_never_hands_back_into_one_it_already_went_through(self):
+        self._transition()
+        self._transition(from_journey=self.second.id, to_journey=self.first.id)
+        child = self._inbound_call().children.get()
+
+        route_webhook_outcome(child, {"contact_no": "6359724704", "outcome": "answered"})
+
+        self.assertFalse(child.children.exists())
+        event = ExecutionEvent.objects.get(execution=child, event_type="handoff_blocked")
+        self.assertEqual(event.payload["reason"], "loop")
+
+    def test_outbound_results_follow_completed_transitions_too(self):
+        self._transition(checks=[{"variable": "interested", "op": "exists"}])
+        execution = self._outbound_execution()
+
+        route_webhook_outcome(execution, {"contact_no": "6359724704", "outcome": "answered", "interested": "yes"})
+
+        self.assertEqual(execution.children.get().current_bot_journey_id, self.second.id)
+
+    def test_a_failed_call_that_will_be_retried_is_not_handed_on(self):
+        self._transition()
+        execution = self._outbound_execution()  # attempt_count 0 of the default 3
+
+        route_webhook_outcome(execution, {"contact_no": "6359724704", "outcome": "no_answer"})
+
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, "retry_scheduled")
+        self.assertFalse(execution.children.exists())
+
+    def test_a_call_that_schedules_a_callback_is_not_handed_on(self):
+        self._transition()
+        self.first.nodes.filter(name="Callback").update(
+            config={"conditions": [{"variable": "callback_requested", "operator": "equals", "value": "yes"}]}
+        )
+        execution = self._outbound_execution()
+
+        with patch("apps.telehub.services.outcome_routing.callback_schedule.schedule_callback", return_value=True):
+            route_webhook_outcome(execution, {"contact_no": "6359724704", "outcome": "answered"})
+
+        self.assertFalse(execution.children.exists())
+
+    # ── retries exhausted ──────────────────────────────────────────────────
+
+    def _exhausted(self):
+        execution = self._outbound_execution()
+        execution.attempt_count = 3
+        execution.save()
+        route_webhook_outcome(execution, {"contact_no": "6359724704", "outcome": "no_answer"})
+        execution.refresh_from_db()
+        return execution
+
+    def test_exhausted_retries_follow_a_retries_exhausted_transition(self):
+        self._transition(on="retries_exhausted")
+
+        execution = self._exhausted()
+
+        self.assertEqual(execution.status, "failed")
+        child = execution.children.get()
+        self.assertEqual(child.current_bot_journey_id, self.second.id)
+        self.assertTrue(ExecutionEvent.objects.filter(execution=execution, event_type="journey_advanced").exists())
+
+    def test_with_retries_exhausted_transitions_configured_only_they_decide(self):
+        self._transition(on="retries_exhausted", checks=[{"variable": "vip", "op": "exists"}])
+
+        execution = self._exhausted()
+
+        self.assertFalse(execution.children.exists())
+
+    def test_without_any_transition_exhausted_retries_fall_through_to_the_next_stage_by_order(self):
+        execution = self._exhausted()
+
+        child = execution.children.get()
+        self.assertEqual(child.current_bot_journey_id, self.second.id)
+        self.assertEqual(execution.status, "failed")
+
+    def test_a_completed_transition_does_not_stop_the_exhausted_fallback(self):
+        self._transition(on="completed", checks=[{"variable": "vip", "op": "exists"}])
+
+        self.assertTrue(self._exhausted().children.exists())
+
+    def test_the_last_stage_has_nowhere_to_fall_through_to(self):
+        execution = self._outbound_execution(journey=self.second)
+        execution.attempt_count = 3
+        execution.save()
+
+        route_webhook_outcome(execution, {"contact_no": "6359724704", "outcome": "no_answer"})
+
+        self.assertFalse(execution.children.exists())
+
+    # ── transitions API ────────────────────────────────────────────────────
+
+    def test_transitions_api_crud(self):
+        created = self._transition(checks=[{"variable": "interested", "op": "equals", "value": "yes"}], match="any")
+
+        self.assertEqual((created["from_name"], created["to_name"], created["on"]), ("Sales Journey", "Follow-up", "completed"))
+        listing = self.client.get(f"{self.base}/journey-transitions/")
+        self.assertEqual([t["id"] for t in listing.data], [created["id"]])
+
+        patched = self.client.patch(
+            f"{self.base}/journey-transitions/{created['id']}/", {"on": "retries_exhausted", "checks": []}, format="json"
+        )
+        self.assertEqual((patched.data["on"], patched.data["checks"]), ("retries_exhausted", []))
+
+        self.assertEqual(self.client.delete(f"{self.base}/journey-transitions/{created['id']}/").status_code, 204)
+
+    def test_new_transitions_go_to_the_end_of_the_order(self):
+        first, second = self._transition(), self._transition()
+        self.assertEqual((first["priority"], second["priority"]), (0, 1))
+
+    def test_transition_validation(self):
+        other = ProcessAgent.objects.create(organization=make_org(), department=self.agent.department, name="Other")
+        foreign = BotJourney.objects.create(process_agent=other, name="Foreign", order=0)
+        cases = [
+            ({"from_journey": self.first.id, "to_journey": self.first.id}, "to_journey"),
+            ({"to_journey": foreign.id}, "to_journey"),
+            ({"from_journey": foreign.id}, "from_journey"),
+            ({"to_journey": None}, "to_journey"),
+            ({"on": "sometimes"}, "on"),
+            ({"match": "some"}, "match"),
+            ({"checks": [{"variable": "x", "op": "bogus"}]}, "checks"),
+            ({"priority": "high"}, "priority"),
+        ]
+        for body, field in cases:
+            body = {"from_journey": self.first.id, "to_journey": self.second.id, **body}
+            response = self.client.post(f"{self.base}/journey-transitions/", body, format="json")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, body)
+            self.assertIn(field, response.data["error"], body)
+
+    def test_another_agents_transition_is_a_404(self):
+        created = self._transition()
+        other = ProcessAgent.objects.create(organization=make_org(), department=self.agent.department, name="Other")
+        url = f"/api/telehub/process-agents/{other.id}/journey-transitions/{created['id']}/"
+
+        self.assertEqual(self.client.patch(url, {"on": "completed"}, format="json").status_code, 404)
+        self.assertEqual(self.client.delete(url).status_code, 404)
+
+    def test_check_tenancy_flags_a_transition_between_different_agents_stages(self):
+        other = ProcessAgent.objects.create(organization=make_org(), department=self.agent.department, name="Other")
+        foreign = BotJourney.objects.create(process_agent=other, name="Foreign", order=0)
+        JourneyTransition.objects.create(process_agent=self.agent, from_journey=self.first, to_journey=foreign)
+
+        rules = [rule for rule, _ in find_violations()]
+
+        self.assertIn("JourneyTransition stages belong to a different process agent", rules)
 
 
 # ---------------------------------------------------------------------------

@@ -14,10 +14,8 @@ webhook handler that must always ack 200, so it never raises.
 """
 import re
 
-from django.utils import timezone
-
 from ..models import Execution, ExecutionEvent, QAResult
-from . import callback_schedule, retry_backoff
+from . import callback_schedule, handoff, retry_backoff
 from .journey import journey_nodes
 
 FAILURE_OUTCOMES = {"failed", "no_answer", "busy", "not_connected", "voicemail"}
@@ -89,64 +87,27 @@ def _advance_to_next_journey(execution: "Execution") -> bool:
     """
     Called when the current BotJourney's Retry budget is exhausted
     (retry_backoff.schedule_retry returned False, having already set
-    execution.status="failed"). If this process agent has a next BotJourney
-    (by `order`, after the execution's current one), moves the execution into
-    it: current_bot_journey advances, current_node resets to "Lead Received",
-    status back to "pending", attempt_count reset to 0 (a fresh journey gets
-    its own full retry budget), next_execution=now() so run_scheduler picks it
-    up on the next tick. This is what lets e.g. a Sales Journey's unconverted
-    leads automatically flow into a Follow-up Journey with a different
-    VoiceBot/script. Fail-open: no next journey (the common, single-journey
-    case) leaves the execution "failed" exactly as before this existed.
+    execution.status="failed"). Hands the lead to the next stage as a new
+    Execution (services/handoff.py): through a "retries_exhausted"
+    JourneyTransition if the stage has one, otherwise to the next stage by
+    `order` - e.g. a Sales stage's unconverted leads flowing into a Follow-up
+    stage with a different VoiceBot. Fail-open: no next stage (the common,
+    single-journey case) leaves the execution "failed" exactly as before.
     """
-    try:
-        process_agent = execution.process_agent
-        current_journey = execution.current_bot_journey
-        if current_journey is not None:
-            next_journey = (
-                process_agent.bot_journeys.filter(order__gt=current_journey.order)
-                .order_by("order")
-                .first()
-            )
-        else:
-            # Legacy execution with no current_bot_journey recorded: only a
-            # genuinely multi-journey process agent has anywhere to advance to.
-            first_journey = process_agent.bot_journeys.order_by("order").first()
-            next_journey = first_journey if process_agent.bot_journeys.count() > 1 else None
-
-        if next_journey is None:
-            return False
-
-        execution.current_bot_journey = next_journey
-        execution.current_node = "Lead Received"
-        execution.status = "pending"
-        execution.attempt_count = 0
-        execution.next_execution = timezone.now()
-        execution.save()
-
-        ExecutionEvent.objects.create(
-            execution=execution,
-            event_type="journey_advanced",
-            payload={
-                "from_journey": current_journey.name if current_journey else None,
-                "to_journey": next_journey.name,
-            },
-        )
-        return True
-    except Exception:
-        return False
+    return handoff.advance_after_retries_exhausted(execution)
 
 
 def _missing_variables(execution: "Execution") -> list:
     """
-    The process agent's declared Variable keys (wizard's Analytics
-    "Dispositions / Variables", or Business Rules variables when that step
-    is in use) whose value is absent or empty in execution.variables — which
-    at the point this is called already has the webhook payload merged in
-    (see route_webhook_outcome). Fail-open: any lookup error yields [].
+    The process agent's Variable keys ticked for QA (Variable.use_in_qa)
+    whose value is absent or empty in execution.variables — which at the
+    point this is called already has the webhook payload merged in (see
+    route_webhook_outcome). Fail-open: any lookup error yields [].
     """
     try:
-        expected_keys = list(execution.process_agent.variables.values_list("key", flat=True))
+        expected_keys = list(
+            execution.process_agent.variables.filter(use_in_qa=True).values_list("key", flat=True)
+        )
         variables = execution.variables or {}
         return [key for key in expected_keys if variables.get(key) in (None, "")]
     except Exception:
@@ -283,5 +244,10 @@ def route_webhook_outcome(execution: "Execution", payload: dict) -> None:
                         _advance_to_next_journey(execution)
                 except Exception:
                     pass
+            else:
+                # The call produced a result and nothing is being retried or
+                # called back: this stage is done with the lead, so follow a
+                # matching "completed" transition into the next stage.
+                handoff.run_completed_transitions(execution)
     except Exception:
         return

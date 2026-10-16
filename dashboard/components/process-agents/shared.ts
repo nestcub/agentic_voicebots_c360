@@ -15,19 +15,6 @@ export const TABS: { key: TabKey; label: string }[] = [
   { key: "settings", label: "Settings" },
 ];
 
-// Hyundai POC WhatsApp templates — the rules live in
-// services/telehub/apps/telehub/services/hyundai_whatsapp.py; `when` is only
-// the description shown in Settings.
-export const WHATSAPP_TEMPLATES: { key: string; label: string; when: string }[] = [
-  {
-    key: "T1",
-    label: "T1 – Appointment confirmation",
-    when: "Appointment date, time and place captured — or a partial capture (empty fields are sent as \"unspecified\").",
-  },
-  { key: "T2", label: "T2 – Callback", when: "Caller said they'll call back (callback_status is \"required\")." },
-  { key: "T3", label: "T3 – Sorry follow-up", when: "None of name, model or appointment details were captured." },
-];
-
 export const COMMUNICATION_TYPE_LABELS: Record<string, string> = {
   voice_outbound: "Voice Outbound",
   voice_inbound: "Voice Inbound",
@@ -110,4 +97,29 @@ export function formatDuration(seconds: number | null): string {
 
 export function errorMessage(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
+}
+
+/**
+ * The readable part of a failed telehubApi call. The client throws
+ * "TelehubApi POST /x failed: 400 Bad Request {json body}"; when that body is
+ * {"error": "text"} or {"error": {field: "text"}} this returns just the text(s),
+ * otherwise the fallback.
+ */
+export function apiErrorText(e: unknown, fallback: string): string {
+  if (!(e instanceof Error)) return fallback;
+  const start = e.message.indexOf("{");
+  if (start === -1) return fallback;
+  try {
+    const body = JSON.parse(e.message.slice(start)) as { error?: unknown };
+    if (typeof body.error === "string") return body.error;
+    if (body.error && typeof body.error === "object") {
+      const lines = Object.entries(body.error as Record<string, unknown>).map(([field, msg]) =>
+        Array.isArray(msg) ? `${field}: ${msg.join(", ")}` : `${field}: ${String(msg)}`,
+      );
+      if (lines.length) return lines.join(" · ");
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return fallback;
 }

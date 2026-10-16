@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 from ..models import Execution, ExecutionEvent
+from . import numbers
 from .journey import journey_nodes
 
 logger = logging.getLogger(__name__)
@@ -68,10 +69,11 @@ def _normalize_indian_number(raw: str) -> str:
 
 def _get_dids(execution: "Execution") -> list:
     """
-    The outbound DID(s) to dial from, read straight off the VoiceBot model
-    (VoiceBot.dids) for this Execution's current bot journey — not the
-    Communication node's config copy, so this always reflects the live
-    VoiceBot row even if a NodeInstance.config sync was ever missed. Falls
+    The outbound DID(s) to dial from: the numbers the Execution's current
+    stage selected, else all of its VoiceBot's numbers (services/numbers.py) —
+    read live, not from the Communication node's config copy, so this always
+    reflects the current rows even if a NodeInstance.config sync was ever
+    missed. Falls
     back to the process agent's first bot journey (by order) when
     current_bot_journey isn't set, mirroring journey_nodes()'s fallback for
     pre-multi-journey Executions. Fails open (empty list) on any missing row.
@@ -80,8 +82,7 @@ def _get_dids(execution: "Execution") -> list:
         bot_journey = execution.current_bot_journey
         if bot_journey is None:
             bot_journey = execution.process_agent.bot_journeys.order_by("order", "id").first()
-        voice_bot = bot_journey.voice_bot if bot_journey else None
-        return voice_bot.dids if voice_bot else []
+        return numbers.journey_dids(bot_journey)
     except Exception:
         return []
 

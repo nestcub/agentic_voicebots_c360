@@ -33,16 +33,63 @@ function InfoItem({
   );
 }
 
+// Shown until the agent has taken its first call: where to point the voice
+// platform, and what happens once the first webhook arrives (variables are
+// discovered from it, then ticked for QA / analytics in Settings).
+function WaitingForFirstCall({ agent, onOpenSettings }: { agent: ProcessAgentDetail; onOpenSettings?: () => void }) {
+  const inbound = agent.bot_journeys.some((j) => j.voice_bot?.communication_type === "voice_inbound");
+  const discovered = agent.variables.filter((v) => v.discovered);
+  const unticked = discovered.filter((v) => !v.use_in_qa && !v.use_in_analytics).length;
+
+  return (
+    <Card className="p-5 gap-3">
+      <h2 className="text-sm font-semibold text-foreground">
+        {discovered.length > 0 ? "Variables discovered" : "Waiting for the first call"}
+      </h2>
+      {discovered.length > 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Found {discovered.length} variable{discovered.length === 1 ? "" : "s"}
+          {unticked > 0 ? ` — ${unticked} not yet used for QA or analytics.` : "."}{" "}
+          {onOpenSettings && (
+            <button type="button" onClick={onOpenSettings} className="text-primary hover:underline">
+              Choose them in Settings
+            </button>
+          )}
+        </p>
+      ) : (
+        <ol className="list-decimal pl-5 space-y-1.5 text-sm text-muted-foreground">
+          {agent.webhooks.length > 0 ? (
+            <li>
+              Paste this webhook URL into Chat360 for the bot:
+              {agent.webhooks.map((w) => (
+                <p key={w.id} className="mt-1 text-xs text-foreground font-mono break-all">
+                  {w.public_url ?? w.url}
+                </p>
+              ))}
+            </li>
+          ) : (
+            <li>No webhook yet — this bot doesn&apos;t post results back.</li>
+          )}
+          <li>{inbound ? "Place a test call to the bot." : "Add leads and launch a campaign, or dispatch a single call."}</li>
+          <li>The variables in its results are discovered automatically; then tick which ones feed QA and analytics.</li>
+        </ol>
+      )}
+    </Card>
+  );
+}
+
 export function OverviewTab({
   agent,
   stats,
   statsLoading,
   statsError,
+  onOpenSettings,
 }: {
   agent: ProcessAgentDetail;
   stats: ProcessAgentStats | null;
   statsLoading: boolean;
   statsError: string | null;
+  onOpenSettings?: () => void;
 }) {
   const show = (value: string) => (statsLoading ? "…" : value);
   const calls = stats?.calls ?? null;
@@ -66,6 +113,10 @@ export function OverviewTab({
           <InfoItem icon={RefreshCw} label="Updated" value={formatDate(agent.updated_at)} />
         </div>
       </Card>
+
+      {!statsLoading && !statsError && stats?.calls === 0 && (
+        <WaitingForFirstCall agent={agent} onOpenSettings={onOpenSettings} />
+      )}
 
       <div className="space-y-3">
         <h2 className="text-sm font-semibold text-foreground">Performance</h2>

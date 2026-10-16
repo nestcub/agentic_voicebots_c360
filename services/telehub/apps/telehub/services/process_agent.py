@@ -5,6 +5,8 @@ from django.db import transaction
 
 from ..models import (
     BotJourney,
+    ChannelRule,
+    ChannelTemplate,
     Department,
     Integration,
     LeadSource,
@@ -108,6 +110,18 @@ def create_process_agent_from_wizard(payload: dict, organization) -> "ProcessAge
         voice_bot = VoiceBot.objects.for_org(organization).filter(pk=voice_bot_id).first()
         if voice_bot is None:
             raise ValidationError(f"Unknown voice bot id: {voice_bot_id}")
+    # The number this stage uses ({"voice": {"numbers": [PhoneNumber id]}}): same
+    # rule as the stage API — at most one, and it must be one of the bot's own.
+    number_ids = voice.get("numbers") or []
+    if number_ids:
+        if voice_bot is None:
+            raise ValidationError("numbers need a voice bot")
+        if not isinstance(number_ids, list) or not all(isinstance(i, int) for i in number_ids):
+            raise ValidationError("numbers must be a list of number ids")
+        if len(set(number_ids)) > 1:
+            raise ValidationError("a stage is assigned one number")
+        if voice_bot.numbers.filter(pk__in=number_ids).count() != len(set(number_ids)):
+            raise ValidationError("numbers must be numbers of the chosen voice bot")
     valid_integration_ids = []
     for integration_id in integration_ids:
         if not Integration.objects.for_org(organization).filter(pk=integration_id).exists():
@@ -133,6 +147,8 @@ def create_process_agent_from_wizard(payload: dict, organization) -> "ProcessAge
 
     bot_journey.voice_bot = voice_bot
     bot_journey.save()
+    if number_ids:
+        bot_journey.numbers.set(number_ids)
 
     communication_config = (
         {field: getattr(voice_bot, field) for field in VOICE_BOT_TO_NODE_CONFIG_FIELDS}
@@ -152,28 +168,31 @@ def create_process_agent_from_wizard(payload: dict, organization) -> "ProcessAge
         )
 
     # Business Rules variables and Analytics dispositions are visually "the
-    # same thing" in the wizard (see VariableRowsEditor's `simple` mode) but
-    # are kept as separate rows per source — analytics rows use
-    # default_value as a free-text display label, not a real default.
-    tagged_variables = [
-        (Variable.SOURCE_BUSINESS_RULES, v) for v in (business_rules.get("variables", []) or [])
-    ] + [(Variable.SOURCE_ANALYTICS, v) for v in (analytics.get("custom_variables", []) or [])]
+    # same thing" in the wizard (see VariableRowsEditor's `simple` mode), and a
+    # Variable is now unique per (agent, key): a key listed in both steps
+    # becomes one row — the business-rules entry wins (real default_value /
+    # type), and the analytics entry only contributes its display label
+    # (analytics rows use default_value as a free-text label, not a default).
     variables_by_key = {}
-    for source, variable in tagged_variables:
+    for source, variable in [
+        (Variable.SOURCE_BUSINESS_RULES, v) for v in (business_rules.get("variables", []) or [])
+    ] + [(Variable.SOURCE_ANALYTICS, v) for v in (analytics.get("custom_variables", []) or [])]:
         key = variable.get("key")
         if not key:
             continue
-        variables_by_key[(source, key)] = variable
-    for (source, key), variable in variables_by_key.items():
-        Variable.objects.create(
-            process_agent=agent,
-            key=key,
-            type=variable.get("type", "string"),
-            default_value=variable.get("default_value", "") if source == Variable.SOURCE_BUSINESS_RULES else "",
-            label=variable.get("default_value", "") if source == Variable.SOURCE_ANALYTICS else "",
-            required=variable.get("required", False),
-            source=source,
+        row = variables_by_key.setdefault(
+            key,
+            {"source": source, "type": variable.get("type", "string"), "default_value": "", "label": "", "required": False},
         )
+        if source == Variable.SOURCE_BUSINESS_RULES:
+            row["source"] = source
+            row["type"] = variable.get("type", "string")
+            row["default_value"] = variable.get("default_value", "")
+        else:
+            row["label"] = variable.get("default_value", "")
+        row["required"] = row["required"] or bool(variable.get("required", False))
+    for key, row in variables_by_key.items():
+        Variable.objects.create(process_agent=agent, key=key, **row)
 
     for integration_id in valid_integration_ids:
         ProcessIntegration.objects.create(
@@ -181,13 +200,19 @@ def create_process_agent_from_wizard(payload: dict, organization) -> "ProcessAge
         )
 
     if omnichannel.get("channel") or omnichannel.get("variables"):
+        # The wizard's single curl becomes one "Default" template plus a rule that
+        # always sends it. It is deliberately not stored on the config's legacy
+        # whatsapp_curl, which would seed Hyundai's variable-specific T1/T2/T3 rules.
         OmnichannelConfig.objects.create(
             process_agent=agent,
             channel=omnichannel.get("channel", ""),
             variables=omnichannel.get("variables", []) or [],
             whatsapp_template=omnichannel.get("whatsapp_template", ""),
-            whatsapp_curl=omnichannel.get("whatsapp_curl", ""),
         )
+        curl = (omnichannel.get("whatsapp_curl") or "").strip()
+        if curl:
+            template = ChannelTemplate.objects.create(process_agent=agent, name="Default", curl=curl)
+            ChannelRule.objects.create(process_agent=agent, priority=0, template=template)
 
     communication_type = voice_bot.communication_type if voice_bot else ""
     webhook_schema = voice_bot.webhook_schema if voice_bot else None

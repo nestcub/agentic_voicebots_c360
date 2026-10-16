@@ -122,7 +122,17 @@ export interface ProcessAgentVariable {
   default_value: string;
   label: string;
   required: boolean;
+  /** Legacy — no longer part of uniqueness; one row per key. */
   source: "business_rules" | "analytics";
+  /** Ticked for the QA missing-variables check. */
+  use_in_qa: boolean;
+  /** Ticked for the Analytics tab. */
+  use_in_analytics: boolean;
+  /** Created automatically from a webhook payload rather than declared by hand. */
+  discovered: boolean;
+  last_seen_at: string | null;
+  /** Latest non-empty value seen, shown as a hint when ticking. */
+  sample_value: string;
 }
 
 export interface WebhookDefinition {
@@ -150,6 +160,12 @@ export interface ProcessAgentIntegration {
 // bot identity/config managed on the dashboard's /bots page (not owned by any
 // one ProcessAgent). A BotJourney is the one calling stage a ProcessAgent is
 // wired to a VoiceBot through, created automatically at agent-creation time.
+/** One DID of a voice bot. A number belongs to exactly one bot, across all organisations. */
+export interface PhoneNumber {
+  id: number;
+  did: string;
+}
+
 export interface VoiceBot {
   id: number;
   label: string;
@@ -157,18 +173,38 @@ export interface VoiceBot {
   bot_name: string;
   bot_id: string;
   dids: string[];
+  /** The same numbers as `dids`, as rows a stage can select from. */
+  numbers: PhoneNumber[];
   api_url: string;
   script: string;
   webhook_schema: Record<string, unknown>;
   created_at: string;
 }
 
+/** A voicebot stage of a process agent. */
 export interface BotJourney {
   id: number;
   name: string;
   order: number;
   voice_bot: VoiceBot | null;
+  /** Numbers explicitly chosen for this stage; empty = it uses all of its bot's numbers. */
+  numbers: PhoneNumber[];
+  /** The DIDs the stage effectively uses (first = outbound caller ID; inbound calls must dial one). */
+  active_dids: string[];
   created_at: string;
+}
+
+/** "When a call in `from_journey` ends and the checks pass, hand the lead to `to_journey`." */
+export interface JourneyTransition {
+  id: number;
+  from_journey: number;
+  from_name: string;
+  to_journey: number;
+  to_name: string;
+  on: "completed" | "retries_exhausted";
+  priority: number;
+  match: "all" | "any";
+  checks: ChannelRuleCheck[];
 }
 
 export interface ProcessAgentDetail {
@@ -223,6 +259,8 @@ export interface ProcessAgentWizardPayload {
     // agent's one BotJourney dispatches through — see
     // services/telehub/apps/telehub/services/process_agent.py.
     voice_bot_id?: number;
+    // The one PhoneNumber of that bot the stage uses; omitted = automatic.
+    numbers?: number[];
   };
   lead_source?: {
     type?: string;
@@ -327,15 +365,71 @@ export interface CallRow {
   created_at: string;
   // Latest WhatsApp send for this call (automatic or manual).
   whatsapp: {
-    status: "pending" | "sent" | "failed" | "skipped";
+    /** Null for sends from before WhatsAppSend existed (read off events). */
+    id: number | null;
+    status: "pending" | "sent" | "failed" | "skipped" | "blocked";
+    /** Blocked sends only: variable names still waiting for a value. */
+    missing: string[];
     template_key: string | null;
     trigger: "auto" | "manual";
     error: string | null;
     at: string;
     count: number;
   } | null;
-  // The template the Hyundai rules pick for this call.
-  suggested_template: string;
+  /** Template the rules pick for this call; null when a skip rule wins or none match. */
+  suggested_template: string | null;
+}
+
+// ── Omnichannel templates + rules (services/telehub/.../services/channel_config.py) ──
+
+/** One placeholder in a template's curl, e.g. {key: "customer_name", placeholder: "customer_name"}. */
+export interface ChannelTemplateParam {
+  key: string;
+  placeholder: string;
+}
+
+/** Where a param's value comes from. No entry = matched by the curl's own placeholder text. */
+export type ChannelParamEntry = { variable: string; fallback?: string } | { fixed: string };
+
+export interface ChannelTemplate {
+  id: number;
+  name: string;
+  channel: string;
+  is_active: boolean;
+  /** Sent in place of an empty variable; blank = an empty variable blocks the send. */
+  missing_fill: string;
+  param_map: Record<string, ChannelParamEntry>;
+  configured: boolean;
+  url: string;
+  template_title: string;
+  params: ChannelTemplateParam[];
+  error: string | null;
+  /** Variables this template reads — what the customer's message can contain. */
+  variables_sent: string[];
+}
+
+export interface ChannelTemplateList {
+  templates: ChannelTemplate[];
+  variables_sent: string[];
+}
+
+export type ChannelCheckOp = "exists" | "not_exists" | "equals" | "truthy";
+
+export interface ChannelRuleCheck {
+  variable: string;
+  op: ChannelCheckOp;
+  value?: string;
+}
+
+export interface ChannelRule {
+  id: number;
+  priority: number;
+  action: "send" | "skip";
+  template: number | null;
+  template_name: string | null;
+  match: "all" | "any";
+  checks: ChannelRuleCheck[];
+  reason: string;
 }
 
 export interface WhatsAppPreview {
@@ -344,7 +438,10 @@ export interface WhatsAppPreview {
   receiver_number: string;
   template_title: string;
   params: Record<string, string>;
+  /** Param keys with no value. */
   missing: string[];
+  /** The variable names behind them — what to fill in. */
+  missing_variables: string[];
   error: string | null;
 }
 
@@ -354,6 +451,16 @@ export interface WhatsAppSendResult {
   success: boolean;
   status_code: number | null;
   error: string | null;
+  /** True when nothing was sent because mapped variables are empty; `missing` names them. */
+  blocked?: boolean;
+  missing?: string[];
+  send_id?: number;
+}
+
+export interface WhatsAppFillResult extends WhatsAppSendResult {
+  send_id: number;
+  status: "pending" | "sent" | "failed" | "blocked";
+  missing: string[];
 }
 
 export interface QaResult {

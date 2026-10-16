@@ -3,6 +3,8 @@ from django.contrib import admin
 from .models import (
     AnalyticsEvent,
     BotJourney,
+    ChannelRule,
+    ChannelTemplate,
     Department,
     Execution,
     ExecutionEvent,
@@ -54,3 +56,5 @@ admin.site.register(AnalyticsEvent)
 admin.site.register(Variable)
 admin.site.register(OmnichannelConfig)
 admin.site.register(WhatsAppSend)
+admin.site.register(ChannelTemplate)
+admin.site.register(ChannelRule)

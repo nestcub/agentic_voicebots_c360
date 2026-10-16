@@ -1,18 +1,12 @@
 import { useState } from "react";
-import Link from "next/link";
 import {
-  ArrowRight,
-  Bot,
   Braces,
   ChartColumn,
   ClipboardCheck,
   Inbox,
-  MessageSquare,
-  Pencil,
   Plug,
   Plus,
   Webhook,
-  type LucideIcon,
 } from "lucide-react";
 import { Card } from "@/components/Card";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -28,136 +22,20 @@ import {
   detachProcessAgentIntegration,
   listIntegrations,
   updateProcessAgentAnalyticsStats,
-  updateProcessAgentOmnichannel,
   updateProcessAgentQaConfig,
   updateProcessAgentVariable,
   updateProcessAgentWebhook,
-  type OmnichannelConfigWrite,
   type ProcessAgentVariableWrite,
 } from "@/lib/telehubApi";
 import {
-  COMMUNICATION_TYPE_LABELS,
   QA_FIELDS,
   STAT_FIELDS,
   errorMessage,
   getConfigBool,
-  WHATSAPP_TEMPLATES,
 } from "./shared";
-
-function SettingsRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-start gap-2 text-sm">
-      <span className="text-muted-foreground min-w-40">{label}</span>
-      <span className="text-foreground break-words">{value}</span>
-    </div>
-  );
-}
-
-function SettingsSection({
-  title,
-  hint,
-  icon: Icon,
-  actions,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  icon?: LucideIcon;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card className="p-5 space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0">
-          {Icon && (
-            <span className="w-9 h-9 shrink-0 rounded-lg bg-accent text-primary flex items-center justify-center">
-              <Icon className="w-4 h-4" />
-            </span>
-          )}
-          <div className="min-w-0">
-            <p className="text-base font-semibold text-foreground">{title}</p>
-            {hint && <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>}
-          </div>
-        </div>
-        {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
-      </div>
-      <div className="space-y-2">{children}</div>
-    </Card>
-  );
-}
-
-function EmptySection({ label }: { label: string }) {
-  return <p className="text-sm text-muted-foreground">{label}</p>;
-}
-
-function EditButton({ onClick }: { onClick: () => void }) {
-  return (
-    <Button variant="outline" size="sm" onClick={onClick}>
-      <Pencil /> Edit
-    </Button>
-  );
-}
-
-function SaveCancelButtons({
-  onSave,
-  onCancel,
-  saving,
-}: {
-  onSave: () => void;
-  onCancel: () => void;
-  saving: boolean;
-}) {
-  return (
-    <>
-      <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-        Cancel
-      </Button>
-      <Button size="sm" onClick={onSave} disabled={saving}>
-        {saving && <Spinner />}
-        Save
-      </Button>
-    </>
-  );
-}
-
-// ── Voice bot (read-only — managed on the global /bots page) ────────────
-
-function VoiceBotSection({ agent }: { agent: ProcessAgentDetail }) {
-  const bot = agent.bot_journeys[0]?.voice_bot ?? null;
-
-  return (
-    <SettingsSection
-      icon={Bot}
-      title="Voice"
-      hint="Managed on the Voicebots page"
-      actions={
-        <Link href="/bots" className={buttonVariants({ variant: "outline", size: "sm" })}>
-          Manage bots <ArrowRight />
-        </Link>
-      }
-    >
-      {bot ? (
-        <div className="rounded-lg border border-border p-3">
-          <p className="text-sm font-medium text-foreground">{bot.label || bot.bot_name || `Voice Bot ${bot.id}`}</p>
-          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-            {bot.communication_type && (
-              <p>{COMMUNICATION_TYPE_LABELS[bot.communication_type] || bot.communication_type}</p>
-            )}
-            <p>
-              {bot.bot_name || "—"}
-              {bot.bot_id && <span className="ml-1">({bot.bot_id})</span>}
-            </p>
-            {bot.dids.length > 0 && <p>DIDs: {bot.dids.join(", ")}</p>}
-            {bot.api_url && <p className="font-mono break-all">{bot.api_url}</p>}
-          </div>
-        </div>
-      ) : (
-        <EmptySection label="No voice bot attached to this agent." />
-      )}
-    </SettingsSection>
-  );
-}
+import { OmnichannelSection } from "./OmnichannelSection";
+import { StagesSection } from "./StagesSection";
+import { EditButton, EmptySection, SaveCancelButtons, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 // ── QA toggles ───────────────────────────────────────────────────────────
 
@@ -333,7 +211,7 @@ function AnalyticsStatsSection({
 const VARIABLE_TYPE_OPTIONS = ["string", "number", "boolean", "date"];
 
 function emptyVariableDraft(): ProcessAgentVariableWrite {
-  return { key: "", type: "string", default_value: "", label: "", required: false, source: "business_rules" };
+  return { key: "", type: "string", default_value: "", label: "", required: false, use_in_qa: true, use_in_analytics: true };
 }
 
 function VariableRowForm({
@@ -354,14 +232,22 @@ function VariableRowForm({
         />
       </td>
       <td className="py-1.5 pr-4">
-        <select
-          value={draft.source ?? "business_rules"}
-          onChange={(e) => onChange({ ...draft, source: e.target.value as ProcessAgentVariableWrite["source"] })}
-          className="w-full px-2 py-1 rounded border border-border bg-surface text-xs"
-        >
-          <option value="business_rules">Business Rules</option>
-          <option value="analytics">Analytics</option>
-        </select>
+        <input
+          type="checkbox"
+          checked={draft.use_in_qa ?? true}
+          onChange={(e) => onChange({ ...draft, use_in_qa: e.target.checked })}
+          className="h-4 w-4 accent-primary"
+          aria-label="Use in QA"
+        />
+      </td>
+      <td className="py-1.5 pr-4">
+        <input
+          type="checkbox"
+          checked={draft.use_in_analytics ?? true}
+          onChange={(e) => onChange({ ...draft, use_in_analytics: e.target.checked })}
+          className="h-4 w-4 accent-primary"
+          aria-label="Use in Analytics"
+        />
       </td>
       <td className="py-1.5 pr-4">
         <select
@@ -427,8 +313,20 @@ function VariablesSection({
       default_value: v.default_value,
       label: v.label,
       required: v.required,
-      source: v.source,
+      use_in_qa: v.use_in_qa,
+      use_in_analytics: v.use_in_analytics,
     });
+  }
+
+  // The QA / Analytics ticks save as soon as they are clicked.
+  async function toggleFlag(v: ProcessAgentVariable, field: "use_in_qa" | "use_in_analytics") {
+    setError(null);
+    try {
+      await updateProcessAgentVariable(agentId, v.id, { [field]: !v[field] });
+      onSaved();
+    } catch (e) {
+      setError(errorMessage(e, "Failed to update variable"));
+    }
   }
 
   async function saveEdit(id: number) {
@@ -486,7 +384,11 @@ function VariablesSection({
     <SettingsSection
       icon={Braces}
       title="Dispositions / Variables"
-      hint={`${variables.length} configured`}
+      hint={`${variables.length} configured${
+        variables.some((v) => v.discovered && !v.use_in_qa && !v.use_in_analytics)
+          ? " — new ones found in call data are unticked until you choose where to use them"
+          : ""
+      }`}
       actions={
         !adding && (
           <button
@@ -510,7 +412,12 @@ function VariablesSection({
             <thead>
               <tr className="text-left text-xs text-muted-foreground border-b border-border">
                 <th className="py-1.5 pr-4 font-medium">Key</th>
-                <th className="py-1.5 pr-4 font-medium">Source</th>
+                <th className="py-1.5 pr-4 font-medium" title="Counted in the QA missing-variables check">
+                  QA
+                </th>
+                <th className="py-1.5 pr-4 font-medium" title="Shown on the Analytics tab">
+                  Analytics
+                </th>
                 <th className="py-1.5 pr-4 font-medium">Type</th>
                 <th className="py-1.5 pr-4 font-medium">Default</th>
                 <th className="py-1.5 pr-4 font-medium">Label</th>
@@ -524,9 +431,36 @@ function VariablesSection({
                   <VariableRowForm key={v.id} draft={editDraft} onChange={setEditDraft} />
                 ) : (
                   <tr key={v.id}>
-                    <td className="py-1.5 pr-4 text-foreground font-mono text-xs">{v.key}</td>
-                    <td className="py-1.5 pr-4 text-muted-foreground">
-                      {v.source === "analytics" ? "Analytics" : "Business Rules"}
+                    <td className="py-1.5 pr-4 text-foreground font-mono text-xs">
+                      {v.key}
+                      {v.discovered && (
+                        <span className="ml-2 font-sans text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">
+                          from calls
+                        </span>
+                      )}
+                      {v.sample_value && (
+                        <span className="block font-sans text-[11px] text-muted-foreground truncate max-w-56" title={v.sample_value}>
+                          e.g. {v.sample_value}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-4">
+                      <input
+                        type="checkbox"
+                        checked={v.use_in_qa}
+                        onChange={() => toggleFlag(v, "use_in_qa")}
+                        className="h-4 w-4 accent-primary"
+                        aria-label={`Use ${v.key} in QA`}
+                      />
+                    </td>
+                    <td className="py-1.5 pr-4">
+                      <input
+                        type="checkbox"
+                        checked={v.use_in_analytics}
+                        onChange={() => toggleFlag(v, "use_in_analytics")}
+                        className="h-4 w-4 accent-primary"
+                        aria-label={`Use ${v.key} in Analytics`}
+                      />
                     </td>
                     <td className="py-1.5 pr-4 text-muted-foreground">{v.type}</td>
                     <td className="py-1.5 pr-4 text-muted-foreground">{v.default_value || "—"}</td>
@@ -542,7 +476,7 @@ function VariablesSection({
                   if (!v) return null;
                   return (
                     <tr>
-                      <td colSpan={7} className="pt-1 pb-2">
+                      <td colSpan={8} className="pt-1 pb-2">
                         <div className="flex items-center gap-2">
                           <SaveCancelButtons
                             onSave={() => saveEdit(v.id)}
@@ -558,7 +492,7 @@ function VariablesSection({
                 <>
                   <VariableRowForm draft={newDraft} onChange={setNewDraft} />
                   <tr>
-                    <td colSpan={7} className="pt-1 pb-2">
+                    <td colSpan={8} className="pt-1 pb-2">
                       <div className="flex items-center gap-2">
                         <SaveCancelButtons onSave={handleCreate} onCancel={() => setAdding(false)} saving={saving} />
                       </div>
@@ -708,182 +642,6 @@ function WebhookRow({
       </div>
       <SaveCancelButtons onSave={handleSave} onCancel={() => setEditing(false)} saving={saving} />
     </div>
-  );
-}
-
-// ── Omnichannel ──────────────────────────────────────────────────────────
-
-function OmnichannelSection({
-  agentId,
-  omnichannel,
-  onSaved,
-}: {
-  agentId: number;
-  omnichannel: ProcessAgentDetail["omnichannel"];
-  onSaved: () => void;
-}) {
-  // T1 falls back to the pre-POC single curl until it's saved as T1.
-  function initialCurls(): Record<string, string> {
-    const curls = { ...(omnichannel?.whatsapp_curls ?? {}) };
-    if (!curls.T1?.trim() && omnichannel?.whatsapp_curl) curls.T1 = omnichannel.whatsapp_curl;
-    return curls;
-  }
-
-  const [editing, setEditing] = useState(false);
-  const [channel, setChannel] = useState(omnichannel?.channel ?? "");
-  const [variablesText, setVariablesText] = useState((omnichannel?.variables ?? []).join(", "));
-  const [autoSend, setAutoSend] = useState(omnichannel?.auto_send ?? false);
-  const [curls, setCurls] = useState<Record<string, string>>(initialCurls);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function startEditing() {
-    setChannel(omnichannel?.channel ?? "");
-    setVariablesText((omnichannel?.variables ?? []).join(", "));
-    setAutoSend(omnichannel?.auto_send ?? false);
-    setCurls(initialCurls());
-    setError(null);
-    setEditing(true);
-  }
-
-  async function handleSave() {
-    const data: OmnichannelConfigWrite = {
-      channel,
-      variables: variablesText
-        .split(",")
-        .map((v) => v.trim())
-        .filter(Boolean),
-      auto_send: autoSend,
-      whatsapp_curls: Object.fromEntries(WHATSAPP_TEMPLATES.map((t) => [t.key, curls[t.key]?.trim() ?? ""])),
-      // Kept in step with T1 so clearing T1 doesn't fall back to a stale curl.
-      whatsapp_curl: curls.T1?.trim() ?? "",
-    };
-    setSaving(true);
-    setError(null);
-    try {
-      await updateProcessAgentOmnichannel(agentId, data);
-      onSaved();
-      setEditing(false);
-    } catch (e) {
-      setError(errorMessage(e, "Failed to save omnichannel settings"));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <SettingsSection
-      icon={MessageSquare}
-      title="Omnichannel"
-      hint={omnichannel ? undefined : "Not configured"}
-      actions={
-        editing ? (
-          <SaveCancelButtons onSave={handleSave} onCancel={() => setEditing(false)} saving={saving} />
-        ) : (
-          <EditButton onClick={startEditing} />
-        )
-      }
-    >
-      {error && <p className="text-xs text-bad">{error}</p>}
-      {editing ? (
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">Channel</label>
-            <select
-              value={channel}
-              onChange={(e) => setChannel(e.target.value)}
-              className="w-full max-w-xs px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
-            >
-              <option value="">None</option>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="sms">SMS</option>
-              <option value="email">Email</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">Variables to send (comma-separated)</label>
-            <input
-              value={variablesText}
-              onChange={(e) => setVariablesText(e.target.value)}
-              className="w-full px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-sm"
-            />
-          </div>
-          {channel === "whatsapp" && (
-            <>
-              <label className="flex items-center gap-2 text-sm text-foreground">
-                <input type="checkbox" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} />
-                Auto-send WhatsApp after each inbound call
-              </label>
-              {WHATSAPP_TEMPLATES.map((t) => (
-                <div key={t.key}>
-                  <label className="block text-xs font-medium text-foreground">{t.label}</label>
-                  <p className="text-[11px] text-muted-foreground mb-1">{t.when}</p>
-                  <textarea
-                    value={curls[t.key] ?? ""}
-                    onChange={(e) => setCurls((c) => ({ ...c, [t.key]: e.target.value }))}
-                    rows={4}
-                    placeholder="Paste the template's curl command"
-                    spellCheck={false}
-                    className="w-full px-2.5 py-1.5 rounded-md border border-input bg-card shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 text-xs font-mono"
-                  />
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      ) : !omnichannel ? (
-        <EmptySection label="No omnichannel forwarding configured." />
-      ) : (
-        <div className="space-y-1.5">
-          <SettingsRow
-            label="Channel"
-            value={COMMUNICATION_TYPE_LABELS[omnichannel.channel] || omnichannel.channel || "—"}
-          />
-          <SettingsRow
-            label="Variables to send"
-            value={omnichannel.variables.length > 0 ? omnichannel.variables.join(", ") : "—"}
-          />
-          {omnichannel.channel === "whatsapp" && (
-            <>
-              <SettingsRow label="Auto-send" value={omnichannel.auto_send ? "On" : "Off"} />
-              <div className="space-y-2 pt-1">
-                {WHATSAPP_TEMPLATES.map((t) => {
-                  const summary = omnichannel.whatsapp_templates?.[t.key];
-                  return (
-                    <div key={t.key} className="rounded-lg border border-border px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-medium text-foreground">{t.label}</p>
-                        {!summary?.configured ? (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-text-muted/15 text-muted-foreground">
-                            Not configured
-                          </span>
-                        ) : summary.error ? (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-bad/15 text-bad">Invalid curl</span>
-                        ) : (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-ok/15 text-ok">Ready</span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">{t.when}</p>
-                      {summary?.configured &&
-                        (summary.error ? (
-                          <p className="text-xs text-bad mt-1">{summary.error}</p>
-                        ) : (
-                          <p className="text-xs text-foreground mt-1">
-                            <span className="font-mono">{summary.template_title || "—"}</span>
-                            {summary.params.length > 0 && (
-                              <span className="text-muted-foreground"> · params: {summary.params.join(", ")}</span>
-                            )}
-                          </p>
-                        ))}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </SettingsSection>
   );
 }
 
@@ -1054,7 +812,7 @@ export function SettingsTab({
         </div>
       </Card>
 
-      <VoiceBotSection agent={agent} />
+      <StagesSection agent={agent} onSaved={onAgentChanged} />
 
       <SettingsSection icon={Inbox} title="Lead Sources" hint={`${agent.lead_sources.length} configured`}>
         {agent.lead_sources.length === 0 && <EmptySection label="No lead sources configured." />}
@@ -1103,7 +861,7 @@ export function SettingsTab({
         ))}
       </SettingsSection>
 
-      <OmnichannelSection agentId={agent.id} omnichannel={agent.omnichannel} onSaved={onAgentChanged} />
+      <OmnichannelSection agent={agent} onSaved={onAgentChanged} />
 
       <IntegrationsSection agentId={agent.id} integrations={agent.integrations} onSaved={onAgentChanged} />
     </div>

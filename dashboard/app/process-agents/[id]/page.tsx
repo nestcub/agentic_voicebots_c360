@@ -445,7 +445,13 @@ export default function ProcessAgentDetailPage() {
 
       {/* Tab content */}
       {tab === "overview" && (
-        <OverviewTab agent={agent} stats={stats} statsLoading={statsLoading} statsError={statsError} />
+        <OverviewTab
+          agent={agent}
+          stats={stats}
+          statsLoading={statsLoading}
+          statsError={statsError}
+          onOpenSettings={() => setTab("settings")}
+        />
       )}
       {tab === "journey" && (
         <JourneyTab

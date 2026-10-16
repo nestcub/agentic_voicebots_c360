@@ -21,33 +21,28 @@ import type {
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-// Business Rules and Integrations steps are temporarily disabled — see step
-// content blocks and the Review section below, both commented out in tandem.
-// Re-enable by uncommenting these two entries (and restoring the original
-// step-index numbering throughout this file) alongside them.
-const STEPS = [
-  "Basic",
-  "Voice",
-  "Lead Source",
-  // "Business Rules",
-  // "Integrations",
-  "QA",
-  "Analytics",
-  "Omnichannel",
-  "Review",
-] as const;
+// Business Rules and Integrations are out of the wizard — their blocks below
+// stay commented out until the later cleanup. Retry / business hours / callback
+// are set in the agent's Settings tab. Variables are not asked for here at all:
+// they are discovered from the first webhook payloads, then ticked for QA /
+// analytics (schema_revamp_phase1_simple_flow.md §4.1).
+type StepKey = "basic" | "voicebot" | "lead_source" | "whatsapp" | "review";
 
-const STEP_HINTS: Record<(typeof STEPS)[number], string> = {
-  Basic: "Name the process and place it under a channel.",
-  Voice: "Select the bot this process dispatches calls through.",
-  "Lead Source": "Where leads for this process come from.",
-  // "Business Rules": "Retry, business hours, callback and DND behaviour.",
-  // Integrations: "Attach existing integrations to this process (optional).",
-  QA: "Automated quality checks to run after every execution.",
-  Analytics: "Variables tracked and dashboard stats shown for this process (optional).",
-  Omnichannel: "Send captured variables to another channel after the call.",
-  Review: "Confirm everything below, then generate the process.",
+const STEP_META: Record<StepKey, { label: string; hint: string }> = {
+  basic: { label: "Basics", hint: "Name the agent and place it under a channel." },
+  voicebot: { label: "Voicebot", hint: "Pick the bot this agent runs on, and the number it uses." },
+  lead_source: { label: "Lead Source", hint: "Where leads for this agent's outbound calls come from." },
+  whatsapp: { label: "WhatsApp", hint: "Optionally send a WhatsApp message after each call." },
+  review: { label: "Review", hint: "Confirm everything below, then create the agent." },
 };
+
+// The Lead Source step only applies to bots that dial out.
+function stepsFor(bot: VoiceBot | undefined): StepKey[] {
+  const inbound = bot?.communication_type === "voice_inbound";
+  return inbound
+    ? ["basic", "voicebot", "whatsapp", "review"]
+    : ["basic", "voicebot", "lead_source", "whatsapp", "review"];
+}
 
 const COMMUNICATION_TYPES = [
   { value: "voice_outbound", label: "Voice Outbound" },
@@ -117,45 +112,6 @@ const STAT_FIELDS: { key: string; label: string }[] = [
   { key: "total_cost_of_campaign", label: "Total Cost of Campaign" },
 ];
 
-// Variables selectable in Omnichannel's "variables to send" picker.
-const VARIABLE_LIST = [
-  "model_name",
-  "alternate_model",
-  "model_reject_reason",
-  "location",
-  "location_spoken",
-  "location_raw",
-  "location_reject_reason",
-  "matched_showroom",
-  "showroom_location",
-  "showroom_match_reason",
-  "awaiting_showroom_choice",
-  "awaiting_area_detail",
-  "purchase_timeline",
-  "finance_needed",
-  "exchange_car",
-  "interest_type",
-  "lead_status",
-  "appointment_time",
-  "appointment_time_precision",
-  "appointment_address",
-  "date_time",
-  "date_time_precision",
-  "close_quality",
-  "name",
-  "preferred_showroom",
-  "pending_location",
-  "pending_purchase_timeline",
-  "pending_finance_needed",
-  "pending_exchange_car",
-  "pending_interest_type",
-  "pending_showroom_preference",
-  "skip_filler",
-  "end_call",
-  "exit_call",
-  "disconnect",
-];
-
 // ── Small typed accessors for the loosely-typed Record<string, unknown> sections ──
 
 function getStr(obj: Record<string, unknown> | undefined, key: string): string {
@@ -182,13 +138,14 @@ function toNumOrUndefined(raw: string): number | undefined {
 
 // ── Step indicator ──────────────────────────────────────────────────────
 
-function StepIndicator({ current, onJump }: { current: number; onJump: (idx: number) => void }) {
+function StepIndicator({ steps, current, onJump }: { steps: StepKey[]; current: number; onJump: (idx: number) => void }) {
   return (
     <div className="flex items-center gap-0 mb-6 overflow-x-auto pb-1">
-      {STEPS.map((label, idx) => {
+      {steps.map((key, idx) => {
+        const label = STEP_META[key].label;
         const isCompleted = idx < current;
         const isCurrent = idx === current;
-        const isLast = idx === STEPS.length - 1;
+        const isLast = idx === steps.length - 1;
         const canJump = idx <= current;
 
         return (
@@ -315,80 +272,6 @@ function VariableRowsEditor({
   );
 }
 
-// ── Checkbox picker over VARIABLE_LIST, plus freeform rows for names not on the list (Omnichannel) ──
-
-function VariableChecklist({
-  selected,
-  onChange,
-}: {
-  selected: string[];
-  onChange: (selected: string[]) => void;
-}) {
-  // Original `selected` index, not the filtered position — keeps rows stable
-  // when values are blank or duplicated.
-  const extra = selected.map((v, i) => ({ value: v, index: i })).filter((e) => !VARIABLE_LIST.includes(e.value));
-
-  function toggle(name: string) {
-    onChange(selected.includes(name) ? selected.filter((v) => v !== name) : [...selected, name]);
-  }
-  function updateExtra(originalIdx: number, value: string) {
-    onChange(selected.map((v, i) => (i === originalIdx ? value : v)));
-  }
-  function removeExtra(originalIdx: number) {
-    onChange(selected.filter((_, i) => i !== originalIdx));
-  }
-  function addExtra() {
-    onChange([...selected, ""]);
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="grid sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
-        {VARIABLE_LIST.map((name) => (
-          <label
-            key={name}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border bg-muted/50 cursor-pointer text-sm text-on-surface"
-          >
-            <input
-              type="checkbox"
-              checked={selected.includes(name)}
-              onChange={() => toggle(name)}
-              className="accent-primary"
-            />
-            <span className="font-mono text-xs">{name}</span>
-          </label>
-        ))}
-      </div>
-      <div>
-        <p className="text-xs font-medium text-text-muted mb-1.5">Not on the list</p>
-        <div className="space-y-2">
-          {extra.map(({ value, index }) => (
-            <div key={index} className="flex items-center gap-2 p-2.5 rounded-lg border border-border bg-muted/50">
-              <input
-                type="text"
-                value={value}
-                onChange={(e) => updateExtra(index, e.target.value)}
-                placeholder="variable name"
-                className="flex-1 px-2.5 py-1.5 rounded-md border border-border bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-              <button
-                type="button"
-                onClick={() => removeExtra(index)}
-                className="text-xs text-bad hover:underline whitespace-nowrap"
-              >
-                Remove
-              </button>
-            </div>
-          ))}
-          <Button type="button" variant="outline" size="sm" onClick={addExtra}>
-            <Plus /> Add variable
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Repeatable callback condition rows (variable/operator/value — any of them can fire the callback) ──
 // Unused while the Business Rules step is disabled — see STEPS above.
 
@@ -470,6 +353,38 @@ function VariableChecklist({
 //   );
 // }
 
+// ── curl placeholder detection ───────────────────────────────────────────
+// Light client-side look at a pasted WhatsApp template curl: the keys of its
+// template_data.param_data, so the user sees what it will fill in. The server
+// (services/whatsapp.py parse_curl) is the real parser and re-parses on save;
+// mapping those keys to variables happens in Settings once variables exist.
+
+function collectParamKeys(node: unknown, out: string[]): void {
+  if (!node || typeof node !== "object") return;
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === "param_data" && value && typeof value === "object" && !Array.isArray(value)) {
+      out.push(...Object.keys(value as Record<string, unknown>));
+    } else {
+      collectParamKeys(value, out);
+    }
+  }
+}
+
+function detectCurlParams(curl: string): { params: string[]; error?: string } {
+  const text = curl.replace(/\\\r?\n/g, " ").replace(/\^\r?\n/g, " ");
+  if (!/^\s*curl\b/i.test(text)) return { params: [], error: "This doesn't look like a curl command." };
+  const match = text.match(/(?:--data-raw|--data-binary|--data|-d)\s+(?:\$?'([\s\S]*?)'|"((?:[^"\\]|\\.)*)")/);
+  if (!match) return { params: [], error: "No JSON body (-d / --data-raw) found in the curl." };
+  const raw = match[1] ?? (match[2] ?? "").replace(/\\"/g, '"');
+  try {
+    const params: string[] = [];
+    collectParamKeys(JSON.parse(raw), params);
+    return { params: Array.from(new Set(params)) };
+  } catch {
+    return { params: [], error: "The curl's body isn't valid JSON." };
+  }
+}
+
 // ── Field wrapper ────────────────────────────────────────────────────────
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -502,7 +417,8 @@ function NewProcessAgentWizard() {
   const searchParams = useSearchParams();
   const channelParam = searchParams.get("channel");
 
-  const [step, setStep] = useState(0);
+  const [stepIdx, setStepIdx] = useState(0);
+  const [whatsappEnabled, setWhatsappEnabled] = useState(false);
   const [payload, setPayload] = useState<ProcessAgentWizardPayload>(() => ({
     channelId: channelParam ? Number(channelParam) : 0,
     name: "",
@@ -548,8 +464,13 @@ function NewProcessAgentWizard() {
 
   // ── Update helpers ──
 
+  // Changing the bot drops the number choice — numbers belong to one bot.
   function setVoiceBotId(voiceBotId: number | undefined) {
     setPayload((p) => ({ ...p, voice: { voice_bot_id: voiceBotId } }));
+  }
+  // A stage uses at most one of its bot's numbers; none = automatic.
+  function setNumberId(numberId: number | undefined) {
+    setPayload((p) => ({ ...p, voice: { ...p.voice, numbers: numberId ? [numberId] : undefined } }));
   }
   function updateLeadSource(patch: ProcessAgentWizardPayload["lead_source"]) {
     setPayload((p) => ({ ...p, lead_source: { ...p.lead_source, ...patch } }));
@@ -599,55 +520,55 @@ function NewProcessAgentWizard() {
   function toggleQa(key: string) {
     setPayload((p) => ({ ...p, qa: { ...p.qa, [key]: !getBool(p.qa, key) } }));
   }
-  function setCustomVariables(rows: ProcessAgentWizardVariable[]) {
-    setPayload((p) => ({ ...p, analytics: { ...p.analytics, custom_variables: rows } }));
-  }
-  function toggleStat(key: string) {
-    setPayload((p) => ({
-      ...p,
-      analytics: { ...p.analytics, stats: { ...(p.analytics?.stats ?? {}), [key]: !getBool(p.analytics?.stats, key) } },
-    }));
-  }
-  function updateOmnichannel(patch: Partial<NonNullable<ProcessAgentWizardPayload["omnichannel"]>>) {
-    setPayload((p) => ({ ...p, omnichannel: { ...p.omnichannel, ...patch } }));
-  }
-  function setOmnichannelVariables(values: string[]) {
-    updateOmnichannel({ variables: values });
+  function setWhatsappCurl(curl: string) {
+    setPayload((p) => ({ ...p, omnichannel: { channel: "whatsapp", whatsapp_curl: curl } }));
   }
 
-  // ── Validation (only Basic requires fields) ──
+  // ── Steps (the Lead Source step drops out for inbound bots) ──
 
-  const canProceed = step === 0 ? payload.channelId > 0 && payload.name.trim() !== "" : true;
+  const selectedVoiceBot = voiceBots.find((b) => b.id === payload.voice?.voice_bot_id);
+  const steps = stepsFor(selectedVoiceBot);
+  const step: StepKey = steps[Math.min(stepIdx, steps.length - 1)];
+  const lastIdx = steps.length - 1;
+  const isInbound = selectedVoiceBot?.communication_type === "voice_inbound";
 
+  const curlCheck = whatsappEnabled ? detectCurlParams(payload.omnichannel?.whatsapp_curl ?? "") : null;
+  const curlBlank = whatsappEnabled && !(payload.omnichannel?.whatsapp_curl ?? "").trim();
+
+  // Only Basics requires fields; a WhatsApp curl, once switched on, must be usable.
+  const canProceed =
+    step === "basic"
+      ? payload.channelId > 0 && payload.name.trim() !== ""
+      : step === "whatsapp"
+      ? !curlBlank && !curlCheck?.error
+      : true;
+
+  const jumpTo = (key: StepKey) => setStepIdx(steps.indexOf(key));
   function goNext() {
     if (!canProceed) return;
-    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+    setStepIdx((i) => Math.min(i + 1, lastIdx));
   }
   function goBack() {
-    setStep((s) => Math.max(s - 1, 0));
+    setStepIdx((i) => Math.max(i - 1, 0));
   }
 
   // ── Submission ──
 
   function buildFinalPayload(): ProcessAgentWizardPayload {
-    const cleanedBusinessVars = (payload.business_rules?.variables ?? []).filter((v) => v.key.trim() !== "");
-    const cleanedCustomVars = (payload.analytics?.custom_variables ?? []).filter((v) => v.key.trim() !== "");
-    const cleanedOmnichannelVars = (payload.omnichannel?.variables ?? []).filter((v) => v.trim() !== "");
+    const qaOn = QA_FIELDS.some((f) => getBool(payload.qa, f.key));
+    const curl = (payload.omnichannel?.whatsapp_curl ?? "").trim();
+    // Variables are discovered from webhooks, not declared here. Stat tiles
+    // default to all on — they are managed from Settings afterwards.
     return {
-      ...payload,
+      channelId: payload.channelId,
       name: payload.name.trim(),
       description: payload.description?.trim() || undefined,
       voice: payload.voice?.voice_bot_id ? payload.voice : undefined,
-      business_rules: payload.business_rules
-        ? { ...payload.business_rules, variables: cleanedBusinessVars.length ? cleanedBusinessVars : undefined }
-        : undefined,
-      analytics: payload.analytics
-        ? { ...payload.analytics, custom_variables: cleanedCustomVars.length ? cleanedCustomVars : undefined }
-        : undefined,
-      integrations: payload.integrations && payload.integrations.length > 0 ? payload.integrations : undefined,
-      omnichannel: payload.omnichannel
-        ? { ...payload.omnichannel, variables: cleanedOmnichannelVars.length ? cleanedOmnichannelVars : undefined }
-        : undefined,
+      // Inbound bots have no lead source; an untouched/blank one is not sent.
+      lead_source: !isInbound && payload.lead_source?.type ? payload.lead_source : undefined,
+      qa: qaOn ? payload.qa : undefined,
+      analytics: { stats: Object.fromEntries(STAT_FIELDS.map((f) => [f.key, true])) },
+      omnichannel: whatsappEnabled && curl ? { channel: "whatsapp", whatsapp_curl: curl } : undefined,
     };
   }
 
@@ -664,7 +585,7 @@ function NewProcessAgentWizard() {
   }
 
   const selectedChannel = channels.find((d) => d.id === payload.channelId);
-  const selectedVoiceBot = voiceBots.find((b) => b.id === payload.voice?.voice_bot_id);
+  const selectedNumber = selectedVoiceBot?.numbers.find((n) => n.id === payload.voice?.numbers?.[0]);
   // const selectedIntegrations = integrations.filter((i) => (payload.integrations ?? []).includes(i.id));
 
   return (
@@ -677,14 +598,14 @@ function NewProcessAgentWizard() {
         ]}
         icon={Workflow}
         title="New Agent"
-        description={STEP_HINTS[STEPS[step]]}
+        description={STEP_META[step].hint}
       />
 
-      <StepIndicator current={step} onJump={setStep} />
+      <StepIndicator steps={steps} current={stepIdx} onJump={setStepIdx} />
 
       <Card className="p-6">
-        {/* ── Step 0: Basic ── */}
-        {step === 0 && (
+        {/* ── Basics ── */}
+        {step === "basic" && (
           <div className="space-y-4">
             <CardHeader title="Basic" hint="Every process agent belongs to a channel." />
             <Field label="Channel *">
@@ -727,10 +648,10 @@ function NewProcessAgentWizard() {
           </div>
         )}
 
-        {/* ── Step 1: Voice ── */}
-        {step === 1 && (
+        {/* ── Voicebot ── */}
+        {step === "voicebot" && (
           <div className="space-y-4">
-            <CardHeader title="Voice" hint="Pick the bot this process dispatches calls through." />
+            <CardHeader title="Voicebot" hint="The bot this agent's calls run on, and which of its numbers." />
             <Field label="Bot *">
               {voiceBotsError ? (
                 <p className="text-sm text-bad">{voiceBotsError}</p>
@@ -760,26 +681,63 @@ function NewProcessAgentWizard() {
               </p>
             )}
             {selectedVoiceBot && (
-              <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5 text-xs text-text-muted">
-                {selectedVoiceBot.communication_type && (
-                  <p>
+              <>
+                <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5 text-xs text-text-muted">
+                  <p className="font-medium text-foreground">
                     {COMMUNICATION_TYPES.find((c) => c.value === selectedVoiceBot.communication_type)?.label ??
-                      selectedVoiceBot.communication_type}
+                      (selectedVoiceBot.communication_type || "Unknown direction")}
+                  </p>
+                  <p>
+                    {selectedVoiceBot.bot_name || "—"}
+                    {selectedVoiceBot.bot_id && <span className="ml-1">({selectedVoiceBot.bot_id})</span>}
+                  </p>
+                  {!isInbound && selectedVoiceBot.api_url && (
+                    <p className="font-mono break-all">{selectedVoiceBot.api_url}</p>
+                  )}
+                </div>
+
+                <Field
+                  label="Number"
+                  hint={
+                    isInbound
+                      ? "Inbound calls must have dialed this number; others are still recorded but flagged."
+                      : "The caller ID this agent dials from."
+                  }
+                >
+                  <select
+                    value={payload.voice?.numbers?.[0] ?? ""}
+                    onChange={(e) => setNumberId(e.target.value ? Number(e.target.value) : undefined)}
+                    disabled={selectedVoiceBot.numbers.length === 0}
+                    className={inputCls}
+                  >
+                    <option value="">
+                      {selectedVoiceBot.numbers.length === 0
+                        ? "This bot has no numbers yet"
+                        : isInbound
+                        ? "Automatic — any of the bot's numbers"
+                        : "Automatic — the bot's first number"}
+                    </option>
+                    {selectedVoiceBot.numbers.map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.did}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                {isInbound && (
+                  <p className="text-xs text-text-muted">
+                    Inbound results arrive by webhook. This agent gets its own webhook URL once created — paste it
+                    into Chat360 for this bot.
                   </p>
                 )}
-                <p>
-                  {selectedVoiceBot.bot_name || "—"}
-                  {selectedVoiceBot.bot_id && <span className="ml-1">({selectedVoiceBot.bot_id})</span>}
-                </p>
-                {selectedVoiceBot.dids.length > 0 && <p>DIDs: {selectedVoiceBot.dids.join(", ")}</p>}
-                {selectedVoiceBot.api_url && <p className="font-mono break-all">{selectedVoiceBot.api_url}</p>}
-              </div>
+              </>
             )}
           </div>
         )}
 
-        {/* ── Step 2: Lead Source ── */}
-        {step === 2 && (
+        {/* ── Lead Source (outbound bots only) ── */}
+        {step === "lead_source" && (
           <div className="space-y-4">
             <CardHeader title="Lead Source" hint="Where leads enter this process." />
             <Field label="Type">
@@ -982,156 +940,113 @@ function NewProcessAgentWizard() {
         )}
         ── end disabled steps ── */}
 
-        {/* ── Step 3: QA ── */}
-        {step === 3 && (
+        {/* ── WhatsApp follow-up (optional) ── */}
+        {step === "whatsapp" && (
           <div className="space-y-4">
-            <CardHeader title="QA" hint="Automated checks run against every execution's transcript." />
-            <div className="space-y-2">
-              {QA_FIELDS.map((f) => (
-                <label
-                  key={f.key}
-                  className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/50 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={getBool(payload.qa, f.key)}
-                    onChange={() => toggleQa(f.key)}
-                    className="accent-primary"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-on-surface">{f.label}</p>
-                    <p className="text-xs text-text-muted">{f.hint}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ── Step 4: Analytics ── */}
-        {step === 4 && (
-          <div className="space-y-6">
-            <CardHeader title="Analytics" hint="Variables tracked and dashboard stats shown for this process. Optional." />
-
-            <div>
-              <p className="text-sm font-semibold text-on-surface mb-2">
-                Dispositions / Variables{" "}
-                <span className="font-normal text-text-muted">— same thing on the main platform</span>
-              </p>
-              <VariableRowsEditor
-                rows={payload.analytics?.custom_variables ?? []}
-                onChange={setCustomVariables}
-                simple
+            <CardHeader title="WhatsApp follow-up" hint="Send a WhatsApp template to the customer after each call. Optional." />
+            <label className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/50 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={whatsappEnabled}
+                onChange={(e) => setWhatsappEnabled(e.target.checked)}
+                className="accent-primary"
               />
-            </div>
-
-            <div>
-              <p className="text-sm font-semibold text-on-surface mb-2">Stats &amp; Summaries</p>
-              <p className="text-xs text-text-muted mb-2">
-                Dashboard stat tiles for this process, computed from call data already in the database.
-              </p>
-              <div className="grid sm:grid-cols-2 gap-2">
-                {STAT_FIELDS.map((f) => (
-                  <label
-                    key={f.key}
-                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border bg-muted/50 cursor-pointer text-sm text-on-surface"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={getBool(payload.analytics?.stats, f.key)}
-                      onChange={() => toggleStat(f.key)}
-                      className="accent-primary"
-                    />
-                    {f.label}
-                  </label>
-                ))}
+              <div>
+                <p className="text-sm font-medium text-on-surface">Send a WhatsApp message after each call</p>
+                <p className="text-xs text-text-muted">You can skip this and add templates later in Settings.</p>
               </div>
-            </div>
-          </div>
-        )}
+            </label>
 
-        {/* ── Step 5: Omnichannel ── */}
-        {step === 5 && (
-          <div className="space-y-4">
-            <CardHeader
-              title="Omnichannel"
-              hint="Send captured variables from this process to another channel after each call."
-            />
-            <Field label="Channel">
-              <select
-                value={payload.omnichannel?.channel ?? ""}
-                onChange={(e) => updateOmnichannel({ channel: e.target.value })}
-                className={inputCls}
-              >
-                <option value="">— select —</option>
-                {COMMUNICATION_TYPES.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <div>
-              <p className="text-sm font-semibold text-on-surface mb-2">Variables to send</p>
-              <VariableChecklist
-                selected={payload.omnichannel?.variables ?? []}
-                onChange={setOmnichannelVariables}
-              />
-            </div>
-
-            {payload.omnichannel?.channel === "whatsapp" && (
-              <div className="space-y-4 pt-2 border-t border-border">
-                <p className="text-sm font-semibold text-on-surface">WhatsApp</p>
-                <Field label="Template" hint="Template name or ID to send.">
-                  <input
-                    type="text"
-                    value={payload.omnichannel?.whatsapp_template ?? ""}
-                    onChange={(e) => updateOmnichannel({ whatsapp_template: e.target.value })}
-                    placeholder="e.g. appointment_confirmation"
-                    className={inputCls}
-                  />
-                </Field>
-                <Field label="curl template" hint="Paste the curl command used to call the WhatsApp integration.">
+            {whatsappEnabled && (
+              <>
+                <Field
+                  label="Template curl *"
+                  hint="Paste the curl for the WhatsApp template. What it sends is whatever placeholders the curl itself contains."
+                >
                   <textarea
                     value={payload.omnichannel?.whatsapp_curl ?? ""}
-                    onChange={(e) => updateOmnichannel({ whatsapp_curl: e.target.value })}
-                    rows={6}
+                    onChange={(e) => setWhatsappCurl(e.target.value)}
+                    rows={7}
                     placeholder={"curl -X POST https://... \\\n  -H 'Authorization: Bearer ...' \\\n  -d '{...}'"}
                     spellCheck={false}
                     className={`${inputCls} font-mono`}
                   />
                 </Field>
-              </div>
+                {curlCheck?.error && !curlBlank && <p className="text-xs text-bad">{curlCheck.error}</p>}
+                {curlCheck && !curlCheck.error && !curlBlank && (
+                  <div className="rounded-lg border border-border bg-muted/50 p-3 text-xs text-text-muted space-y-1.5">
+                    <p>
+                      {curlCheck.params.length > 0
+                        ? `Detected ${curlCheck.params.length} placeholder${curlCheck.params.length === 1 ? "" : "s"}:`
+                        : "No placeholders detected — the same message will be sent every time."}
+                    </p>
+                    {curlCheck.params.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {curlCheck.params.map((k) => (
+                          <span key={k} className="px-1.5 py-0.5 rounded bg-card border border-border font-mono text-foreground">
+                            {k}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p>
+                      After the first call you&apos;ll map each placeholder to a captured variable, and add rules for
+                      choosing between templates, in Settings → Omnichannel. Until then this template is sent after
+                      every call.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
 
-        {/* ── Step 6: Review ── */}
-        {step === 6 && (
+        {/* ── Review ── */}
+        {step === "review" && (
           <div className="space-y-5">
-            <CardHeader title="Review" hint="Confirm the configuration, then generate the process." />
+            <CardHeader title="Review" hint="Confirm the configuration, then create the agent." />
 
-            <ReviewSection title="Basic" onEdit={() => setStep(0)}>
+            <ReviewSection title="Basics" onEdit={() => jumpTo("basic")}>
               <ReviewRow label="Channel" value={selectedChannel?.name ?? String(payload.channelId || "—")} />
               <ReviewRow label="Name" value={payload.name || "—"} />
               <ReviewRow label="Description" value={payload.description || "—"} />
             </ReviewSection>
 
-            <ReviewSection title="Voice" onEdit={() => setStep(1)}>
+            <ReviewSection title="Voicebot" onEdit={() => jumpTo("voicebot")}>
               <ReviewRow
                 label="Bot"
-                value={selectedVoiceBot ? selectedVoiceBot.label || selectedVoiceBot.bot_name || `Voice Bot ${selectedVoiceBot.id}` : "—"}
+                value={
+                  selectedVoiceBot
+                    ? selectedVoiceBot.label || selectedVoiceBot.bot_name || `Voice Bot ${selectedVoiceBot.id}`
+                    : "—"
+                }
               />
+              <ReviewRow label="Direction" value={isInbound ? "Inbound" : selectedVoiceBot ? "Outbound" : "—"} />
+              <ReviewRow label="Number" value={selectedVoiceBot ? selectedNumber?.did ?? "Automatic" : "—"} />
             </ReviewSection>
 
-            <ReviewSection title="Lead Source" onEdit={() => setStep(2)}>
-              <ReviewRow label="Type" value={payload.lead_source?.type || "—"} />
-              {payload.lead_source?.type === "single_source" ? (
-                <ReviewRow label="Number" value={getStr(payload.lead_source?.configuration, "number") || "—"} />
-              ) : (
-                <ReviewRow label="Notes" value={getStr(payload.lead_source?.configuration, "notes") || "—"} />
-              )}
+            {!isInbound && (
+              <ReviewSection title="Lead Source" onEdit={() => jumpTo("lead_source")}>
+                <ReviewRow label="Type" value={payload.lead_source?.type || "None — add leads when launching a campaign"} />
+                {payload.lead_source?.type === "single_source" ? (
+                  <ReviewRow label="Number" value={getStr(payload.lead_source?.configuration, "number") || "—"} />
+                ) : (
+                  payload.lead_source?.type && (
+                    <ReviewRow label="Notes" value={getStr(payload.lead_source?.configuration, "notes") || "—"} />
+                  )
+                )}
+              </ReviewSection>
+            )}
+
+            <ReviewSection title="WhatsApp follow-up" onEdit={() => jumpTo("whatsapp")}>
+              <ReviewRow
+                label="Template"
+                value={
+                  whatsappEnabled && curlCheck && !curlCheck.error
+                    ? `Set (${curlCheck.params.length} placeholder${curlCheck.params.length === 1 ? "" : "s"})`
+                    : "None"
+                }
+              />
             </ReviewSection>
 
             {/* ── Business Rules and Integrations review sections are disabled — see STEPS above. ──
@@ -1194,79 +1109,63 @@ function NewProcessAgentWizard() {
             </ReviewSection>
             ── end disabled review sections ── */}
 
-            <ReviewSection title="QA" onEdit={() => setStep(3)}>
-              <ReviewRow
-                label="Enabled checks"
-                value={
-                  QA_FIELDS.filter((f) => getBool(payload.qa, f.key))
-                    .map((f) => f.label)
-                    .join(", ") || "None"
-                }
-              />
-            </ReviewSection>
+            <div className="rounded-lg border border-border bg-muted/50 p-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-foreground">Quality checks (optional)</p>
+                <p className="text-xs text-muted-foreground">
+                  Automated checks run against each call. Variable-based QA is set up after the first call, once the
+                  variables have been discovered.
+                </p>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {QA_FIELDS.filter((f) => f.key === "end_call_misfiring" || f.key === "drop_off_analysis").map((f) => (
+                  <label
+                    key={f.key}
+                    className="flex items-start gap-2 px-2.5 py-2 rounded-md border border-border bg-card cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={getBool(payload.qa, f.key)}
+                      onChange={() => toggleQa(f.key)}
+                      className="accent-primary mt-0.5"
+                    />
+                    <span>
+                      <span className="block text-sm font-medium text-on-surface">{f.label}</span>
+                      <span className="block text-xs text-text-muted">{f.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
 
-            <ReviewSection title="Analytics" onEdit={() => setStep(4)}>
-              <ReviewRow
-                label="Dispositions / Variables"
-                value={
-                  (payload.analytics?.custom_variables ?? []).filter((v) => v.key.trim()).length > 0
-                    ? (payload.analytics?.custom_variables ?? [])
-                        .filter((v) => v.key.trim())
-                        .map((v) => v.key)
-                        .join(", ")
-                    : "—"
-                }
-              />
-              <ReviewRow
-                label="Stats & Summaries"
-                value={
-                  STAT_FIELDS.filter((f) => getBool(payload.analytics?.stats, f.key))
-                    .map((f) => f.label)
-                    .join(", ") || "None"
-                }
-              />
-            </ReviewSection>
-
-            <ReviewSection title="Omnichannel" onEdit={() => setStep(5)}>
-              <ReviewRow
-                label="Channel"
-                value={
-                  COMMUNICATION_TYPES.find((c) => c.value === payload.omnichannel?.channel)?.label ??
-                  payload.omnichannel?.channel ??
-                  "—"
-                }
-              />
-              <ReviewRow
-                label="Variables to send"
-                value={
-                  (payload.omnichannel?.variables ?? []).filter((v) => v.trim()).length > 0
-                    ? (payload.omnichannel?.variables ?? []).filter((v) => v.trim()).join(", ")
-                    : "—"
-                }
-              />
-              {payload.omnichannel?.channel === "whatsapp" && (
-                <>
-                  <ReviewRow label="WhatsApp Template" value={payload.omnichannel?.whatsapp_template || "—"} />
-                  <ReviewRow label="curl template" value={payload.omnichannel?.whatsapp_curl ? "Set" : "—"} />
-                </>
+            <div className="rounded-lg border border-border bg-muted/50 p-4 text-xs text-muted-foreground space-y-1">
+              <p className="text-sm font-semibold text-foreground">What happens next</p>
+              {isInbound ? (
+                <p>
+                  You&apos;ll get this agent&apos;s webhook URL to paste into Chat360. Calls and variables appear after
+                  the first call.
+                </p>
+              ) : (
+                <p>Add leads and launch a campaign from the agent page. Calls and variables appear after the first call.</p>
               )}
-            </ReviewSection>
+              <p>Tick which discovered variables feed QA and analytics once they show up.</p>
+            </div>
 
             {submitError && <ErrorAlert message={submitError} />}
 
             <div className="flex justify-end">
               <Button type="button" size="lg" onClick={handleGenerate} disabled={submitting}>
                 {submitting ? <Spinner /> : <Sparkles />}
-                {submitting ? "Generating…" : "Generate Process"}
+                {submitting ? "Creating…" : "Create Agent"}
               </Button>
             </div>
           </div>
         )}
 
         {/* ── Back / Next (all steps except Review, which has its own submit button) ── */}
-        {step !== 6 && (
+        {step !== "review" && (
           <div className="flex items-center justify-between pt-6 mt-6 border-t border-border">
-            <Button type="button" variant="ghost" onClick={goBack} disabled={step === 0}>
+            <Button type="button" variant="ghost" onClick={goBack} disabled={stepIdx === 0}>
               <ArrowLeft /> Back
             </Button>
             <Button type="button" onClick={goNext} disabled={!canProceed}>

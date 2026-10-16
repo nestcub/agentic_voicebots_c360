@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from ..services.ngrok import get_public_base_url
-from ..services import hyundai_whatsapp
+from ..services import numbers as numbers_service, omnichannel, omnichannel_seed
 from ..services.whatsapp import parse_curl
 from ..models import (
     BotJourney,
@@ -13,6 +13,7 @@ from ..models import (
     NodeInstance,
     NodeTemplate,
     OmnichannelConfig,
+    PhoneNumber,
     ProcessAgent,
     ProcessIntegration,
     QAResult,
@@ -106,7 +107,21 @@ class LeadSourceSerializer(serializers.ModelSerializer):
 class VariableSerializer(serializers.ModelSerializer):
     class Meta:
         model = Variable
-        fields = ["id", "key", "type", "default_value", "label", "required", "source"]
+        fields = [
+            "id",
+            "key",
+            "type",
+            "default_value",
+            "label",
+            "required",
+            "source",
+            "use_in_qa",
+            "use_in_analytics",
+            "discovered",
+            "last_seen_at",
+            "sample_value",
+        ]
+        read_only_fields = ["discovered", "last_seen_at", "sample_value"]
 
 
 class WebhookDefinitionSerializer(serializers.ModelSerializer):
@@ -139,7 +154,17 @@ class ProcessAgentIntegrationSerializer(serializers.ModelSerializer):
         fields = ["id", "integration", "integration_name", "integration_type"]
 
 
+class PhoneNumberSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PhoneNumber
+        fields = ["id", "did"]
+
+
 class VoiceBotSerializer(serializers.ModelSerializer):
+    # The bot's registered numbers (ids are what a stage selects from); the
+    # writable `dids` list below is how they are edited.
+    numbers = PhoneNumberSerializer(many=True, read_only=True)
+
     class Meta:
         model = VoiceBot
         fields = [
@@ -149,19 +174,43 @@ class VoiceBotSerializer(serializers.ModelSerializer):
             "bot_name",
             "bot_id",
             "dids",
+            "numbers",
             "api_url",
             "script",
             "webhook_schema",
             "created_at",
         ]
 
+    def validate_dids(self, value):
+        dids, problem = numbers_service.clean_dids(value)
+        if problem:
+            raise serializers.ValidationError(problem)
+        return dids
+
+    def create(self, validated_data):
+        voice_bot = super().create(validated_data)
+        numbers_service.sync_bot_numbers(voice_bot)
+        return voice_bot
+
+    def update(self, instance, validated_data):
+        voice_bot = super().update(instance, validated_data)
+        numbers_service.sync_bot_numbers(voice_bot)
+        return voice_bot
+
 
 class BotJourneySerializer(serializers.ModelSerializer):
     voice_bot = VoiceBotSerializer(read_only=True)
+    # The number assigned to this stage (empty = automatic), and the DIDs it
+    # effectively uses either way.
+    numbers = PhoneNumberSerializer(many=True, read_only=True)
+    active_dids = serializers.SerializerMethodField()
 
     class Meta:
         model = BotJourney
-        fields = ["id", "name", "order", "voice_bot", "created_at"]
+        fields = ["id", "name", "order", "voice_bot", "numbers", "active_dids", "created_at"]
+
+    def get_active_dids(self, obj):
+        return numbers_service.journey_dids(obj)
 
 
 class OmnichannelConfigSerializer(serializers.ModelSerializer):
@@ -183,8 +232,8 @@ class OmnichannelConfigSerializer(serializers.ModelSerializer):
 
     def get_whatsapp_templates(self, obj):
         summaries = {}
-        for key in hyundai_whatsapp.TEMPLATE_KEYS:
-            curl = hyundai_whatsapp.template_curl(obj.process_agent, key)
+        for key in omnichannel_seed.TEMPLATE_KEYS:
+            curl = omnichannel.template_curl(obj.process_agent, key)
             summary = {"configured": bool(curl.strip()), "url": "", "template_title": "", "params": [], "error": None}
             if summary["configured"]:
                 try:
@@ -305,12 +354,14 @@ class CallRowSerializer(serializers.ModelSerializer):
         ]
 
     def get_whatsapp(self, obj):
-        """Latest WhatsAppSend (pending/sent/failed/skipped, which template, auto or manual)."""
+        """Latest WhatsAppSend (pending/sent/failed/skipped/blocked, which template, auto or manual)."""
         sends = list(obj.whatsapp_sends.all())
         if sends:
             latest = sends[0]
             return {
+                "id": latest.id,
                 "status": latest.status,
+                "missing": latest.missing or [],
                 "template_key": latest.template_key,
                 "trigger": latest.trigger,
                 "error": latest.last_error or None,
@@ -322,6 +373,8 @@ class CallRowSerializer(serializers.ModelSerializer):
             return None
         latest = events[0]
         return {
+            "id": None,
+            "missing": [],
             "status": "sent" if latest.event_type == "whatsapp_sent" else "failed",
             "template_key": (latest.payload or {}).get("template_key") or None,
             "trigger": "manual",
@@ -331,7 +384,7 @@ class CallRowSerializer(serializers.ModelSerializer):
         }
 
     def get_suggested_template(self, obj):
-        return hyundai_whatsapp.pick_template(obj)
+        return omnichannel.pick_template(obj)
 
 
 class CampaignLeadSerializer(serializers.ModelSerializer):

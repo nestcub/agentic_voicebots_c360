@@ -17,9 +17,22 @@ import { FaWhatsapp } from "react-icons/fa";
 import { FiCheckCircle, FiClock, FiDatabase, FiMinusCircle, FiX, FiXCircle, FiZap } from "react-icons/fi";
 import { Card, CardHeader } from "@/components/Card";
 import { TablePagination, usePagination } from "@/components/common/TablePagination";
-import { getProcessAgentCalls, previewWhatsApp, sendWhatsApp } from "@/lib/telehubApi";
-import type { CallRow, ProcessAgentDetail, WhatsAppPreview, WhatsAppSendResult } from "@/lib/types";
-import { errorMessage, formatDate, formatDuration, WHATSAPP_TEMPLATES } from "./shared";
+import {
+  fillWhatsAppSend,
+  getProcessAgentCalls,
+  listChannelTemplates,
+  previewWhatsApp,
+  sendWhatsApp,
+} from "@/lib/telehubApi";
+import type {
+  CallRow,
+  ChannelTemplate,
+  ProcessAgentDetail,
+  WhatsAppFillResult,
+  WhatsAppPreview,
+  WhatsAppSendResult,
+} from "@/lib/types";
+import { apiErrorText, errorMessage, formatDate, formatDuration } from "./shared";
 
 type WhatsAppFilter = "all" | "not_sent" | "pending" | "sent" | "failed";
 
@@ -47,6 +60,7 @@ function WhatsAppBadge({ whatsapp }: { whatsapp: CallRow["whatsapp"] }) {
     failed: { cls: "bg-bad/15 text-bad", label: `Failed${template}` },
     pending: { cls: "bg-primary/15 text-primary", label: `Sending${template}` },
     skipped: { cls: "bg-text-muted/15 text-text-muted", label: `Skipped${template}` },
+    blocked: { cls: "bg-bad/15 text-bad", label: `Needs values${template}` },
   };
   const style = styles[whatsapp.status] ?? styles.failed;
   return (
@@ -60,6 +74,7 @@ function WhatsAppBadge({ whatsapp }: { whatsapp: CallRow["whatsapp"] }) {
       <span className="text-[10px] text-text-muted">
         {whatsapp.trigger === "auto" ? "auto" : "manual"}
         {whatsapp.status === "skipped" && whatsapp.error ? ` · ${whatsapp.error}` : ""}
+        {whatsapp.status === "blocked" && whatsapp.missing.length ? ` · missing ${whatsapp.missing.join(", ")}` : ""}
       </span>
     </span>
   );
@@ -70,11 +85,13 @@ function WhatsAppBadge({ whatsapp }: { whatsapp: CallRow["whatsapp"] }) {
 function SendModal({
   agentId,
   executionIds,
+  templates,
   onClose,
   onSent,
 }: {
   agentId: number;
   executionIds: number[];
+  templates: ChannelTemplate[];
   onClose: () => void;
   onSent: () => void;
 }) {
@@ -97,8 +114,12 @@ function SendModal({
     };
   }, [agentId, executionIds, templateKey]);
 
-  const ready = (previews ?? []).filter((p) => !p.error && p.missing.length === 0);
-  const blocked = (previews ?? []).length - ready.length;
+  // Only a broken curl / missing phone number stops a recipient here. Recipients with empty
+  // variables are still submitted: the server holds their message ("needs values") instead of
+  // sending it, and the values can then be filled in from the Calls table.
+  const ready = (previews ?? []).filter((p) => !p.error);
+  const unsendable = (previews ?? []).length - ready.length;
+  const held = ready.filter((p) => p.missing.length > 0).length;
 
   async function handleSend() {
     setSending(true);
@@ -119,7 +140,8 @@ function SendModal({
   }
 
   const succeeded = results?.filter((r) => r.success).length ?? 0;
-  const failed = results?.filter((r) => !r.success) ?? [];
+  const heldResults = results?.filter((r) => r.blocked) ?? [];
+  const failed = results?.filter((r) => !r.success && !r.blocked) ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
@@ -138,11 +160,13 @@ function SendModal({
               className="px-2 py-1 rounded-lg border border-border bg-surface text-sm"
             >
               <option value="">Rule&apos;s pick for each call</option>
-              {WHATSAPP_TEMPLATES.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
-                </option>
-              ))}
+              {templates
+                .filter((t) => t.is_active)
+                .map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
             </select>
             {previews && (
               <span className="text-xs text-text-muted">
@@ -161,8 +185,15 @@ function SendModal({
           {results ? (
             <div className="space-y-2 text-sm">
               <p className="text-on-surface">
-                {succeeded} sent{failed.length ? `, ${failed.length} failed` : ""}.
+                {succeeded} sent
+                {heldResults.length ? `, ${heldResults.length} held for missing values` : ""}
+                {failed.length ? `, ${failed.length} failed` : ""}.
               </p>
+              {heldResults.map((r) => (
+                <p key={r.execution_id} className="text-xs text-text-muted">
+                  #{r.execution_id}: waiting on {(r.missing ?? []).join(", ")} — use “Fill values” on the call.
+                </p>
+              ))}
               {failed.map((r) => (
                 <p key={r.execution_id} className="text-xs text-bad">
                   #{r.execution_id}: {r.error}
@@ -181,9 +212,13 @@ function SendModal({
                       {p.template_title ? ` (${p.template_title})` : ""}
                     </span>
                   </p>
-                  {p.error || p.missing.length ? (
+                  {p.error ? (
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-bad/15 text-bad">
                       Won&apos;t send
+                    </span>
+                  ) : p.missing.length ? (
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-warn/15 text-warn">
+                      Needs values
                     </span>
                   ) : (
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-ok/15 text-ok">Ready</span>
@@ -212,7 +247,8 @@ function SendModal({
 
         <div className="px-5 py-3 border-t border-border flex items-center justify-between gap-3">
           <p className="text-xs text-text-muted">
-            {!results && blocked > 0 && `${blocked} recipient${blocked === 1 ? "" : "s"} with missing values will be skipped.`}
+            {!results && held > 0 && `${held} will be held until their missing values are filled in. `}
+            {!results && unsendable > 0 && `${unsendable} can't be sent (fix the template or phone number).`}
           </p>
           <div className="flex gap-2">
             <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-surface-container">
@@ -228,6 +264,111 @@ function SendModal({
               </button>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Fill a blocked send's missing values ────────────────────────────────
+
+function FillModal({
+  agentId,
+  row,
+  onClose,
+  onDone,
+}: {
+  agentId: number;
+  row: CallRow;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const whatsapp = row.whatsapp;
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<WhatsAppFillResult | null>(null);
+
+  if (!whatsapp || whatsapp.id === null) return null;
+  const sendId = whatsapp.id;
+  const missing = result ? result.missing : whatsapp.missing;
+  const filledAny = Object.values(values).some((v) => v.trim());
+
+  async function handleSubmit() {
+    setSaving(true);
+    setError(null);
+    try {
+      const toSend = Object.fromEntries(
+        Object.entries(values)
+          .filter(([name]) => missing.includes(name))
+          .filter(([, v]) => v.trim())
+          .map(([name, v]) => [name, v.trim()]),
+      );
+      const res = await fillWhatsAppSend(agentId, sendId, toSend);
+      setResult(res);
+      setValues({});
+      onDone();
+    } catch (e) {
+      setError(apiErrorText(e, "Failed to save values"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const sent = result?.status === "sent";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-lg w-full max-w-lg max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-border">
+          <p className="text-base font-semibold text-on-surface">Fill in missing values</p>
+          <p className="text-xs text-text-muted mt-0.5">
+            {phoneOf(row)} · {whatsapp.template_key}. The message is held until these are filled; it sends as soon as
+            they are.
+          </p>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto space-y-3 flex-1">
+          {error && <div className="text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-3 py-2">{error}</div>}
+          {sent ? (
+            <p className="text-sm text-ok">Sent.</p>
+          ) : result && result.status === "failed" ? (
+            <p className="text-sm text-bad">Saved, but sending failed: {result.error}</p>
+          ) : result && result.status === "pending" ? (
+            <p className="text-sm text-text-muted">Saved. Sending hit a temporary error and will be retried.</p>
+          ) : (
+            <>
+              {result && missing.length > 0 && (
+                <p className="text-xs text-text-muted">Saved. Still waiting on the values below.</p>
+              )}
+              {missing.map((name) => (
+                <div key={name}>
+                  <label className="block text-xs font-mono text-text-muted mb-1">{name}</label>
+                  <input
+                    value={values[name] ?? ""}
+                    onChange={(e) => setValues((v) => ({ ...v, [name]: e.target.value }))}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-border bg-surface text-sm"
+                  />
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-border flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-surface-container">
+            {result && (sent || result.status !== "blocked") ? "Close" : "Cancel"}
+          </button>
+          {!(result && result.status !== "blocked") && (
+            <button
+              onClick={handleSubmit}
+              disabled={saving || !filledAny}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-on-primary hover:bg-primary-container disabled:opacity-60"
+            >
+              {saving ? "Saving…" : "Save & send"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -306,7 +447,7 @@ const LIVE_WINDOW_MS = 5 * 60_000;
 const OUTCOMES: { id: Exclude<WhatsAppFilter, "all">; title: string; tone: Tone; icon: ReactNode }[] = [
   { id: "sent", title: "Sent", tone: "ok", icon: <FiCheckCircle /> },
   { id: "pending", title: "Sending", tone: "primary", icon: <FiClock /> },
-  { id: "failed", title: "Failed", tone: "bad", icon: <FiXCircle /> },
+  { id: "failed", title: "Failed / needs values", tone: "bad", icon: <FiXCircle /> },
   { id: "not_sent", title: "Not sent / skipped", tone: "muted", icon: <FiMinusCircle /> },
 ];
 
@@ -315,7 +456,7 @@ const FILTER_LABELS: Record<WhatsAppFilter, string> = {
   not_sent: "WhatsApp not sent",
   pending: "WhatsApp sending",
   sent: "WhatsApp sent",
-  failed: "WhatsApp failed",
+  failed: "WhatsApp failed or waiting on values",
 };
 
 interface FlowStats {
@@ -334,7 +475,8 @@ function computeStats(rows: CallRow[]): FlowStats {
     if (!latest || row.created_at > latest) latest = row.created_at;
     Object.keys(row.variables).forEach((k) => fields.add(k));
     if (!row.whatsapp || row.whatsapp.status === "skipped") byOutcome.not_sent += 1;
-    else byOutcome[row.whatsapp.status] += 1;
+    // A blocked send is waiting on someone to fill values in — count it with the failures, which need attention.
+    else byOutcome[row.whatsapp.status === "blocked" ? "failed" : row.whatsapp.status] += 1;
   }
   const live = latest !== null && Date.now() - new Date(latest).getTime() < LIVE_WINDOW_MS;
   return { total: rows.length, fields: fields.size, latest, live, byOutcome };
@@ -343,10 +485,11 @@ function computeStats(rows: CallRow[]): FlowStats {
 function buildFlow(
   stats: FlowStats,
   agent: ProcessAgentDetail,
+  templates: ChannelTemplate[],
   whatsAppConfigured: boolean,
   activeFilter: WhatsAppFilter | null,
 ): { nodes: StepNodeType[]; edges: Edge[] } {
-  const configuredTemplates = Object.values(agent.omnichannel?.whatsapp_templates ?? {}).filter((t) => t.configured).length;
+  const readyTemplates = templates.filter((t) => t.configured && !t.error && t.is_active).length;
   const step = (id: string, x: number, y: number, data: StepData): StepNodeType => ({
     id,
     type: "step",
@@ -395,7 +538,7 @@ function buildFlow(
       title: "WhatsApp send",
       icon: <FaWhatsapp />,
       stat: whatsAppConfigured ? `Auto-send ${agent.omnichannel?.auto_send ? "on" : "off"}` : "Not configured",
-      sub: `${configuredTemplates}/${WHATSAPP_TEMPLATES.length} templates configured`,
+      sub: `${readyTemplates}/${templates.length} template${templates.length === 1 ? "" : "s"} ready`,
       action: "Pick calls to send",
       tone: whatsAppConfigured ? "ok" : "warn",
       hasIn: true,
@@ -445,6 +588,7 @@ function CallsTable({
   selected,
   setSelected,
   onSend,
+  onFill,
 }: {
   rows: CallRow[];
   whatsAppFilter: WhatsAppFilter;
@@ -453,6 +597,7 @@ function CallsTable({
   selected: Set<number>;
   setSelected: (fn: (s: Set<number>) => Set<number>) => void;
   onSend: (ids: number[]) => void;
+  onFill: (row: CallRow) => void;
 }) {
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -463,7 +608,9 @@ function CallsTable({
       if (whatsAppFilter === "not_sent" && row.whatsapp && row.whatsapp.status !== "skipped") return false;
       if (whatsAppFilter === "pending" && row.whatsapp?.status !== "pending") return false;
       if (whatsAppFilter === "sent" && row.whatsapp?.status !== "sent") return false;
-      if (whatsAppFilter === "failed" && row.whatsapp?.status !== "failed") return false;
+      if (whatsAppFilter === "failed" && row.whatsapp?.status !== "failed" && row.whatsapp?.status !== "blocked") {
+        return false;
+      }
       if (q && !`${phoneOf(row)} ${str(row.variables.customer_name)}`.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -572,6 +719,14 @@ function CallsTable({
                         {isTruthy(v.is_test) && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-warn/15 text-warn">test</span>
                         )}
+                        {isTruthy(v.did_mismatch) && (
+                          <span
+                            className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-bad/15 text-bad"
+                            title={`Dialed ${str(v.callee_number) || "a number"} - not one of this agent's inbound numbers`}
+                          >
+                            wrong number
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-xs text-text-muted whitespace-nowrap">
                         {str(v.call_start_time) || formatDate(row.created_at)}
@@ -592,13 +747,21 @@ function CallsTable({
                       <td className="px-3 py-2.5">
                         <WhatsAppBadge whatsapp={row.whatsapp} />
                       </td>
-                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-2.5 space-x-1" onClick={(e) => e.stopPropagation()}>
+                        {row.whatsapp?.status === "blocked" && row.whatsapp.id !== null && (
+                          <button
+                            onClick={() => onFill(row)}
+                            className="px-2 py-1 rounded text-[11px] font-medium bg-bad text-white hover:opacity-90 whitespace-nowrap"
+                          >
+                            Fill values
+                          </button>
+                        )}
                         <button
                           onClick={() => onSend([row.id])}
                           disabled={!whatsAppConfigured}
                           className="px-2 py-1 rounded text-[11px] font-medium bg-primary text-on-primary hover:bg-primary-container disabled:opacity-60 whitespace-nowrap"
                         >
-                          {row.whatsapp?.status === "sent" ? "Resend" : "Send"} · {row.suggested_template}
+                          {row.whatsapp?.status === "sent" ? "Resend" : "Send"}{row.suggested_template ? ` · ${row.suggested_template}` : ""}
                         </button>
                       </td>
                     </tr>
@@ -658,11 +821,22 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
   const [drawerFilter, setDrawerFilter] = useState<WhatsAppFilter | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [modalIds, setModalIds] = useState<number[] | null>(null);
+  const [fillRow, setFillRow] = useState<CallRow | null>(null);
+  const [templates, setTemplates] = useState<ChannelTemplate[]>([]);
 
-  const templates = agent.omnichannel?.whatsapp_templates ?? {};
-  const whatsAppConfigured =
-    Object.values(templates).some((t) => t.configured) || Boolean(agent.omnichannel?.whatsapp_curl?.trim());
-  const unconfigured = WHATSAPP_TEMPLATES.filter((t) => !templates[t.key]?.configured).map((t) => t.key);
+  useEffect(() => {
+    let cancelled = false;
+    listChannelTemplates(agent.id)
+      .then((data) => !cancelled && setTemplates(data.templates))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.id]);
+
+  const usableTemplates = templates.filter((t) => t.configured && !t.error && t.is_active);
+  const whatsAppConfigured = usableTemplates.length > 0;
+  const unconfigured = templates.filter((t) => t.is_active && (!t.configured || t.error)).map((t) => t.name);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -681,7 +855,7 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
   // transient failure keeps the last good rows on screen. Paused while the send
   // modal is open or the browser tab is hidden.
   useEffect(() => {
-    if (modalIds) return;
+    if (modalIds || fillRow) return;
     let inFlight = false;
     const timer = setInterval(() => {
       if (inFlight || document.visibilityState !== "visible") return;
@@ -694,15 +868,15 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
         });
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [agent.id, modalIds]);
+  }, [agent.id, modalIds, fillRow]);
 
   // Escape closes the drawer (the modal handles its own clicks).
   useEffect(() => {
-    if (!drawerFilter || modalIds) return;
+    if (!drawerFilter || modalIds || fillRow) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setDrawerFilter(null);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawerFilter, modalIds]);
+  }, [drawerFilter, modalIds, fillRow]);
 
   const baseRows = useMemo(
     () => (rows ?? []).filter((row) => !(hideTests && isTruthy(row.variables.is_test))),
@@ -710,8 +884,8 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
   );
   const stats = useMemo(() => computeStats(baseRows), [baseRows]);
   const { nodes, edges } = useMemo(
-    () => buildFlow(stats, agent, whatsAppConfigured, drawerFilter),
-    [stats, agent, whatsAppConfigured, drawerFilter],
+    () => buildFlow(stats, agent, templates, whatsAppConfigured, drawerFilter),
+    [stats, agent, templates, whatsAppConfigured, drawerFilter],
   );
 
   const onNodeClick: NodeMouseHandler<StepNodeType> = useCallback((_, node) => {
@@ -729,11 +903,11 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
     <div className="space-y-4">
       {!whatsAppConfigured ? (
         <div className="text-sm text-warn bg-warn/10 border border-warn/30 rounded-lg px-4 py-3">
-          No WhatsApp curl configured — add one under Settings → Omnichannel to enable sending.
+          No usable WhatsApp template — add one under Settings → Omnichannel to enable sending.
         </div>
       ) : (
         unconfigured.length > 0 && (
-          <p className="text-xs text-text-muted">{unconfigured.join(", ")} not configured yet (those calls are skipped)</p>
+          <p className="text-xs text-text-muted">{unconfigured.join(", ")} need a valid curl (calls using them are skipped)</p>
         )
       )}
 
@@ -804,15 +978,21 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
               selected={selected}
               setSelected={setSelected}
               onSend={setModalIds}
+              onFill={setFillRow}
             />
           </div>
         </div>
+      )}
+
+      {fillRow && (
+        <FillModal agentId={agent.id} row={fillRow} onClose={() => setFillRow(null)} onDone={load} />
       )}
 
       {modalIds && (
         <SendModal
           agentId={agent.id}
           executionIds={modalIds}
+          templates={templates}
           onClose={() => setModalIds(null)}
           onSent={() => {
             setSelected(new Set());

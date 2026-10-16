@@ -2,6 +2,8 @@ from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 
+from .services.phone import normalize_digits
+
 
 class TenantQuerySet(models.QuerySet):
     """Explicit org scoping — no implicit "current org" filtering (see Phase 0 plan §3.5)."""
@@ -139,6 +141,39 @@ class VoiceBot(models.Model):
         return self.label or self.bot_name or f"VoiceBot {self.pk}"
 
 
+class PhoneNumber(models.Model):
+    """
+    One DID of a VoiceBot. A bot has many (a pool); each stage that runs the
+    bot is assigned one of them (BotJourney.numbers). `did_key` is the number's
+    digits with the India country code stripped, so "+917965311524" and
+    "7965311524" are the same number; it is unique within a bot. The same
+    number may appear on different bots: calls reach an agent through its own
+    webhook URL, never by looking the dialed number up, so a DID is only ever
+    used to verify an inbound call and as an outbound caller ID.
+    """
+
+    organization = _org_fk("phone_numbers")
+    objects = TenantQuerySet.as_manager()
+
+    voice_bot = models.ForeignKey(VoiceBot, on_delete=models.CASCADE, related_name="numbers")
+    did = models.CharField(max_length=32)
+    did_key = models.CharField(max_length=32, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["voice_bot", "did_key"], name="unique_number_per_voice_bot")
+        ]
+
+    def save(self, *args, **kwargs):
+        self.did_key = normalize_digits(self.did)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.did
+
+
 class BotJourney(models.Model):
     """
     A named, ordered stage in a ProcessAgent's call orchestration (e.g.
@@ -158,6 +193,11 @@ class BotJourney(models.Model):
     voice_bot = models.ForeignKey(
         VoiceBot, on_delete=models.PROTECT, related_name="journeys", null=True, blank=True
     )
+    # The one of the VoiceBot's numbers this stage is assigned: outbound dials
+    # from it, inbound calls must have dialed it. Empty = automatic: outbound
+    # dials from the bot's first number and inbound accepts any of its numbers
+    # (every stage before this field existed).
+    numbers = models.ManyToManyField(PhoneNumber, blank=True, related_name="journeys")
     name = models.CharField(max_length=128)
     order = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -167,6 +207,45 @@ class BotJourney(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.process_agent_id})"
+
+
+class JourneyTransition(models.Model):
+    """
+    "When a call in stage `from_journey` ends and these checks pass on its
+    variables, hand the lead to stage `to_journey`" — both stages of the same
+    process agent. The hand-off creates a new Execution for the target stage
+    (services/handoff.py) carrying the call's results as variables.
+
+    `on` picks the moment: "completed" runs when a call's result arrives and
+    the lead isn't going to be retried or called back; "retries_exhausted" runs
+    when a stage gives up on a lead that never connected. Checks use the same
+    language as ChannelRule (services/conditions.py); none = always.
+    """
+
+    ON_COMPLETED = "completed"
+    ON_RETRIES_EXHAUSTED = "retries_exhausted"
+    ON_CHOICES = [(ON_COMPLETED, "Call completed"), (ON_RETRIES_EXHAUSTED, "Retries exhausted")]
+
+    process_agent = models.ForeignKey(
+        ProcessAgent, on_delete=models.CASCADE, related_name="journey_transitions"
+    )
+    from_journey = models.ForeignKey(
+        BotJourney, on_delete=models.CASCADE, related_name="outgoing_transitions"
+    )
+    to_journey = models.ForeignKey(
+        BotJourney, on_delete=models.CASCADE, related_name="incoming_transitions"
+    )
+    on = models.CharField(max_length=24, choices=ON_CHOICES, default=ON_COMPLETED)
+    priority = models.IntegerField(default=0)
+    match = models.CharField(max_length=8, default="all")
+    checks = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["priority", "id"]
+
+    def __str__(self):
+        return f"{self.from_journey_id} -> {self.to_journey_id} on {self.on}"
 
 
 class NodeInstance(models.Model):
@@ -293,6 +372,12 @@ class Execution(models.Model):
         BotJourney, on_delete=models.SET_NULL, null=True, blank=True, related_name="executions"
     )
     variables = models.JSONField(default=dict)
+    # The Execution whose result handed this lead to this stage (null for the
+    # first stage). Each stage of a lead is its own Execution, so its call, QA
+    # and WhatsApp send stay separate — see services/handoff.py.
+    parent_execution = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="children"
+    )
     campaign_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
     attempt_count = models.IntegerField(default=0)
     next_execution = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -373,11 +458,18 @@ class AnalyticsEvent(models.Model):
 class Variable(models.Model):
     """A runtime variable exposed by a ProcessAgent (e.g. Customer Name, Phone).
 
-    Shared by the wizard's Business Rules variables and Analytics
-    dispositions — `source` disambiguates which step defined a given row,
-    since the two mean different things (a business-rules variable has a
-    real default_value/required/type; an analytics disposition mainly
-    carries a display `label`).
+    One row per (process_agent, key). Rows are either declared by hand (the
+    wizard / Settings) or discovered from webhook payloads
+    (services/variable_discovery.py, `discovered=True`). `use_in_qa` and
+    `use_in_analytics` are the user's ticks for which results feed the QA
+    missing-variables check and the Analytics tab; declared rows default to
+    both on (the behavior before the flags existed), discovered rows to both
+    off until ticked. Whether a variable is *sent* to the customer is not a
+    flag — it is whatever a channel template's curl placeholders reference.
+
+    `source` is legacy: it used to let the same key exist twice (business
+    rules vs analytics) and is kept only so the wizard and dashboard keep
+    working until they stop sending it.
     """
 
     SOURCE_BUSINESS_RULES = "business_rules"
@@ -398,10 +490,19 @@ class Variable(models.Model):
     source = models.CharField(
         max_length=32, choices=SOURCE_CHOICES, default=SOURCE_BUSINESS_RULES
     )
+    use_in_qa = models.BooleanField(default=True)
+    use_in_analytics = models.BooleanField(default=True)
+    discovered = models.BooleanField(default=False)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    sample_value = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = [("process_agent", "key", "source")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["process_agent", "key"], name="unique_variable_key_per_agent"
+            )
+        ]
 
     def __str__(self):
         return self.key
@@ -429,10 +530,88 @@ class OmnichannelConfig(models.Model):
         return f"Omnichannel ({self.process_agent_id}) -> {self.channel or '—'}"
 
 
+class ChannelTemplate(models.Model):
+    """
+    One message template the agent can send after a call — today always a
+    WhatsApp template, held as a pasted Chat360 curl. `name` is the key the
+    rest of the system uses ("T1", "T2", ... for agents migrated from the
+    three fixed slots; WhatsAppSend.template_key stores it).
+
+    `param_map` refines how curl placeholders resolve; for now it only carries
+    fallbacks: {"model_name": {"variable": "model_name", "fallback":
+    "model_of_interest"}} reads model_of_interest when model_name is empty.
+    `missing_fill`, when set, is sent in place of an empty variable param;
+    blank means an empty param blocks the send.
+    """
+
+    CHANNEL_WHATSAPP = "whatsapp"
+
+    process_agent = models.ForeignKey(
+        ProcessAgent, on_delete=models.CASCADE, related_name="channel_templates"
+    )
+    channel = models.CharField(max_length=32, default=CHANNEL_WHATSAPP)
+    name = models.CharField(max_length=64)
+    curl = models.TextField(blank=True, default="")
+    param_map = models.JSONField(default=dict, blank=True)
+    missing_fill = models.CharField(max_length=64, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["process_agent", "name"], name="unique_channel_template_name_per_agent"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.channel}) @ agent {self.process_agent_id}"
+
+
+class ChannelRule(models.Model):
+    """
+    "When a call completes, if these checks pass, send this template (or skip
+    sending)." Rules are tried in ascending `priority`; the first whose checks
+    pass wins. A rule with no checks always matches — use it as the default.
+
+    `checks` is a list of {"variable": key, "op": op[, "value": v]} evaluated
+    against the call's variables (see services/conditions.py for the
+    operators); `match` says whether all or any of them must pass.
+    """
+
+    ACTION_SEND = "send"
+    ACTION_SKIP = "skip"
+    ACTION_CHOICES = [(ACTION_SEND, "Send"), (ACTION_SKIP, "Skip")]
+
+    MATCH_ALL = "all"
+    MATCH_ANY = "any"
+    MATCH_CHOICES = [(MATCH_ALL, "All"), (MATCH_ANY, "Any")]
+
+    process_agent = models.ForeignKey(
+        ProcessAgent, on_delete=models.CASCADE, related_name="channel_rules"
+    )
+    priority = models.IntegerField(default=0)
+    action = models.CharField(max_length=8, choices=ACTION_CHOICES, default=ACTION_SEND)
+    template = models.ForeignKey(
+        ChannelTemplate, on_delete=models.CASCADE, null=True, blank=True, related_name="rules"
+    )
+    match = models.CharField(max_length=8, choices=MATCH_CHOICES, default=MATCH_ALL)
+    checks = models.JSONField(default=list, blank=True)
+    reason = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["priority", "id"]
+
+    def __str__(self):
+        return f"rule {self.priority}: {self.action} @ agent {self.process_agent_id}"
+
+
 class WhatsAppSend(models.Model):
     """
     One WhatsApp template send for an Execution — automatic (picked by
-    services/hyundai_whatsapp.py, sent by run_scheduler, retried on transient
+    services/omnichannel.py, sent by run_scheduler, retried on transient
     failures) or manual (the Calls tab's Send button, sent synchronously).
     At most one automatic send per Execution, so a resent webhook can't
     trigger a second message.
@@ -445,11 +624,19 @@ class WhatsAppSend(models.Model):
     STATUS_SENT = "sent"
     STATUS_FAILED = "failed"
     STATUS_SKIPPED = "skipped"
+    # A mapped variable had no value and the template has no missing_fill:
+    # nothing is sent and the scheduler leaves it alone until someone fills the
+    # values in (`missing` lists the variable names to fill).
+    STATUS_BLOCKED = "blocked"
 
     execution = models.ForeignKey(
         Execution, on_delete=models.CASCADE, related_name="whatsapp_sends"
     )
-    template_key = models.CharField(max_length=16)
+    template_key = models.CharField(max_length=64)
+    template = models.ForeignKey(
+        "ChannelTemplate", on_delete=models.SET_NULL, null=True, blank=True, related_name="sends"
+    )
+    missing = models.JSONField(default=list, blank=True)
     trigger = models.CharField(max_length=16, default=TRIGGER_AUTO)
     status = models.CharField(max_length=16, default=STATUS_PENDING)
     attempts = models.IntegerField(default=0)
