@@ -396,7 +396,6 @@ export default function BotsPage() {
       <PageHeader
         icon={Bot}
         title="Voicebots"
-        description="Reusable bot identities — pick one for a process agent at creation time instead of typing it in."
         badges={bots && <ToneBadge tone="muted" className="normal-case">{bots.length} total</ToneBadge>}
         actions={
           <Button onClick={openCreate}>

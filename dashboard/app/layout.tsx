@@ -11,8 +11,8 @@ const workSans = Work_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Autovista AI Orchestrator",
-  description: "Outbound lead operations — dispatch, follow-up reliability, live analytics.",
+  title: "Chat360",
+  description: "Conversational AI.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

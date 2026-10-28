@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { Building2, Calendar, ChevronDown, LogOut, ShieldCheck } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,17 +13,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { fetchMe, getOrganization, logout, setOrganization, type Me } from "@/lib/auth";
-import { domainConfig } from "@/lib/domainConfig";
+import { displayName, domainConfig } from "@/lib/domainConfig";
 import { useSidebar } from "@/context/SidebarContext";
-
-function initials(name: string): string {
-  const parts = name.split(/[\s._@-]+/).filter(Boolean);
-  const letters = parts.length > 1 ? parts[0][0] + parts[1][0] : name.slice(0, 2);
-  return letters.toUpperCase();
-}
 
 function UserMenu({ me, org }: { me: Me; org: string | null }) {
   const current = me.organizations.find((o) => o.slug === org) ?? me.organizations[0];
+  const username = displayName(me.username);
 
   function switchOrg(slug: string) {
     if (slug === org) return;
@@ -36,26 +30,21 @@ function UserMenu({ me, org }: { me: Me; org: string | null }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          className="flex items-center gap-2 rounded-full pl-1 pr-2 py-1 hover:bg-accent transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          className="flex items-center gap-2 rounded-full pl-3 pr-2 py-1 hover:bg-accent transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           aria-label="Account menu"
         >
-          <Avatar className="size-9">
-            <AvatarFallback className="bg-primary text-primary-foreground text-sm font-semibold">
-              {initials(me.username)}
-            </AvatarFallback>
-          </Avatar>
-          <span className="hidden md:flex flex-col items-start leading-tight text-left">
-            <span className="text-sm font-medium text-foreground max-w-36 truncate">{me.username}</span>
-            {current && <span className="text-xs text-muted-foreground max-w-36 truncate">{current.name}</span>}
+          <span className="flex flex-col items-start leading-tight text-left">
+            <span className="text-sm font-medium text-foreground max-w-36 truncate">{username}</span>
+            {current && <span className="text-xs text-muted-foreground max-w-36 truncate">{displayName(current.name)}</span>}
           </span>
           <ChevronDown className="w-4 h-4 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuLabel className="font-normal">
-          <p className="text-sm font-medium text-foreground truncate">{me.username}</p>
+          <p className="text-sm font-medium text-foreground truncate">{username}</p>
           <p className="text-xs text-muted-foreground truncate">
-            {current ? `${current.role} · ${current.name}` : "No organization"}
+            {current ? `${current.role} · ${displayName(current.name)}` : "No organization"}
           </p>
           {me.is_platform_staff && (
             <p className="mt-1 inline-flex items-center gap-1 text-xs text-primary">
@@ -72,7 +61,7 @@ function UserMenu({ me, org }: { me: Me; org: string | null }) {
               {me.organizations.map((o) => (
                 <DropdownMenuRadioItem key={o.slug} value={o.slug}>
                   <Building2 className="text-muted-foreground" />
-                  <span className="truncate">{o.name}</span>
+                  <span className="truncate">{displayName(o.name)}</span>
                 </DropdownMenuRadioItem>
               ))}
             </DropdownMenuRadioGroup>
@@ -101,6 +90,7 @@ export function TopHeader() {
   // Only present once logged in (the backend runs open until TELEHUB_AUTH_REQUIRED is on).
   const [me, setMe] = useState<Me | null>(null);
   const [org, setOrg] = useState<string | null>(null);
+  const [logoOk, setLogoOk] = useState(true);
   useEffect(() => {
     fetchMe().then((m) => {
       setMe(m);
@@ -115,11 +105,17 @@ export function TopHeader() {
       }`}
     >
       {/* Greeting */}
-      <div className="min-w-0">
-        <p className="text-base font-semibold text-foreground truncate">Hello, {domainConfig.brand}</p>
-        <p className="text-xs text-muted-foreground truncate">
-          Here&apos;s what&apos;s happening with your agentic voicebots today.
-        </p>
+      <div className="flex items-center gap-3 min-w-0">
+        {logoOk && (
+          // eslint-disable-next-line @next/next/no-img-element -- plain <img> so a missing file can hide itself
+          <img
+            src={domainConfig.logo}
+            alt={domainConfig.brand}
+            className="h-9 w-auto shrink-0"
+            onError={() => setLogoOk(false)}
+          />
+        )}
+        <p className="min-w-0 text-base font-semibold text-foreground truncate">Hello, {domainConfig.brand}</p>
       </div>
 
       {/* Right side */}

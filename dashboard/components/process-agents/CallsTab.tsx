@@ -32,24 +32,15 @@ import type {
   WhatsAppPreview,
   WhatsAppSendResult,
 } from "@/lib/types";
-import { apiErrorText, errorMessage, formatDate, formatDuration } from "./shared";
+import { DealersSection } from "./DealersSection";
+import { apiErrorText, errorMessage, formatDate, formatDuration, phoneOf, str } from "./shared";
 
 type WhatsAppFilter = "all" | "not_sent" | "pending" | "sent" | "failed";
 
 const POLL_INTERVAL_MS = 15_000;
 
-function str(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  return typeof v === "string" ? v : String(v);
-}
-
 function isTruthy(v: unknown): boolean {
   return v === true || ["true", "1", "yes"].includes(str(v).trim().toLowerCase());
-}
-
-// Inbound rows carry caller_number; outbound rows only to_number.
-function phoneOf(row: CallRow): string {
-  return str(row.variables.caller_number) || str(row.variables.to_number) || row.lead_id;
 }
 
 function WhatsAppBadge({ whatsapp }: { whatsapp: CallRow["whatsapp"] }) {
@@ -947,6 +938,8 @@ export function CallsTab({ agent }: { agent: ProcessAgentDetail }) {
           </ReactFlow>
         </div>
       </Card>
+
+      <DealersSection rows={baseRows} />
 
       {drawerFilter && (
         <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={() => setDrawerFilter(null)}>

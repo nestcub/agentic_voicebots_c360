@@ -172,7 +172,6 @@ export default function ChannelDetailPage() {
         iconColor={channel.color || DEFAULT_CHANNEL_COLOR}
         title={channel.name}
         badges={<ActiveBadge active={channel.is_active} />}
-        description={channel.description || undefined}
         actions={addAgentButton}
       />
 

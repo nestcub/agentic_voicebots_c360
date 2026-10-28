@@ -8,10 +8,8 @@ import {
   LayoutDashboard,
   Bot,
   Network,
-  Users,
   PanelLeftClose,
   PanelLeftOpen,
-  ChevronRight,
 } from "lucide-react";
 
 // Settings is left out until app/settings/page.tsx is wired to the API —
@@ -20,7 +18,6 @@ const NAV_ITEMS = [
   { href: "/",         label: "Dashboard", Icon: LayoutDashboard },
   { href: "/bots",     label: "Voicebots", Icon: Bot },
   { href: "/channels", label: "Channels",  Icon: Network },
-  { href: "/leads",    label: "Leads",     Icon: Users },
 ];
 
 export function Sidebar() {
@@ -79,41 +76,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-
-      {/* Footer card */}
-      {isOpen && (
-        <Link
-          href="/bots"
-          className="m-3 p-4 rounded-xl border border-sidebar-border bg-surface hover:bg-sidebar-active transition-colors group"
-        >
-          <div className="flex items-start gap-3">
-            <WaveMark className="w-8 h-8 shrink-0 text-primary" />
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-sidebar-text">Build. Automate. Scale.</p>
-              <p className="text-xs text-sidebar-text-muted mt-1 leading-relaxed">
-                Your AI voice agents, working 24/7.
-              </p>
-            </div>
-          </div>
-          <div className="flex justify-end mt-1">
-            <ChevronRight className="w-4 h-4 text-sidebar-text-muted group-hover:text-sidebar-text transition-colors" />
-          </div>
-        </Link>
-      )}
     </aside>
-  );
-}
-
-// Small audio-waveform mark inside a soft circle — drawn inline, no asset.
-function WaveMark({ className = "" }: { className?: string }) {
-  const bars = [6, 12, 18, 10, 16, 8];
-  return (
-    <span className={`rounded-full bg-sidebar-active flex items-center justify-center ${className}`}>
-      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden="true">
-        {bars.map((h, i) => (
-          <rect key={i} x={2.5 + i * 3.4} y={12 - h / 2} width={1.8} height={h} rx={0.9} fill="currentColor" />
-        ))}
-      </svg>
-    </span>
   );
 }
