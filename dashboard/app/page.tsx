@@ -173,7 +173,6 @@ export default function DashboardPage() {
             <KpiCard
               label="Connect Rate"
               value={show(formatPercent(overview.connectRate))}
-              hint="Connected ÷ total calls"
               icon={Target}
               tone="purple"
             />

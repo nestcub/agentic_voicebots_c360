@@ -130,7 +130,6 @@ export function OverviewTab({
               <KpiCard
                 label="Connect Rate"
                 value={show(formatPercent(connectRate))}
-                hint="Connected ÷ total calls"
                 icon={Target}
                 tone="purple"
               />

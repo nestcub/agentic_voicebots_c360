@@ -182,7 +182,6 @@ export default function ChannelDetailPage() {
           <KpiCard
             label="Connect Rate"
             value={show(formatPercent(calls > 0 ? connected / calls : null))}
-            hint="Connected ÷ total calls"
             icon={Target}
             tone="purple"
           />
