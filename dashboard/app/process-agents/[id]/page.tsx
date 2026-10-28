@@ -417,7 +417,6 @@ export default function ProcessAgentDetailPage() {
             </ToneBadge>
           </>
         }
-        description={agent.description || undefined}
       />
 
       {/* Sticky must sit on <Tabs> itself: its only child is the list, so the

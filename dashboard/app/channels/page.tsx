@@ -235,7 +235,6 @@ export default function ChannelsPage() {
       <PageHeader
         icon={Network}
         title="Channels"
-        description="Organize process agents by channel"
         actions={addButton}
       />
 
@@ -275,16 +274,13 @@ export default function ChannelsPage() {
                 className="h-full gap-0 p-5 border-l-4 transition-all group-hover:shadow-md group-hover:-translate-y-0.5"
                 style={{ borderLeftColor: d.color || DEFAULT_CHANNEL_COLOR }}
               >
-                <div className="flex items-start justify-between gap-2 mb-3">
+                <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-3 min-w-0">
                     <ChannelIconTile icon={d.icon} color={d.color} />
                     <p className="text-base font-semibold text-foreground truncate">{d.name}</p>
                   </div>
                   <ActiveBadge active={d.is_active} />
                 </div>
-                <p className="text-sm text-muted-foreground line-clamp-2 min-h-10">
-                  {d.description || "No description."}
-                </p>
                 <div className="flex items-center justify-between mt-4 pt-3 border-t border-border text-sm">
                   <span className="flex items-center gap-1.5 text-muted-foreground">
                     <Workflow className="w-4 h-4" />

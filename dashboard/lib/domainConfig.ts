@@ -2,7 +2,9 @@
 // no component changes. This is what makes the dashboard outsourceable / Chat360-embeddable.
 
 export const domainConfig = {
-  brand: "Autovista",
+  brand: "Hyundai",
+  // Shown beside the header greeting; hidden if the file isn't in public/ yet.
+  logo: "/hyundai-logo.png",
   product: "AI Orchestrator",
   industry: "automobile",
 
@@ -43,7 +45,51 @@ export const domainConfig = {
     Mumbai: ["Andheri", "Borivali", "Goregaon", "Worli", "Thane", "Vashi", "Kharghar", "Panvel"],
     Pune: ["Wakad", "Hinjewadi", "Kothrud", "Hadapsar", "Baner", "Pimpri-Chinchwad", "Viman Nagar"],
   } as Record<string, string[]>,
+
+  // Display-only renames for backend names (usernames, org names) until they're renamed in the DB.
+  // Keys are matched case-insensitively.
+  displayAliases: {
+    hyundaistaff: "hyundai.hq",
+    "hyundai poc": "Hyundai",
+  } as Record<string, string>,
+
+  // Dealer board on a voice agent's Calls tab: calls are grouped by their
+  // `assigned_dealer_name` disposition, matched against `dealer` below.
+  dealers: {
+    field: "assigned_dealer_name",
+    location: "Delhi",
+    // Show frontend-only sample calls (lib/demoCalls.ts) for dealers with no real calls yet.
+    demoCalls: true,
+    outlets: [
+      { area: "Arjan Garh Chhatarpur", dealer: "Ramaa Hyundai" },
+      { area: "Badarpur", dealer: "Shuban Sai Hyundai" },
+      { area: "Dilshad Garden", dealer: "Himgiri Hyundai" },
+      { area: "East Patel Nagar", dealer: "Bagga Link Hyundai" },
+      { area: "Janakpuri", dealer: "Triumph Hyundai" },
+      { area: "Kailash Colony", dealer: "Koncept Hyundai" },
+      { area: "Lajpat Nagar IV", dealer: "Ramaa Hyundai" },
+      { area: "Malviya Nagar", dealer: "Lamba Hyundai" },
+      { area: "Mangolpuri", dealer: "Deep Hyundai" },
+      { area: "Mother Dairy", dealer: "Sunrise Hyundai" },
+      { area: "Moti Nagar", dealer: "Hans Hyundai" },
+      { area: "Mundka", dealer: "Deep Hyundai" },
+      { area: "Narela", dealer: "Malwa Hyundai" },
+      { area: "Nazafgarh", dealer: "Universal Hyundai" },
+      { area: "Okhla", dealer: "Koncept Hyundai" },
+      { area: "Patparganj", dealer: "Sunrise Hyundai" },
+      { area: "Roop Nagar", dealer: "Pahwa Hyundai" },
+      { area: "Safdarjang Enclave", dealer: "Koncept Hyundai" },
+      { area: "Sarasvati Vihar", dealer: "Malwa Hyundai" },
+      { area: "Shalimar Place", dealer: "Unity Hyundai" },
+      { area: "Wazirpur", dealer: "Lamba Hyundai" },
+      { area: "Rohini", dealer: "Deep Hyundai" },
+    ],
+  },
 };
+
+export function displayName(name: string): string {
+  return domainConfig.displayAliases[name.trim().toLowerCase()] ?? name;
+}
 
 export function statusBadge(status: string) {
   return domainConfig.statuses[status] ?? { label: status, cls: "bg-slate-100 text-slate-600" };

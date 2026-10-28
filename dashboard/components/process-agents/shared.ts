@@ -3,6 +3,8 @@
 // — these are display labels for config stored on the Communication/QA
 // NodeInstances and ProcessAgent.analytics_stats, not schema.
 
+import type { CallRow } from "@/lib/types";
+
 export type TabKey = "overview" | "journey" | "runs" | "calls" | "qa" | "analytics" | "settings";
 
 export const TABS: { key: TabKey; label: string }[] = [
@@ -77,6 +79,16 @@ export function getConfigBool(config: Record<string, unknown> | undefined, key: 
 export function getConfigStrArray(config: Record<string, unknown> | undefined, key: string): string[] {
   const v = config?.[key];
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+export function str(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  return typeof v === "string" ? v : String(v);
+}
+
+// Inbound rows carry caller_number; outbound rows only to_number.
+export function phoneOf(row: CallRow): string {
+  return str(row.variables.caller_number) || str(row.variables.to_number) || row.lead_id;
 }
 
 export function formatDate(iso: string | null | undefined): string {
