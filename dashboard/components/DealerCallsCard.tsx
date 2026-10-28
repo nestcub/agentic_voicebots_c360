@@ -99,9 +99,9 @@ export function DealerCallsCard({ rows, loading }: { rows: CallRow[]; loading: b
             <PhoneCall className="w-5 h-5 text-primary" />
           </div>
           <div className="space-y-1">
-            <CardTitle>Customer Calls</CardTitle>
+            <CardTitle>New Car Enquiries</CardTitle>
             <CardDescription>
-              {loading ? "Loading…" : `${visible.length} of ${tagged.length} call${tagged.length === 1 ? "" : "s"}`}
+              {loading ? "Loading…" : `${visible.length} of ${tagged.length} enquir${tagged.length === 1 ? "y" : "ies"}`}
             </CardDescription>
           </div>
         </div>
@@ -145,7 +145,7 @@ export function DealerCallsCard({ rows, loading }: { rows: CallRow[]; loading: b
           </div>
         ) : visible.length === 0 ? (
           <p className="px-6 py-6 text-center text-sm text-muted-foreground">
-            {tagged.length === 0 ? "No calls yet." : "No calls for this dealer yet."}
+            {tagged.length === 0 ? "No enquiries yet." : "No enquiries for this dealer yet."}
           </p>
         ) : (
           <>
